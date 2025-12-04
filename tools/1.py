@@ -1,0 +1,1 @@
+from modelscope.models import AutoModel
