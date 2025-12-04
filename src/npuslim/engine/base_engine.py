@@ -27,21 +27,21 @@ class BaseEngine(ABC):
         self.prepare_dataloader()
 
     def prepare_model(self):
-        model_cfg = dict(self.cfg.model)
-        self.slim_model = ModelFactory.create(**model_cfg)
+        model_kwargs = dict(self.cfg.model)
+        self.slim_model = ModelFactory.create(**model_kwargs)
         self.slim_model.prepare()
 
     def prepare_dataloader(self):
-        dataset_cfg = dict(self.cfg.calib_dataset.dataset)
-        dataloader_cfg = dict(self.cfg.calib_dataset.dataloader)
+        dataset_kwargs = dict(self.cfg.calib_dataset.dataset)
+        dataloader_kwargs = dict(self.cfg.calib_dataset.dataloader)
         processor = (
             self.slim_model.processor
             if self.slim_type in ["vlm"]
             else self.slim_model.tokenizer
         )
-        dataset = DatasetFactory.create(processor=processor, **dataset_cfg)
+        dataset = DatasetFactory.create(processor=processor, **dataset_kwargs)
         self.dataloader = DataLoader(
-            dataset, collate_fn=dataset.collate_fn, **dataloader_cfg
+            dataset, collate_fn=dataset.collate_fn, **dataloader_kwargs
         )
 
     def save(self): ...

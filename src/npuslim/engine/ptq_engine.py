@@ -11,8 +11,10 @@ class PTQEngine(BaseEngine):
         self.prepare_quant()
 
     def prepare_quant(self):
-        quant_cfg = dict(self.cfg.ptq)
-        self.quantizer = QuantFactory.create(**quant_cfg)
+        quant_kwargs = dict(self.cfg.ptq)
+        quant_kwargs.update(slim_model=self.slim_model)
+        self.quantizer = QuantFactory.create(**quant_kwargs)
+        self.quantizer.prepare()
     
     def run(self):
-        self.quantizer.calibrate(self.dataloader)
+        self.quantizer.run(self.dataloader)

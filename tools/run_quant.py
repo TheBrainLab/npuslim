@@ -1,6 +1,6 @@
 
 
-from npuslim.engine.quant_engine import PTQEngine
+from npuslim.engine.ptq_engine import PTQEngine
 
 def main():
     engine = PTQEngine()

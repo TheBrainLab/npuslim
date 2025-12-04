@@ -26,5 +26,27 @@ class BaseLLMModel(ABC):
             trust_remote_code=self.trust_remote_code,
             **self.tokenizer_kwargs,  
         )
+    
+    def init_ptq(self, slim_config):
+        """
+        Initialize the model for post-training quantization (PTQ).
+        Args:
+            slim_config(dict, required): the configuration for quantization.
+                - compress_config: the configuration for compression.
+                - global_config: the global configuration for the model.
+        """
+        # quant_config = QuantConfig(
+        #     slim_config["compress_config"], slim_config["global_config"]
+        # )
+        # self.quant_config = quant_config
+        self.act_scales_dict = {}
+        self.weight_scales_dict = {}
+        self.weight_scales_dict_2 = {}
+        self.kv_cache_scales_dict = {}
+        if hasattr(self.quant_config, "weight_observer"):
+            self.quant_algo_dict = self.get_quant_config()
+        else:
+            self.quant_algo_dict = None
+        self.quantized = False
 
 

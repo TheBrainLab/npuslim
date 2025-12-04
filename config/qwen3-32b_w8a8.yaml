@@ -12,7 +12,7 @@ model:
     low_cpu_mem_usage: true
     use_cache: false
     torch_dtype: auto
-    device_map: cpu
+    device_map: auto
 
 # Dataset for calibration
 calib_dataset:
@@ -28,12 +28,9 @@ calib_dataset:
 
 # Post-Training Quantization
 ptq:
-  type: PTQStandardQuantizer
-  w_bit: 8
-  a_bit: 8
-  # quant_method:
-  #   weight: "per-group"
-  #   group_size: 128
+  type: WXAX
+  w_bits: 8
+  a_bits: 8
   ignore_layers:         # Skip quantization for these layers
     - 'lm_head'
     - 'model.layers.0.mlp.down_proj'

@@ -7,6 +7,7 @@ __pycache__/
 
 # C extensions
 *.so
+**cann_ops**
 
 # tests and logs
 tests/fixtures/cached_*_text.txt

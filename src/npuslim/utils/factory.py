@@ -68,6 +68,15 @@ class BaseFactory:
 class ModelFactory(BaseFactory):
     _registry: Dict[str, Type] = {}
 
+    @classmethod
+    def create(cls, *args, **kwargs):
+        if "type" not in kwargs:
+            raise ValueError("Missing required 'type' in kwargs")
+        name = kwargs.pop("type")
+        target_cls = cls.get(name)
+        kwargs["model_type"] = name
+        return target_cls(*args, **kwargs)
+
 MODELS_PACKAGE = "npuslim.model"
 MODELS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "model")
 ModelFactory.set_package(MODELS_PACKAGE, MODELS_PATH)
