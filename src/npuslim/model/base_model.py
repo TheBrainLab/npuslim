@@ -1,52 +1,98 @@
 from abc import ABC, abstractmethod
+import torch
+from dataclasses import asdict
+from loguru import logger
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
+
+from npuslim.utils.config_parser import ModelConfig, GlobalConfig
 
 
 class BaseLLMModel(ABC):
-    def __init__(self, *args, model_type, model_path, trust_remote_code=False, **kwargs):
-        self.model_type = model_type
-        self.model_path = model_path
-        self.trust_remote_code = trust_remote_code
-
-        self.model_kwargs = kwargs.pop("model_kwargs", kwargs)
-        self.tokenizer_kwargs = kwargs.pop("tokenizer_kwargs", {})
+    def __init__(self, *args, config: "ModelConfig", **kwargs):
+        self.model_path = config.model_path
+        self.model_kwargs = config.model_kwargs
+        self.tokenizer_kwargs = config.tokenizer_kwargs
 
         self.model = None
         self.tokenizer = None
+        self.config = None
+
+        self.observer_layer_classes = [torch.nn.Linear]
 
     def prepare(self):
+        logger.info(
+            f"Loading model from: '{self.model_path}' with kwargs: {self.model_kwargs}"
+        )
         self.model = AutoModelForCausalLM.from_pretrained(
-            pretrained_model_name_or_path=self.model_path,
-            trust_remote_code=self.trust_remote_code,
-            **self.model_kwargs, 
+            pretrained_model_name_or_path=self.model_path, **asdict(self.model_kwargs)
         )
 
+        logger.info(
+            f"Loading tokenizer from: '{self.model_path}' with kwargs: {self.tokenizer_kwargs}"
+        )
         self.tokenizer = AutoTokenizer.from_pretrained(
             pretrained_model_name_or_path=self.model_path,
-            trust_remote_code=self.trust_remote_code,
-            **self.tokenizer_kwargs,  
+            **asdict(self.tokenizer_kwargs),
         )
+
+        logger.info(f"Loading configuration from: '{self.model_path}'")
+        self.config = AutoConfig.from_pretrained(
+            pretrained_model_name_or_path=self.model_path,
+        )
+        logger.info(
+            f"Model, tokenizer, and config loaded successfully. "
+            f"Model architecture: {self.config.architectures[0] if hasattr(self.config, 'architectures') and self.config.architectures else 'N/A'}"
+        )
+
+    @property
+    def hidden_size(self):
+        return self.config.hidden_size
+
+    @property
+    def layers(self):
+        """
+        self: 我们封装的模型
+        self.model: transformers封装的模型
+        self.model.model: 实际模型结构
+        """
+        return self.model.model.layers
     
-    def init_ptq(self, slim_config):
+    def get_model(self):
+        return self.model
+    
+    def get_kvcache_observer_layers_names(self, observe_names):
+        names = ["self_attn.k_proj", "self_attn.v_proj"]
+        return [
+            k
+            for k in observe_names
+            if k.startswith(self.block_name)
+            and k.split(".")[-2] + "." + k.split(".")[-1] in names
+        ]
+
+    def init_ptq(self):
         """
         Initialize the model for post-training quantization (PTQ).
-        Args:
-            slim_config(dict, required): the configuration for quantization.
-                - compress_config: the configuration for compression.
-                - global_config: the global configuration for the model.
         """
-        # quant_config = QuantConfig(
-        #     slim_config["compress_config"], slim_config["global_config"]
-        # )
-        # self.quant_config = quant_config
         self.act_scales_dict = {}
         self.weight_scales_dict = {}
-        self.weight_scales_dict_2 = {}
         self.kv_cache_scales_dict = {}
-        if hasattr(self.quant_config, "weight_observer"):
-            self.quant_algo_dict = self.get_quant_config()
-        else:
-            self.quant_algo_dict = None
         self.quantized = False
+    
+    def get_weight_scales(self, layer, weight_observer):
+        weight = layer.weight.clone().detach()
+        weight_observer(weight)
+        return weight_observer.scales()
+    
+    def get_quant_convert_module(self):
+        """
+        Returns the module that will be converted to quantized.
+        This is typically the main transformer module of the model.
+        """
+        return self.model
 
+    # 每个模型的逻辑都不一样
+    @abstractmethod
+    def get_observer_layers(self): ...
 
+    @abstractmethod
+    def get_save_func(self): ...

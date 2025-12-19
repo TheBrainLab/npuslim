@@ -138,6 +138,8 @@ tensorflow_code
 proc_data
 
 # examples
+.trash
+kernel_meta
 runs
 outputs
 /runs_old
@@ -148,6 +150,7 @@ outputs
 
 # data
 /data
+*.npy
 serialization_dir
 
 # emacs

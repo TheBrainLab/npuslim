@@ -2,23 +2,18 @@
 name = "npuslim"
 version = "0.0.0.dev"
 description = "NPU oriented model compression & quantization framework"
-authors = [
-    { name="PCL authors", email="xxx@xxx.com" }
-]
+authors = [{ name = "PCL authors", email = "xxx@xxx.com" }]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 
-dependencies = [
-    "torch",
-    "torch-npu",
-    "rich",
-    "accelerate", 
-    "transformers"
-]
+dependencies = ["torch", "torch-npu", "rich", "accelerate", "transformers"]
 
 [project.scripts]
 npuslim = "npuslim.cli.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.entry-points."vllm.general_plugins"]
+register_npuslim = "npuslim.vllm_plugin:register"

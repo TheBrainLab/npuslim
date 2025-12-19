@@ -1,8 +1,9 @@
-from ...utils.factory import QuantFactory
+from ..base_ptquantizer import BasePTQuantizer
+from npuslim.utils.factory import CompressorFactory
 
 
-@QuantFactory.register()
-class GPTQ:
+@CompressorFactory.register()
+class GPTQ(BasePTQuantizer):
     def __init__(
         self,
         bits: int = 4,

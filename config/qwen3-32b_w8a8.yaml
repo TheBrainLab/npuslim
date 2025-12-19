@@ -1,5 +1,5 @@
 #  configuration of pipeline
-metadata:
+meta:
   type: llm
   save_path: ./outputs
 
@@ -7,12 +7,12 @@ metadata:
 model:
   type: Qwen3
   model_path: /home/lichangcai/.cache/modelscope/hub/models/Qwen/Qwen3-32B
-  trust_remote_code: true
   model_kwargs:
+    trust_remote_code: true
     low_cpu_mem_usage: true
     use_cache: false
     torch_dtype: auto
-    device_map: auto
+    device_map: cpu
 
 # Dataset for calibration
 calib_dataset:
@@ -29,9 +29,15 @@ calib_dataset:
 # Post-Training Quantization
 ptq:
   type: WXAX
-  w_bits: 8
-  a_bits: 8
-  ignore_layers:         # Skip quantization for these layers
+  quant_config:
+    w_bits: 8
+    a_bits: 8
+    w_symm: true    # 对称量化
+    a_symm: false
+    w_signed: true  # 符号量化
+    a_signed: true
+    quant_weight: "per-channel"  # per-channel or per-tensor
+  ignore_layers:           # Skip quantization for these layers
     - 'lm_head'
     - 'model.layers.0.mlp.down_proj'
     - 'model.layers.1.mlp.down_proj'

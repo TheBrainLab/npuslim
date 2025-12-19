@@ -17,6 +17,8 @@ from typing import Dict, List
 import torch
 from torch.utils.data import Dataset
 from transformers import ProcessorMixin
+# from ..utils.config_parser import DatasetConfig
+from npuslim.utils.config_parser import DatasetConfig
 
 
 class BaseDataset(Dataset):
@@ -25,14 +27,14 @@ class BaseDataset(Dataset):
     def __init__(
         self,
         *args,
-        processor: ProcessorMixin,
-        device: str = "cpu",
-        max_seq_length: int = 4096,
+        processor: "ProcessorMixin",
+        config: "DatasetConfig",
         **kwargs
     ):
         self.processor = processor
-        self.device = device
-        self.max_length = max_seq_length
+        self.config = config
+        self.device = config.device
+        self.max_length = config.max_seq_length
         self.data = []
 
     def __len__(self) -> int:

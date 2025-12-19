@@ -18,16 +18,20 @@ from typing import Dict, List
 import pyarrow.parquet as pq
 import torch
 
+# from .base_dataset import BaseDataset
+# from ..utils.factory import DatasetFactory
 from .base_dataset import BaseDataset
-from ..utils.factory import DatasetFactory
+from npuslim.utils.factory import DatasetFactory
 
 
 @DatasetFactory.register()
 class TextDataset(BaseDataset):
     """Dataset for text-only data in Parquet or JSONL formats"""
 
-    def __init__(self, *args, data_path, num_samples, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        data_path = self.config.data_path
+        num_samples = self.config.num_samples
         self._load_data(data_path, num_samples)
 
     def _load_data(self, data_path: str, num_samples: int):

@@ -1,9 +1,15 @@
 from typing import Type, Optional, Dict
-import os
+from abc import ABC, abstractmethod
 import pkgutil
 import importlib
+from pathlib import Path
 
-class BaseFactory:
+# from dataclasses import is_dataclass, asdict
+from .config_parser import ModelConfig, CalibDatasetConfig, CompressorConfig
+
+
+
+class BaseFactory(ABC):
     """Base registry factory supporting subclass registries with lazy import."""
 
     _registry: Dict[str, Type] = {}
@@ -47,56 +53,61 @@ class BaseFactory:
         key = name.lower()
         if key not in cls._registry:
             available = ", ".join(cls._registry.keys())
-            raise KeyError(f"'{name}' not found in {cls.__name__}. Available: {available}")
+            raise KeyError(
+                f"'{name}' not found in {cls.__name__}. Available: {available}"
+            )
         return cls._registry[key]
 
     @classmethod
-    def create(cls, *args, **kwargs):
-        if "type" not in kwargs:
-            raise ValueError("Missing required 'type' in kwargs")
-        name = kwargs.pop("type")
-        target_cls = cls.get(name)
-        return target_cls(*args, **kwargs)
-
+    @abstractmethod
+    def create(cls, *args, **kwargs): ...
 
     @classmethod
     def available(cls):
         cls._lazy_import()
         return list(cls._registry.keys())
 
-    
+
 class ModelFactory(BaseFactory):
     _registry: Dict[str, Type] = {}
 
     @classmethod
-    def create(cls, *args, **kwargs):
-        if "type" not in kwargs:
-            raise ValueError("Missing required 'type' in kwargs")
-        name = kwargs.pop("type")
+    def create(cls, *args, config: "ModelConfig", **kwargs):
+        name = config.type
         target_cls = cls.get(name)
-        kwargs["model_type"] = name
-        return target_cls(*args, **kwargs)
+        return target_cls(*args, config=config, **kwargs)
+
 
 MODELS_PACKAGE = "npuslim.model"
-MODELS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "model")
-ModelFactory.set_package(MODELS_PACKAGE, MODELS_PATH)
+MODELS_PATH = Path(__file__).resolve().parent.parent / "model"
+ModelFactory.set_package(MODELS_PACKAGE, str(MODELS_PATH))
+
 
 class DatasetFactory(BaseFactory):
     _registry: Dict[str, Type] = {}
 
-DATALOADER_PACKAGE = "npuslim.dataset"
-DATALOADER_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dataset")
-DatasetFactory.set_package(DATALOADER_PACKAGE, DATALOADER_PATH)
+    @classmethod
+    def create(cls, *args, config: "CalibDatasetConfig", **kwargs):
+        name = config.type
+        target_cls = cls.get(name)
+        return target_cls(*args, config=config, **kwargs)
 
-class QuantFactory(BaseFactory):
+
+DATALOADER_PACKAGE = "npuslim.dataset"
+DATALOADER_PATH = Path(__file__).resolve().parent.parent / "dataset"
+DatasetFactory.set_package(DATALOADER_PACKAGE, str(DATALOADER_PATH))
+
+
+class CompressorFactory(BaseFactory):
     _registry: Dict[str, Type] = {}
 
-QUANTS_PACKAGE = "npuslim.quant"
-QUANTS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "quant")
-QuantFactory.set_package(QUANTS_PACKAGE, QUANTS_PATH)
+    @classmethod
+    def create(cls, *args, config: "CompressorConfig", **kwargs):
+        name = config.type
+        target_cls = cls.get(name)
+        return target_cls(*args, **kwargs)
 
 
-
-
-
-
+COMPRESSOR_PACKAGE = "npuslim.compressor"
+COMPRESSOR_PATH = Path(__file__).resolve().parent.parent / "compressor"
+CompressorFactory.set_package(COMPRESSOR_PACKAGE, str(COMPRESSOR_PATH))
