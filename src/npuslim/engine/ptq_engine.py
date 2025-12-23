@@ -2,7 +2,6 @@ from pathlib import Path
 from loguru import logger
 
 from .base_engine import BaseEngine
-from ..compressor.quant.core.save import Saver
 from npuslim.utils.config_parser import GlobalConfig
 from npuslim.utils.factory import CompressorFactory
 from npuslim.compressor.quant.core.quant_algo_info import QuantConfigManager
@@ -55,5 +54,4 @@ class PTQEngine(BaseEngine):
             self.quantizer.save()
         else:
             save_path = GlobalConfig.get_config().meta.save_path
-            saver = Saver(save_model=self.slim_model, save_path=save_path)
-            saver.save()
+            self.slim_model.save_pretrained(save_path)

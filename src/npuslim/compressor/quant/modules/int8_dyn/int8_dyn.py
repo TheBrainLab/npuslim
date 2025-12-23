@@ -9,7 +9,6 @@ from npuslim.utils.factory import CompressorFactory
 from npuslim.utils.config_parser import GlobalConfig
 from npuslim.compressor.quant.helper import INTDynQDQModule
 from npuslim.compressor.quant.core.hook import PTQObserverHook
-from npuslim.compressor.quant.core.quant_algo_info import QuantConfigManager
 from npuslim.utils.utils import find_parent_layer_and_sub_name
 
 

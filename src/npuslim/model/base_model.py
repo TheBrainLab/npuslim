@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
 import torch
+import json
 from dataclasses import asdict
 from loguru import logger
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 
-from npuslim.utils.config_parser import ModelConfig, GlobalConfig
+from npuslim.utils.config_parser import ModelConfig
 
 
 class BaseLLMModel(ABC):
@@ -43,6 +44,40 @@ class BaseLLMModel(ABC):
             f"Model, tokenizer, and config loaded successfully. "
             f"Model architecture: {self.config.architectures[0] if hasattr(self.config, 'architectures') and self.config.architectures else 'N/A'}"
         )
+    
+    def save_pretrained(self, save_path):
+        def save_quant_config(save_path):
+            from pathlib import Path
+            from npuslim.compressor.quant.core.quant_algo_info import QuantConfigManager
+            quant_info = QuantConfigManager.get_config()
+
+            quant_algo = quant_info.quant_algo
+            quant_layer_names = quant_info.observer_layers_names
+            quant_model_description = quant_info.quant_model_description
+            save_path = Path(save_path) / "quant_model_description.json"
+
+            for key in self.model.state_dict().keys():
+                matched_layer = None
+                for q_layer in quant_layer_names:
+                    if key.startswith(q_layer + "."):
+                        matched_layer = q_layer
+                        break
+                if matched_layer:
+                    quant_model_description[key] = quant_algo
+                else:
+                    quant_model_description[key] = "FLOAT"
+
+            with open(save_path, "w", encoding="utf-8") as f:
+                json.dump(quant_model_description, f, indent=4, ensure_ascii=False)
+
+        if hasattr(self, "quantized") and self.quantized:
+            save_quant_config(save_path)
+        
+        self.model.save_pretrained(save_path)
+        components = ["model weights"]
+        self.tokenizer.save_pretrained(save_path)
+        components.append("tokenizer")
+        logger.info(f"Successfully saved {', '.join(components)} to: {save_path}")
 
     @property
     def hidden_size(self):
