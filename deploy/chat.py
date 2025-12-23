@@ -1,13 +1,13 @@
 from openai import OpenAI
 
 openai_api_key = "EMPTY"
-openai_api_base = "http://localhost:8000/v1"
+openai_api_base = "http://localhost:8080/v1"
 
 client = OpenAI(
     api_key=openai_api_key,
     base_url=openai_api_base,
 )
-model = "qwen3-0_6b_int8_dyn"
+model = "outputs/qwen3-0_6b_int8_dyn"
 
 chat_response = client.chat.completions.create(
     model=model,

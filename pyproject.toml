@@ -7,7 +7,15 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 
-dependencies = ["torch", "torch-npu", "rich", "accelerate", "transformers"]
+dependencies = [
+    "torch==2.7.1",
+    "torch-npu==2.7.1",
+    # "vllm==0.11.0",
+    # "vllm_ascend>0.11.0rc1",
+    "rich",
+    "accelerate",
+    "transformers",
+]
 
 [project.scripts]
 npuslim = "npuslim.cli.__main__:main"
