@@ -12,24 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, List
+from typing import Dict, List, TYPE_CHECKING
 
 import torch
 from torch.utils.data import Dataset
-from transformers import ProcessorMixin
-# from ..utils.config_parser import DatasetConfig
-from npuslim.utils.config_parser import DatasetConfig
+
+if TYPE_CHECKING:
+    from transformers import ProcessorMixin
+    from npuslim.utils.config_parser import DatasetConfig
 
 
 class BaseDataset(Dataset):
     """Base class for all datasets"""
 
     def __init__(
-        self,
-        *args,
-        processor: "ProcessorMixin",
-        config: "DatasetConfig",
-        **kwargs
+        self, *args, processor: "ProcessorMixin", config: "DatasetConfig", **kwargs
     ):
         self.processor = processor
         self.config = config

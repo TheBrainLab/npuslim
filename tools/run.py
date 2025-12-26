@@ -1,11 +1,9 @@
-from npuslim.engine.ptq_engine import PTQEngine
-
+from npuslim import SlimEngine
 
 def main():
-    engine = PTQEngine()
+    engine = SlimEngine()
     engine.run()
     engine.save()
-
 
 if __name__ == "__main__":
     main()

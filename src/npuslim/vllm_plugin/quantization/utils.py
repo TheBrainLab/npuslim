@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, TYPE_CHECKING
 import importlib
 
 
@@ -35,6 +35,10 @@ class LazyMethodMap(dict):
 
     def __iter__(self):
         return iter(self._config)
+
+if TYPE_CHECKING:
+    from vllm_ascend.quantization.w8a8_dynamic import AscendW8A8DynamicLinearMethod
+    from vllm_ascend.quantization.w8a8_dynamic import AscendW8A8DynamicFusedMoEMethod
 
 
 NPUSLIM_QUANTIZATION_METHOD_MAP = LazyMethodMap(

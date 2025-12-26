@@ -1,12 +1,11 @@
-from typing import Type, Optional, Dict
+from typing import Type, Optional, Dict, TYPE_CHECKING
 from abc import ABC, abstractmethod
 import pkgutil
 import importlib
 from pathlib import Path
 
-# from dataclasses import is_dataclass, asdict
-from .config_parser import ModelConfig, CalibDatasetConfig, CompressorConfig
-
+if TYPE_CHECKING:
+    from .config_parser import ModelConfig, CalibDatasetConfig, CompressorConfig
 
 
 class BaseFactory(ABC):

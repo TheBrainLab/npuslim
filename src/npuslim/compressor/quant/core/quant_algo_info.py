@@ -34,7 +34,7 @@ class QuantAlgoInfo:
         default=None, metadata={"help": "Bit-width for weight quantization."}
     )
     c_quant_bits: Optional[int] = field(
-        default=None, metadata={"help": "Bit-width for Conv layer quantization."}
+        default=None, metadata={"help": "Bit-width for kv Cache layer quantization."}
     )
     w_group_size: int = field(
         default=-1,
@@ -55,7 +55,7 @@ class QuantAlgoInfo:
         },
     )
     c_quant_method: Optional[str] = field(
-        default=None, metadata={"help": "Method/granularity for Conv quantization."}
+        default=None, metadata={"help": "Method/granularity for kv Cache quantization."}
     )
 
     # --- Observers ---
@@ -101,11 +101,17 @@ class QuantAlgoInfo:
             "help": "List of full names of all modules where a statistics observer has been registered for calibration."
         },
     )
+    quantized_layers_names: List[str] = field(
+        default_factory=list,
+        metadata={
+            "help": "List of full names of modules that have been successfully converted to quantized format (e.g., weights transformed or operators replaced)."
+        },
+    )
     quant_model_description: Dict[str, str] = field(
         default_factory=dict,
         metadata={
             "help": "Detailed description of the quantized model, including version, "
-                    "global quant type, and per-layer quantization status."
+            "global quant type, and per-layer quantization status."
         },
     )
 
@@ -119,7 +125,7 @@ class QuantAlgoInfo:
 
 
 class QuantConfigManager:
-    _config_instance: Optional[QuantAlgoInfo] = None
+    _config_instance: Optional["QuantAlgoInfo"] = None
 
     @classmethod
     def set_config(cls, config: "QuantAlgoInfo") -> None:
@@ -137,12 +143,12 @@ class QuantConfigManager:
                 "Please call QuantConfigManager.initialize() first."
             )
         return cls._config_instance
-    
+
     @classmethod
     def initialize(
         cls,
         quant_algo: str,
-        quant_config: Dict[str, Any], 
+        quant_config: Dict[str, Any],
         ignore_layers: List[str] = ["lm_head"],
         algo_params: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
@@ -165,7 +171,7 @@ class QuantConfigManager:
             error_msg = "[Error] 'weight' must be provided in quant_config."
             logger.error(error_msg)
             raise ValueError(error_msg)
-        
+
         weight_observer = WEIGHT_OBSERVERS_CLASS.get(weight_quant_method)
         act_observer = ACT_OBSERVERS_CLASS.get(act_quant_method)
         # TODO: add kv cache observer and smooth observer
@@ -174,6 +180,7 @@ class QuantConfigManager:
 
         a_bits = quant_config.get("a_bits", None)
         w_bits = quant_config.get("w_bits", None)
+        c_bits = quant_config.get("c_bits", None)
         group_size = quant_config.get("group_size", -1)
 
         # add quant_model_description
@@ -183,13 +190,13 @@ class QuantConfigManager:
             group_size=group_size,
         )
 
-        # TODO: add Conv quant config
+        # TODO: add kv Cache quant config
         config_data: Dict[str, Any] = {
             "quant_algo": quant_algo,
             # 位宽
             "a_quant_bits": a_bits,
             "w_quant_bits": w_bits,
-            "c_quant_bits": None,
+            "c_quant_bits": c_bits,
             # 粒度/方法
             "w_group_size": group_size,
             "a_quant_method": act_quant_method,

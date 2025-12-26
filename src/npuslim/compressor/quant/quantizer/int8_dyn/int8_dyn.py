@@ -6,9 +6,8 @@ from safetensors.torch import load_file
 
 from ..base_ptquantizer import BasePTQuantizer
 from npuslim.utils.factory import CompressorFactory
-from npuslim.utils.config_parser import GlobalConfig
-from npuslim.compressor.quant.helper import INTDynQDQModule
-from npuslim.compressor.quant.core.hook import PTQObserverHook
+from npuslim.compressor.quant.modules import INTDynQDQModule
+from npuslim.compressor.quant.core.ptq_hook import PTQObserverHook
 from npuslim.utils.utils import find_parent_layer_and_sub_name
 
 
@@ -39,7 +38,9 @@ class INT8Dynamic(BasePTQuantizer):
         self.quant_info.observer_layers_names = observer_layers_names
         self.quant_info.kv_names = kv_names
 
-        self.ptq_hook = PTQObserverHook(self.slim_model, self.quant_info)
+        self.ptq_hook = PTQObserverHook(
+            quant_model=self.slim_model, quant_algo_info=self.quant_info
+        )
         self.ptq_hook.apply_hook()
 
     def calibrate(self, dataloader): ...
@@ -48,14 +49,15 @@ class INT8Dynamic(BasePTQuantizer):
         logger.info(
             ">>> [Quantization] Starting INT8 dynamic quantization conversion..."
         )
-        for name, sub_layer in self.ptq_hook.quant_layers_dict.items():
+        for name, sub_layer in self.quant_info.observer_layers_names.items():
             if (
                 getattr(self.ptq_hook.observer_dict[sub_layer], "weight_observer")
                 is not None
             ):
                 if sub_layer.weight.device.type == "meta":
-                    meta_cfg = GlobalConfig.get_config().meta
-                    absolute_model_path = Path(meta_cfg.absolute_model_path)
+                    absolute_model_path = Path(
+                        self.meta_cfg.meta_cfg.absolute_model_path
+                    )
                     model_index_json = (
                         absolute_model_path / "model.safetensors.index.json"
                     )
@@ -93,12 +95,12 @@ class INT8Dynamic(BasePTQuantizer):
                 )
                 self.slim_model.weight_scales_dict[name] = weight_scales
 
-        self.ptq_hook.remove_hook()
+        self.ptq_hook.remove_hooks()
         torch.cuda.empty_cache()
         self.ptq_hook.post_process()
 
         quant_convert_module = self.slim_model.get_quant_convert_module()
-        for name, sub_layer in self.ptq_hook.quant_layers_dict.items():
+        for name, sub_layer in self.quant_info.observer_layers_names.items():
             parent_layer, sub_name = find_parent_layer_and_sub_name(
                 quant_convert_module, name
             )
@@ -106,9 +108,10 @@ class INT8Dynamic(BasePTQuantizer):
             if qdq_module is not sub_layer:
                 setattr(parent_layer, sub_name, qdq_module)
 
+        for key in self.slim_model.model.state_dict().keys():
+            self.quant_info.quantized_layers_names.append(key)
+
         self.slim_model.quantized = True
-        logger.info(
+        logger.success(
             "<<< [Quantization] INT8 dynamic quantization conversion completed successfully."
         )
-
-    # def save(self): ...

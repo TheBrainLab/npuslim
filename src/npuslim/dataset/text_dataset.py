@@ -18,8 +18,6 @@ from typing import Dict, List
 import pyarrow.parquet as pq
 import torch
 
-# from .base_dataset import BaseDataset
-# from ..utils.factory import DatasetFactory
 from .base_dataset import BaseDataset
 from npuslim.utils.factory import DatasetFactory
 

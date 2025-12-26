@@ -1,6 +1,7 @@
 from typing import Optional
 import argparse
 import yaml
+import time
 from pathlib import Path
 from loguru import logger
 from easydict import EasyDict
@@ -27,21 +28,6 @@ class MetaConfig:
     low_memory: bool = field(
         default=False, metadata={"help": "Enable low memory mode."}
     )
-
-    def __post_init__(self):
-        output_dir = Path(self.save_path)
-        if not output_dir.exists():
-            try:
-                output_dir.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Successfully created save directory: {output_dir}")
-            except OSError as e:
-                logger.error(
-                    f"FATAL: Failed to create required save directory '{output_dir}'. "
-                    f"Please check file system permissions and path validity. Error: {e}"
-                )
-                raise
-        else:
-            logger.debug(f"Save directory already exists: {output_dir}")
 
 
 # ================================= Model Config ================================= #
@@ -196,13 +182,6 @@ class PTQConfig(CompressorConfig):
         }
     )
     quant_config: EasyDict = field(
-        default_factory=lambda: EasyDict(
-            {
-                "quant_method": EasyDict(
-                    {"weight": "per-tensor", "activation": "per-tensor"}
-                )
-            }
-        ),
         metadata={
             "help": "Method-specific quantization parameters (e.g., w_bits, weight, activation)."
         },
@@ -212,6 +191,45 @@ class PTQConfig(CompressorConfig):
         metadata={
             "help": "List of module names to skip during quantization (e.g., 'lm_head')."
         },
+    )
+
+
+@dataclass(frozen=True)
+class SparseConfig(CompressorConfig):
+    """
+    Configuration for model sparsity (pruning).
+    """
+
+    type: str = field(
+        metadata={
+            "help": (
+                "The sparsity algorithm type. Supported methods include: "
+                "'SparseGPT' (Hessian-based pruning), 'Wanda' (Pruning by Weights and Activations), "
+                "and 'Logit' (Logit-based importance)."
+            )
+        }
+    )
+    sparsity_config: EasyDict = field(
+        default_factory=lambda: EasyDict(
+            {
+                "sparsity_ratio": 0.5,
+                "pattern": "2:4",
+            }
+        ),
+        metadata={
+            "help": (
+                "Method-specific sparsity parameters:\n"
+                "- sparsity_ratio: The target percentage of weights to be removed (e.g., 0.5 for 50%).\n"
+                "- pattern: The sparsity structure. For Ascend NPU acceleration, '2:4' structured "
+                "sparsity is mandatory (2 non-zero values out of every 4 consecutive elements)."
+            )
+        }
+    )
+    ignore_layers: list[str] = field(
+        default_factory=list,
+        metadata={
+            "help": "List of module names to be skipped during the sparsity process to preserve model accuracy."
+        }
     )
 
 
@@ -226,6 +244,7 @@ class FullConfig:
     # Optional sections should be handled correctly
     calib_dataset: Optional["CalibDatasetConfig"] = field(default=None)
     ptq: Optional["PTQConfig"] = field(default=None)
+    sparse: Optional["SparseConfig"] = field(default=None)
 
 
 class SlimConfigParser:
@@ -236,6 +255,7 @@ class SlimConfigParser:
         config = SlimConfigParser.load_config(args.config)
         config = SlimConfigParser.parser_config(args, config)
         SlimConfigParser.check_valid(config)
+        SlimConfigParser.setup_logger(config.meta.save_path)
         SlimConfigParser.print_config(config, f"Configuration of {args.config}")
         return config
 
@@ -294,6 +314,18 @@ class SlimConfigParser:
         assert (
             "model" in config and config.model
         ), "Missing 'model' configuration in YAML."
+    
+    @staticmethod
+    def setup_logger(save_path):
+        save_path = Path(save_path)
+        save_path.mkdir(parents=True, exist_ok=True)
+
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        log_filename = f"{timestamp}.log"
+        log_file = save_path / log_filename
+        
+        logger.add(str(log_file), rotation="500 MB", encoding="utf-8", enqueue=True)
+        logger.info(f"Log will be saved to: {log_file}")
 
     @staticmethod
     def print_config(config: dict, title: str = "Configuration"):
