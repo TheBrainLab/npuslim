@@ -6,7 +6,7 @@ meta:
 # Simplified Configuration for LLM compression
 model:
   type: Qwen3
-  model_path: /home/lichangcai/.cache/modelscope/hub/models/Qwen/Qwen3-0.6B
+  model_path: /home/lichangcai/.cache/modelscope/hub/models/Qwen/Qwen3-32B
   model_kwargs:
     trust_remote_code: true
     low_cpu_mem_usage: true
@@ -28,7 +28,7 @@ calib_dataset:
     shuffle: true
     num_workers: 0
 
-# Sparse
+# Post-Training Quantization
 sparse:
   type: SparseGPT
   sparse_config:
@@ -36,4 +36,3 @@ sparse:
     pattern: "2:4"
   ignore_layers: 
     - 'lm_head'
-

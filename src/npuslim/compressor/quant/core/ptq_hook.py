@@ -13,16 +13,18 @@
 # limitations under the License.
 # Modified by weiyangdaren.
 
-from typing import TYPE_CHECKING, Dict, Any
-from ...helper.hook import HooksMixin
 from ..observers import PTQObserver, ParentObserver
 
 
-class PTQObserverHook(HooksMixin):
+class PTQObserverHook:
+    def __init__(self, model, quant_info):
+        self.quant_model = model
+        self.quant_algo_info = quant_info
+        self._forward_hook_list = []
 
-    quant_model: Any
-    quant_algo_info: Any
-    observer_dict: Dict[Any, Any] = {}
+        # {layer: observer}
+        self.observer_dict = {}
+        self.kv_names = []
 
     def apply_hook(self):
         observer_layers_names = self.quant_algo_info.observer_layers_names
@@ -50,18 +52,22 @@ class PTQObserverHook(HooksMixin):
                 kv_cache_observer if name in kv_names else None,
                 **extra_kwargs,
             )
+            forward_hook_handle = sub_layer.register_forward_hook(self._forward_hook)
             self.observer_dict[sub_layer] = observer
-            self.register_hook(sub_layer, self._forward_hook, hook_type="forward")
+            self._forward_hook_list.append(forward_hook_handle)
 
     def _forward_hook(self, layer, input, output):
         x = input[0].clone() if isinstance(input, tuple) else input.clone()
         y = output[0].clone() if isinstance(output, tuple) else output.clone()
-
         if hasattr(self.quant_model, "apply_layer_norm_list"):
             if layer in self.quant_model.apply_layer_norm_list:
                 x = self.quant_model.apply_layer_norm(layer, x)
-
         self.observer_dict[layer](x, y)
         return output
+
+    def remove_hook(self):
+        for hook in self._forward_hook_list:
+            hook.remove()
+        self._forward_hook_list = []
 
     def post_process(self): ...

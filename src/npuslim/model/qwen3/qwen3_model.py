@@ -11,7 +11,7 @@ class Qwen3SlimModel(BaseLLMModel):
         super().__init__(*args, **kwargs)
         self.block_name = "model.layers"
 
-    def get_observer_layers(self):
+    def get_observer_layers(self, ignore_layers: list = []):
         names = [
             "k_proj",
             "v_proj",
@@ -25,9 +25,13 @@ class Qwen3SlimModel(BaseLLMModel):
         layers_dict = find_layers(self.model, layers=self.observer_layer_classes)
         for name, module in layers_dict.items():
             if name.startswith(self.block_name) and name.split(".")[-1] in names:
-                observer_layers_dict[name] = module
+                if name not in ignore_layers:
+                    observer_layers_dict[name] = module
         
         return observer_layers_dict
+    
+    def get_layers(self):
+        return self.model.model.layers
 
     def get_parent_dict(self, observer_layers_dict):
         parent_mapping = {r"experts\.\d+": "experts"}
@@ -40,4 +44,4 @@ class Qwen3SlimModel(BaseLLMModel):
                 parent_dict[layer_name] = parent_name
         return parent_dict
 
-    def get_save_func(self): ...
+    # def get_save_func(self): ...

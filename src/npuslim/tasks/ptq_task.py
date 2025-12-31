@@ -22,7 +22,6 @@ class PTQTask(BaseTask):
             config=self.cfg, 
             slim_model=self.model
         )
-        self.model.init_ptq()
         if hasattr(self.compressor, "prepare"):
             self.compressor.prepare()
 

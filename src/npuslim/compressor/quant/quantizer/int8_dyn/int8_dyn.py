@@ -18,8 +18,8 @@ class INT8Dynamic(BasePTQuantizer):
 
     def get_qdq_module(self, sub_layer, name):
         weight_scale = None
-        if name in self.slim_model.weight_scales_dict:
-            weight_scale = self.slim_model.weight_scales_dict[name]
+        if name in self.weight_scales_dict:
+            weight_scale = self.weight_scales_dict[name]
 
         q_linear = INTDynQDQModule(
             w_bits=8,
@@ -30,7 +30,7 @@ class INT8Dynamic(BasePTQuantizer):
         return q_linear
 
     def prepare(self):
-        observer_layers_names = self.slim_model.get_observer_layers()
+        observer_layers_names = self.slim_model.get_observer_layers(self.ignore_layers)
         kv_names = self.slim_model.get_kvcache_observer_layers_names(
             observer_layers_names.keys()
         )
@@ -39,9 +39,10 @@ class INT8Dynamic(BasePTQuantizer):
         self.quant_info.kv_names = kv_names
 
         self.ptq_hook = PTQObserverHook(
-            quant_model=self.slim_model, quant_algo_info=self.quant_info
+            model=self.slim_model, quant_info=self.quant_info
         )
         self.ptq_hook.apply_hook()
+        self.weight_scales_dict = {}
 
     def calibrate(self, dataloader): ...
 
@@ -90,13 +91,13 @@ class INT8Dynamic(BasePTQuantizer):
                             )
                             sub_layer.bias = None
 
-                weight_scales = self.slim_model.get_weight_scales(
+                weight_scales = self.get_weight_scales(
                     sub_layer, self.ptq_hook.observer_dict[sub_layer].weight_observer
                 )
-                self.slim_model.weight_scales_dict[name] = weight_scales
+                self.weight_scales_dict[name] = weight_scales
 
-        self.ptq_hook.remove_hooks()
-        torch.cuda.empty_cache()
+        self.ptq_hook.remove_hook()
+        torch.npu.empty_cache()
         self.ptq_hook.post_process()
 
         quant_convert_module = self.slim_model.get_quant_convert_module()
@@ -109,7 +110,7 @@ class INT8Dynamic(BasePTQuantizer):
                 setattr(parent_layer, sub_name, qdq_module)
 
         for key in self.slim_model.model.state_dict().keys():
-            self.quant_info.quantized_layers_names.append(key)
+            self.quant_info.processed_model_keys.append(key)
 
         self.slim_model.quantized = True
         logger.success(

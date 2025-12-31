@@ -21,6 +21,11 @@ class BasePTQuantizer(ABC):
         self.slim_model = slim_model
         self.ignore_layers = self.quant_info.ignore_layers
         self.quant_model_description = self.quant_info.quant_model_description
+    
+    def get_weight_scales(self, layer, weight_observer):
+        weight = layer.weight.clone().detach()
+        weight_observer(weight)
+        return weight_observer.scales()
 
     @abstractmethod
     def get_qdq_module(self): ...
@@ -37,11 +42,11 @@ class BasePTQuantizer(ABC):
     def save(self, save_path):
         quant_algo = self.quant_info.quant_algo
         observer_layers_names = self.quant_info.observer_layers_names
-        quantized_layers_names = self.quant_info.quantized_layers_names
+        processed_model_keys = self.quant_info.processed_model_keys
         quant_model_description = self.quant_info.quant_model_description
         save_path = save_path / "quant_model_description.json"
 
-        for key in quantized_layers_names:
+        for key in processed_model_keys:
             matched_layer = None
             for q_layer in observer_layers_names:
                 if key.startswith(q_layer + "."):

@@ -101,7 +101,7 @@ class QuantAlgoInfo:
             "help": "List of full names of all modules where a statistics observer has been registered for calibration."
         },
     )
-    quantized_layers_names: List[str] = field(
+    processed_model_keys: List[str] = field(
         default_factory=list,
         metadata={
             "help": "List of full names of modules that have been successfully converted to quantized format (e.g., weights transformed or operators replaced)."

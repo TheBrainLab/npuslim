@@ -57,10 +57,8 @@ class AbsmaxPertensorObserver(BaseObserver):
 
     def _cal_min_max(self, inputs):
         abs_max_val = torch.max(torch.abs(inputs))
-        # abs_max_val = torch.maximum(abs_max_val, self._max)
         if abs_max_val.data < self._max.data:
             abs_max_val = self._max
-        # torch.cuda.empty_cache()
         return 0, abs_max_val.to(inputs.device)
 
     def _update_min_max(self, min, max):
