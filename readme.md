@@ -12,7 +12,7 @@ pip install -e . -v
 检查配置文件`config/qwen3-0_6b_int8_dyn.yaml`中的`model_path`, 修改为本地自己的模型路径。
 执行：
 ```bash
-python tools/run_quant.py -c config/qwen3-0_6b_int8_dyn.yaml
+python tools/run.py -c config/quant/qwen3-0_6b_int8_dyn.yaml
 ```
 
 ## vLLM部署
