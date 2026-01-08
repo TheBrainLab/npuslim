@@ -8,11 +8,15 @@ requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 
 dependencies = [
-    "torch==2.7.1",
-    "torch-npu==2.7.1",
+    "torch==2.8.0",
+    # "torch-npu==2.7.1",
     # "vllm==0.11.0",
     # "vllm_ascend>0.11.0rc1",
     "rich",
+    "loguru",
+    "easydict",
+    "dacite",
+    "datasets",
     "accelerate",
     "transformers",
 ]

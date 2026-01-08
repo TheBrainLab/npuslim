@@ -209,13 +209,7 @@ class SparseConfig(CompressorConfig):
             )
         }
     )
-    sparsity_config: EasyDict = field(
-        default_factory=lambda: EasyDict(
-            {
-                "sparsity_ratio": 0.5,
-                "pattern": "2:4",
-            }
-        ),
+    sparse_config: EasyDict = field(
         metadata={
             "help": (
                 "Method-specific sparsity parameters:\n"

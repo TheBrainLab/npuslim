@@ -15,7 +15,7 @@ class SparseTask(BaseTask):
         logger.info("Initializing Sparse Task components...")
         SparseConfigManager.initialize(
             sparse_algo=self.cfg.type,
-            sparse_config=self.cfg.sparsity_config,
+            sparse_config=self.cfg.sparse_config,
             ignore_layers=ignore_layers,
         )
         self.sparser = CompressorFactory.create(config=self.cfg, slim_model=self.model)

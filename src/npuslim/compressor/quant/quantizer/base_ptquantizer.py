@@ -41,14 +41,13 @@ class BasePTQuantizer(ABC):
 
     def save(self, save_path):
         quant_algo = self.quant_info.quant_algo
-        observer_layers_names = self.quant_info.observer_layers_names
-        processed_model_keys = self.quant_info.processed_model_keys
+        target_quant_layers = self.quant_info.target_quant_layers
         quant_model_description = self.quant_info.quant_model_description
         save_path = save_path / "quant_model_description.json"
 
-        for key in processed_model_keys:
+        for key in self.slim_model.model.state_dict().keys():
             matched_layer = None
-            for q_layer in observer_layers_names:
+            for q_layer in target_quant_layers:
                 if key.startswith(q_layer + "."):
                     matched_layer = q_layer
                     break

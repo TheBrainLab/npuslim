@@ -1,6 +1,9 @@
+from loguru import logger
 import torch
 import math
 from torch import nn
+import transformers
+from npuslim.utils.backend import bh
 
 
 class BaseHessianModule:
@@ -31,22 +34,35 @@ class BaseHessianModule:
         inp = math.sqrt(2 / self.nsamples) * inp
         self.H += inp.matmul(inp.t())
     
-    def _prepare_hinv(self, percdamp):
-        H = self.H
-        del self.H
-
+    def _prepare_hinv(self, H, percdamp):
         dead = torch.diag(H) == 0
-        H[dead, dead] = 1
+        H_proc = H.clone()
+        H_proc[dead, dead] = 1
         
-        damp = percdamp * torch.mean(torch.diag(H))
-        diag = torch.arange(self.columns, device=self.dev)
-        H[diag, diag] += damp
-        
-        # TODO: not supported in NPU
-        H = torch.linalg.cholesky(H)
-        H = torch.cholesky_inverse(H)
-        H = torch.linalg.cholesky(H).mH 
-        return H, dead
+        while percdamp < 1.0:
+            try:
+                damp = percdamp * torch.mean(torch.diag(H_proc))
+                diag = torch.arange(H_proc.shape[0], device=self.dev)
+                H_proc[diag, diag] += damp
+                H_inv = torch.linalg.cholesky(H_proc)
+                H_inv = torch.cholesky_inverse(H_inv)
+                H_inv = torch.linalg.cholesky(H_inv, upper=True)
+                return H_inv, dead
+            except torch._C._LinAlgError:
+                percdamp += 0.01
+                logger.warning(f"Cholesky failed, increasing percdamp to {percdamp:.4f}")
+        raise RuntimeError("Cholesky failed.")
+    
+    def write_back(self, W):
+        if isinstance(self.layer, transformers.Conv1D):
+            W = W.t()
+        self.layer.weight.data.copy_(
+            W.reshape(self.layer.weight.shape).to(self.layer.weight.dtype)
+        )
+
+    def free(self):
+        self.H = None
+        bh.empty_cache()
 
     def faster_compress_common(self, blocksize, percdamp, compress_op):
         """
@@ -77,7 +93,3 @@ class BaseHessianModule:
             W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
 
         return W, Losses
-
-    def free(self):
-        self.H = None
-        torch.npu.empty_cache()

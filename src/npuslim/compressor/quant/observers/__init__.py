@@ -16,3 +16,14 @@ __all__ = [
     "AbsMaxTokenWiseActObserver",
     "AbsmaxPerchannelObserver",
 ]
+
+
+ACT_OBSERVERS_CLASS = {
+    # "per-tensor": AbsmaxPertensorObserver,
+    "per-channel": AbsmaxPerchannelObserver,
+}
+WEIGHT_OBSERVERS_CLASS = {
+    # "per-tensor": AbsmaxPertensorObserver,
+    "per-channel": AbsMaxChannelWiseWeightObserver,
+    # "per-group": AbsMaxGroupWiseWeightObserver,
+}

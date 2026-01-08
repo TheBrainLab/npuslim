@@ -6,9 +6,11 @@ from safetensors.torch import load_file
 
 from ..base_ptquantizer import BasePTQuantizer
 from npuslim.utils.factory import CompressorFactory
+from npuslim.utils.utils import find_parent_layer_and_sub_name
+from npuslim.utils.backend import bh
 from npuslim.compressor.quant.modules import INTDynQDQModule
 from npuslim.compressor.quant.core.ptq_hook import PTQObserverHook
-from npuslim.utils.utils import find_parent_layer_and_sub_name
+from npuslim.compressor.quant.observers import WEIGHT_OBSERVERS_CLASS
 
 
 @CompressorFactory.register()
@@ -30,16 +32,22 @@ class INT8Dynamic(BasePTQuantizer):
         return q_linear
 
     def prepare(self):
-        observer_layers_names = self.slim_model.get_observer_layers(self.ignore_layers)
-        kv_names = self.slim_model.get_kvcache_observer_layers_names(
-            observer_layers_names.keys()
-        )
+        # add weight observer
+        w_quant_method = self.quant_info.w_quant_method
+        weight_observer = WEIGHT_OBSERVERS_CLASS.get(w_quant_method)
+        self.quant_info.weight_observer = weight_observer
 
-        self.quant_info.observer_layers_names = observer_layers_names
+        # get observer layers names and kv names
+        self.observer_layers = self.slim_model.get_observer_layers(self.ignore_layers)
+        kv_names = self.slim_model.get_kvcache_observer_layers_names(
+            self.observer_layers.keys()
+        )
+        self.quant_info.target_quant_layers = list(self.observer_layers.keys())
         self.quant_info.kv_names = kv_names
 
+        # apply ptq hook
         self.ptq_hook = PTQObserverHook(
-            model=self.slim_model, quant_info=self.quant_info
+            model=self.slim_model, observer_layers=self.observer_layers
         )
         self.ptq_hook.apply_hook()
         self.weight_scales_dict = {}
@@ -50,7 +58,7 @@ class INT8Dynamic(BasePTQuantizer):
         logger.info(
             ">>> [Quantization] Starting INT8 dynamic quantization conversion..."
         )
-        for name, sub_layer in self.quant_info.observer_layers_names.items():
+        for name, sub_layer in self.observer_layers.items():
             if (
                 getattr(self.ptq_hook.observer_dict[sub_layer], "weight_observer")
                 is not None
@@ -97,20 +105,17 @@ class INT8Dynamic(BasePTQuantizer):
                 self.weight_scales_dict[name] = weight_scales
 
         self.ptq_hook.remove_hook()
-        torch.npu.empty_cache()
+        bh.empty_cache()
         self.ptq_hook.post_process()
 
         quant_convert_module = self.slim_model.get_quant_convert_module()
-        for name, sub_layer in self.quant_info.observer_layers_names.items():
+        for name, sub_layer in self.observer_layers.items():
             parent_layer, sub_name = find_parent_layer_and_sub_name(
                 quant_convert_module, name
             )
             qdq_module = self.get_qdq_module(sub_layer, name)
             if qdq_module is not sub_layer:
                 setattr(parent_layer, sub_name, qdq_module)
-
-        for key in self.slim_model.model.state_dict().keys():
-            self.quant_info.processed_model_keys.append(key)
 
         self.slim_model.quantized = True
         logger.success(

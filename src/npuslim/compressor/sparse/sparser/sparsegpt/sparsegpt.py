@@ -16,8 +16,14 @@ class SparseGPT(BaseSparser):
         self.scheduler = LayerWiseScheduler(self.slim_model, dataloader)
 
         def sparse_worker(layer_idx, handlers, subset, **kwargs):
-            for name, handler in handlers.items():
+            for name in subset.keys():
+                if name not in handlers:
+                    logger.info(f"Layer {name} is skipped (not in handlers).")
+                    continue
+                    
+                handler = handlers[name]
                 handler.fasterprune(
+                    layer_name=name,
                     sparsity=kwargs.get("sparsity", 0),
                     prunen=kwargs.get("prunen", 2),
                     prunem=kwargs.get("prunem", 4),
@@ -35,8 +41,8 @@ class SparseGPT(BaseSparser):
             sparsity=info.sparsity,
             prunen=info.prunen,
             prunem=info.prunem,
-            percdamp=info.percdamp,
-            blocksize=info.blocksize,
+            percdamp=info.algo_specific_params.get("percdamp", 0.01),
+            blocksize=info.algo_specific_params.get("blocksize", 128),
         )
 
     def apply_masks(self): ...

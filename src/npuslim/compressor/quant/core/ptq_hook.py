@@ -14,12 +14,14 @@
 # Modified by weiyangdaren.
 
 from ..observers import PTQObserver, ParentObserver
+from .quant_algo_info import QuantConfigManager
 
 
 class PTQObserverHook:
-    def __init__(self, model, quant_info):
+    def __init__(self, model, observer_layers):
         self.quant_model = model
-        self.quant_algo_info = quant_info
+        self.observer_layers = observer_layers
+        self.quant_info = QuantConfigManager.get_config()
         self._forward_hook_list = []
 
         # {layer: observer}
@@ -27,19 +29,18 @@ class PTQObserverHook:
         self.kv_names = []
 
     def apply_hook(self):
-        observer_layers_names = self.quant_algo_info.observer_layers_names
-        kv_names = self.quant_algo_info.kv_names
+        kv_names = self.quant_info.kv_names
 
-        act_observer = self.quant_algo_info.act_observer
-        weight_observer = self.quant_algo_info.weight_observer
-        kv_cache_observer = self.quant_algo_info.kv_cache_observer
+        act_observer = self.quant_info.act_observer
+        weight_observer = self.quant_info.weight_observer
+        kv_cache_observer = self.quant_info.kv_cache_observer
 
-        quant_parent_dict = self.quant_model.get_parent_dict(observer_layers_names)
+        quant_parent_dict = self.quant_model.get_parent_dict(self.observer_layers)
         parent_observers = {
             v: ParentObserver() for v in set(quant_parent_dict.values())
         }
 
-        for name, sub_layer in observer_layers_names.items():
+        for name, sub_layer in self.observer_layers.items():
             extra_kwargs = (
                 {"parent_observer": parent_observers[quant_parent_dict[name]]}
                 if name in quant_parent_dict

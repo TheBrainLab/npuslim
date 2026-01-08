@@ -24,24 +24,10 @@ class SparseAlgoInfo:
         metadata={"help": "M for N:M structured pruning (the total window size)."}
     )
     
-    # --- SparseGPT / Hessian Specific ---
-    percdamp: float = field(
-        default=0.01,
-        metadata={"help": "Percent of the average Hessian diagonal to use for dampening."}
-    )
-    blocksize: int = field(
-        default=128,
-        metadata={"help": "Blocksize to use for adaptive mask selection / Hessian calculation."}
-    )
-    
     # --- 模型 Layers / 模块信息 ---
     ignore_layers: List[str] = field(
         default_factory=list,
         metadata={"help": "List of module names to skip during sparsification."}
-    )
-    processed_model_keys: List[str] = field(
-        default_factory=list,
-        metadata={"help": "Modules that have been successfully sparsified."}
     )
     quant_model_description: Dict[str, str] = field(
         default_factory=dict,
@@ -76,14 +62,14 @@ class SparseConfigManager:
         sparse_algo: str,
         sparse_config: Dict[str, Any],
         ignore_layers: List[str] = ["lm_head"],
-        algo_params: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> "SparseAlgoInfo":
-        
         sparsity = sparse_config.get("sparsity", 0.0)
         pattern = sparse_config.get("pattern", "2:4")
+        group_size = sparse_config.get("group_size", -1)
         prunen = int(pattern.split(":")[0])
         prunem = int(pattern.split(":")[1])
+        algo_params = sparse_config.get("algo_params", {})
         
         sparse_type = "unstructured"
         if prunem > 0:
@@ -92,12 +78,12 @@ class SparseConfigManager:
             if prunen > 0:
                 sparsity = float(prunen) / prunem
 
-        percdamp = sparse_config.get("percdamp", 0.01)
-        blocksize = sparse_config.get("blocksize", 128)
+        # percdamp = sparse_config.get("percdamp", 0.01)
+        # blocksize = sparse_config.get("blocksize", 128)
         quant_model_description = dict(
             version="1.0.0",
             model_quant_type=sparse_algo,
-            group_size=blocksize,
+            group_size=group_size,
         )
 
         config_data: Dict[str, Any] = {
@@ -105,11 +91,11 @@ class SparseConfigManager:
             "sparsity": sparsity,
             "prunen": prunen,
             "prunem": prunem,
-            "percdamp": percdamp,
-            "blocksize": blocksize,
+            # "percdamp": percdamp,
+            # "blocksize": blocksize,
             "ignore_layers": ignore_layers,
             "quant_model_description": quant_model_description,
-            "algo_specific_params": algo_params if algo_params is not None else {},
+            "algo_specific_params": algo_params,
         }
 
         # 合并额外的参数并过滤无效字段
