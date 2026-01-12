@@ -1,74 +1,77 @@
-from loguru import logger
 import torch
-import transformers
 from npuslim.compressor.helper.base_hessian_module import BaseHessianModule
 
 
 class SparseGPTModule(BaseHessianModule):
+    def __init__(self, layer, sparsity=0, prunen=0, prunem=0):
+        super().__init__(layer)
+        self.sparsity = sparsity
+        self.prunen = prunen
+        self.prunem = prunem
+        
+        # 对应源码中的 mask1 和当前块的局部计数
+        self.mask1 = None
+        self._local_i = 0
 
-    def fasterprune(self, sparsity, prunen=0, prunem=0, blocksize=128, percdamp=0.01):
-        is_conv1d = isinstance(self.layer, transformers.Conv1D)
+    def on_block_start(self, W1, Hinv1, block_idxs):
+        """
+        对应源码中 block 循环开始处对 mask1 的初始化逻辑
+        """
+        self._local_i = 0
+        
+        if self.prunen == 0:
+            # --- 源码逻辑: 非结构化剪枝 ---
+            # tmp = W1 ** 2 / (torch.diag(Hinv1).reshape((1, -1))) ** 2
+            tmp = W1 ** 2 / (torch.diag(Hinv1).reshape((1, -1))) ** 2
+            # thresh = torch.sort(tmp.flatten())[0][int(tmp.numel() * sparsity)]
+            thresh = torch.sort(tmp.flatten())[0][int(tmp.numel() * self.sparsity)]
+            # mask1 = tmp <= thresh
+            self.mask1 = tmp <= thresh
+        else:
+            # --- 源码逻辑: N:M 结构化剪枝初始化 ---
+            # mask1 = torch.zeros_like(W1) == 1
+            self.mask1 = torch.zeros_like(W1) == 1
+        
+        # 将 W1 和 Hinv1 暂存，供 N:M 在 transform_column 中使用
+        self._current_W1 = W1
+        self._current_Hinv1 = Hinv1
 
-        def prune_block_op(W1, Hinv1, i1, i2):
-            count = i2 - i1
-            Q1 = torch.zeros_like(W1)
-            Err1 = torch.zeros_like(W1)
-            Losses1 = torch.zeros_like(W1)
+    def transform_column(self, w, d, col_idx):
+        """
+        对应源码中列循环内部的逻辑
+        """
+        i = self._local_i
+        
+        # --- 源码逻辑: N:M 结构化剪枝实时计算 ---
+        if self.prunen != 0 and i % self.prunem == 0:
+            # tmp = W1[:, i:(i + prunem)] ** 2 / (torch.diag(Hinv1)[i:(i + prunem)].reshape((1, -1))) ** 2
+            # 注意：这里的 W1 会随误差传播更新，完全符合源码
+            W_slice = self._current_W1[:, i:(i + self.prunem)]
+            H_diag_slice = torch.diag(self._current_Hinv1)[i:(i + self.prunem)].reshape((1, -1))
+            tmp = W_slice ** 2 / (H_diag_slice ** 2)
+            
+            # mask1.scatter_(1, i + torch.topk(tmp, prunen, dim=1, largest=False)[1], True)
+            indices = torch.topk(tmp, self.prunen, dim=1, largest=False)[1]
+            self.mask1.scatter_(1, i + indices, True)
 
-            if prunen == 0:
-                tmp = W1**2 / (torch.diag(Hinv1).reshape((1, -1))) ** 2
-                thresh = torch.sort(tmp.flatten())[0][int(tmp.numel() * sparsity)]
-                mask1 = tmp <= thresh
-            else:
-                mask1 = torch.zeros_like(W1) == 1
+        # --- 源码逻辑: 应用 Mask ---
+        q = w.clone()
+        # q[mask1[:, i]] = 0
+        q[self.mask1[:, i]] = 0
+        
+        self._local_i += 1
+        return q
 
-            for i in range(count):
-                w = W1[:, i]
-                d = Hinv1[i, i]
-
-                if prunen != 0 and i % prunem == 0:
-                    tmp = (
-                        W1[:, i : (i + prunem)] ** 2
-                        / (torch.diag(Hinv1)[i : (i + prunem)].reshape((1, -1))) ** 2
-                    )
-                    mask1.scatter_(
-                        1, i + torch.topk(tmp, prunen, dim=1, largest=False)[1], True
-                    )
-
-                q = w.clone()
-                q[mask1[:, i]] = 0
-                Q1[:, i] = q
-
-                Losses1[:, i] = (w - q) ** 2 / d**2
-                err1 = (w - q) / d
-                W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
-                Err1[:, i] = err1
-
-            return Q1, Losses1, Err1, W1
-
-        W_final, Losses_final = self.faster_compress_common(
-            blocksize, percdamp, prune_block_op
+    def prune(self, blocksize=128, percdamp=0.01, actorder=False):
+        """
+        封装执行函数
+        """
+        # 调用基类的 OBS 核心逻辑
+        W_after = self._execute_obs_process(
+            blocksize=blocksize, 
+            percdamp=percdamp, 
+            actorder=actorder
         )
-
-        # Compute loss
-        total_loss = torch.sum(Losses_final).item()
-        with torch.no_grad():
-            W_orig = self.layer.weight.data.float()
-            if isinstance(self.layer, transformers.Conv1D):
-                W_orig = W_orig.t()
-            weight_rmse = torch.sqrt(torch.mean((W_final - W_orig) ** 2)).item()
-            relative_diff = (torch.norm(W_final - W_orig) / torch.norm(W_orig)).item()
-
-        full_name = getattr(self, "layer_name", "Unknown")
-        logger.info(
-            f"Module: {full_name: <20} | "
-            f"Hessian Error: {total_loss:.4e} | "
-            f"Weight RMSE: {weight_rmse:.4e} | "
-            f"Relative Diff: {relative_diff:.2%}"
-        )
-
-        if is_conv1d:
-            W_final = W_final.t()
-        self.layer.weight.data = W_final.reshape(self.layer.weight.shape).to(
-            self.layer.weight.data.dtype
-        )
+        # 写回权重
+        self.write_back(W_after)
+        self.free()

@@ -59,7 +59,7 @@ class PTQObserver(nn.Module, metaclass=abc.ABCMeta):
             self.weight_observer = weight_observer(
                 self.layer,
                 quant_bits=quant_algo_info.w_quant_bits,
-                group_size=quant_algo_info.w_group_size,
+                group_size=quant_algo_info.group_size,
             )
 
     def forward(self, input, output):

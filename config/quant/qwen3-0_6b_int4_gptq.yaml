@@ -6,7 +6,7 @@ meta:
 # Simplified Configuration for LLM compression
 model:
   type: Qwen3
-  model_path: Qwen/Qwen3-32B
+  model_path: /data16t/MODELSCOPE/models/Qwen/Qwen3-0.6B
   model_kwargs:
     trust_remote_code: true
     low_cpu_mem_usage: true
@@ -28,15 +28,17 @@ calib_dataset:
     shuffle: true
     num_workers: 0
 
-# Sparse
-sparse:
-  type: SparseGPT
-  sparse_config:
-    sparsity_ratio: 0.5
-    pattern: "2:4"
+# Post-Training Quantization
+ptq:
+  type: INT4GPTQ
+  quant_config:
+    w_bits: 4
+    quant_method:
+      weight: "per-group"  # per-channel/per-tensor or per-group
+      group_size: 128
     algo_params:
-      blocksize: 128
-      percdamp: 0.01
-  ignore_layers: 
+      sym: true               # Symmetric quantization
+      static_groups: true     # Use static group assignment
+      actorder: true         # Use activation order for group assignment
+  ignore_layers:                 # Skip quantization for these layers
     - 'lm_head'
-

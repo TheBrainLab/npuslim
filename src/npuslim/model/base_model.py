@@ -21,6 +21,7 @@ class BaseLLMModel(ABC):
         self.tokenizer = None
         self.config = None
         self.quantized = False
+        self.model_type = "LLM"
 
         self.pre_transformer_module_names = ["model.embed_tokens"]
         self.observer_layer_classes = [torch.nn.Linear]

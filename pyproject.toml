@@ -16,6 +16,7 @@ dependencies = [
     "loguru",
     "easydict",
     "dacite",
+    "threadpoolctl",
     "datasets",
     "accelerate",
     "transformers",

@@ -36,7 +36,7 @@ class QuantAlgoInfo:
     c_quant_bits: Optional[int] = field(
         default=None, metadata={"help": "Bit-width for kv Cache layer quantization."}
     )
-    w_group_size: int = field(
+    group_size: int = field(
         default=-1,
         metadata={
             "help": "Weight group size for group-wise quantization (-1 for per-channel)."
@@ -149,7 +149,7 @@ class QuantConfigManager:
         a_bits = quant_config.get("a_bits", None)
         w_bits = quant_config.get("w_bits", None)
         c_bits = quant_config.get("c_bits", None)
-        group_size = quant_config.get("group_size", -1)
+        group_size = quant_config.quant_method.get("group_size", -1)
 
         weight_quant_method = quant_config.quant_method.get("weight", None)
         act_quant_method = quant_config.quant_method.get("activation", None)
@@ -170,7 +170,7 @@ class QuantConfigManager:
             "w_quant_bits": w_bits,
             "c_quant_bits": c_bits,
             # 粒度/方法
-            "w_group_size": group_size,
+            "group_size": group_size,
             "a_quant_method": act_quant_method,
             "w_quant_method": weight_quant_method,
             "c_quant_method": cache_quant_method,

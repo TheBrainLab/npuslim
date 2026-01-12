@@ -71,7 +71,7 @@ class LayerWiseScheduler:
         }
 
     def get_layer_path_mapping(self, layers_list):
-        id_to_name = {id(m): name for name, m in self.model.named_modules()}
+        id_to_name = {id(m): name for name, m in self.model.model.named_modules()}
         mapping = {}
         for layer in layers_list:
             obj_id = id(layer)
@@ -81,7 +81,7 @@ class LayerWiseScheduler:
                 mapping[obj_id] = "unknown_path"
         return mapping
 
-    def run(self, layers, algo_class, process_fn, **kwargs):
+    def run(self, layers, algo_class, process_fn, ignore_layers=None, **kwargs):
         inps, layer_kwargs = collect_initial_inputs(
             self.model, layers[0], self.dataloader
         )
@@ -89,26 +89,26 @@ class LayerWiseScheduler:
         layer_kwargs = self._prepare_kwargs(layer_kwargs)
 
         path_mapping = self.get_layer_path_mapping(layers)
+        ignore_layers = ignore_layers or []
         for i, layer in enumerate(layers):
             logger.info(f"Start optimizing Layer {i+1}/{len(layers)}...")
 
             layer.to(bh.device)
             relative_subset = find_layers(layer)
-            
+
             abs_layer_prefix = path_mapping.get(id(layer))
-            ignore_list = kwargs.get("ignore_layers", [])
             handlers = {}
             full_subset = {}
 
             for n, m in relative_subset.items():
                 full_path = f"{abs_layer_prefix}.{n}"
                 full_subset[full_path] = m
-                if full_path in ignore_list:
+                if full_path in ignore_layers:
                     logger.info(f"Layer {full_path} is skipped (in ignore list).")
                     continue
 
                 handler = algo_class(m)
-                handlers[n] = handler
+                handlers[full_path] = handler
 
             if not handlers:
                 logger.warning(
@@ -118,7 +118,10 @@ class LayerWiseScheduler:
                 self._collect_statistics(layer, handlers, inps, outs, layer_kwargs)
                 process_fn(i, handlers, full_subset, **kwargs)
 
-            for j in range(self.nsamples):
+            for j in tqdm(
+                range(self.nsamples),
+                desc=f"Calibrating Layer {i+1}/{len(layers)}",
+            ):
                 outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0].detach()
 
             self._cleanup(layer, handlers)

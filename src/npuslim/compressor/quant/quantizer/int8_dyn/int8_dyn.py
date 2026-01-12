@@ -52,7 +52,7 @@ class INT8Dynamic(BasePTQuantizer):
         self.ptq_hook.apply_hook()
         self.weight_scales_dict = {}
 
-    def calibrate(self, dataloader): ...
+    def calibrate(self): ...
 
     def convert(self):
         logger.info(

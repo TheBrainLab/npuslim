@@ -11,7 +11,7 @@ class PTQTask(BaseTask):
         self.model = model
         self.cfg = config
         self.dataloader = dataloader
-        
+
         logger.info("Initializing PTQ Task components...")
         QuantConfigManager.initialize(
             quant_algo=self.cfg.type,
@@ -19,8 +19,7 @@ class PTQTask(BaseTask):
             ignore_layers=ignore_layers,
         )
         self.compressor = CompressorFactory.create(
-            config=self.cfg, 
-            slim_model=self.model
+            config=self.cfg, slim_model=self.model, dataloader=self.dataloader
         )
         if hasattr(self.compressor, "prepare"):
             self.compressor.prepare()
@@ -29,13 +28,19 @@ class PTQTask(BaseTask):
         logger.info("Executing PTQ calibration and conversion...")
         if self.dataloader is not None:
             logger.info("Running Calibration...")
-            self.compressor.calibrate(self.dataloader)
+            self.compressor.calibrate()
         else:
             logger.warning("No dataloader provided, skipping calibration.")
-            
+
         self.compressor.convert()
         logger.success("PTQ Task execution finished.")
 
-    def save(self, save_path: Path):
-        if self.compressor and hasattr(self.compressor, "save"):
-            self.compressor.save(save_path)
+    def save_model(self, save_path: Path | str):
+        if hasattr(self.compressor, "save_model"):
+            return self.compressor.save_model(save_path)
+        return False
+
+    def save_meta(self, save_path: Path | str):
+        if hasattr(self.compressor, "save_meta"):
+            return self.compressor.save_meta(save_path)
+        return False

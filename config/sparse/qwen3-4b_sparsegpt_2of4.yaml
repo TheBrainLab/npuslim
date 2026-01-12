@@ -6,7 +6,7 @@ meta:
 # Simplified Configuration for LLM compression
 model:
   type: Qwen3
-  model_path: Qwen/Qwen3-32B
+  model_path: Qwen/Qwen3-4B-Instruct-2507
   model_kwargs:
     trust_remote_code: true
     low_cpu_mem_usage: true

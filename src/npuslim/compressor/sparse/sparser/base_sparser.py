@@ -5,6 +5,7 @@ from npuslim.utils.config_parser import GlobalConfig
 
 if TYPE_CHECKING:
     from npuslim.model.base_model import BaseLLMModel
+    from torch.utils.data import DataLoader
 
 
 class BaseSparser(ABC):
@@ -12,10 +13,12 @@ class BaseSparser(ABC):
         self,
         *args,
         slim_model: "BaseLLMModel",
+        dataloader: "DataLoader" = None,
         **kwargs,
     ):
         self.meta_cfg = GlobalConfig.get_config().meta
         self.slim_model = slim_model
+        self.dataloader = dataloader
         self.sparse_info = SparseConfigManager.get_config()
         self.ignore_layers = self.sparse_info.ignore_layers
         self.quant_model_description = self.sparse_info.quant_model_description
@@ -23,7 +26,7 @@ class BaseSparser(ABC):
     def prepare(self): ...
     
     @abstractmethod
-    def compress(self, dataloader): ...
+    def compress(self): ...
 
     @abstractmethod
     def apply_masks(self): ...

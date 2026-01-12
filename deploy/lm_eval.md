@@ -7,4 +7,19 @@ lm_eval --model vllm \
     --batch_size auto \
     --num_fewshot 5 \
     --output_path /home/lichangcai/projects/llm/npuslim/outputs/eval/mmlu_results.json
+
+lm_eval --model vllm \
+    --model_args pretrained="Qwen/Qwen3-8B",tensor_parallel_size=1,gpu_memory_utilization=0.8,max_model_len=4096,trust_remote_code=True \
+    --tasks mmlu \
+    --batch_size auto \
+    --num_fewshot 5 \
+    --output_path /home/lccpc/projects/LLM/npuslim/outputs/eval/qwen3-8b/mmlu_results.json
+
+lm_eval --model hf \
+    --model_args pretrained=Qwen/Qwen3-4B-Instruct-2507 \
+    --tasks mmlu \
+    --device cuda:0 \
+    --batch_size auto \
+    --num_fewshot 5 \
+    --output_path ./mmlu_results_raw.json
 ```

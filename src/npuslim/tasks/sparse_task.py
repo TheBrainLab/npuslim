@@ -18,7 +18,9 @@ class SparseTask(BaseTask):
             sparse_config=self.cfg.sparse_config,
             ignore_layers=ignore_layers,
         )
-        self.sparser = CompressorFactory.create(config=self.cfg, slim_model=self.model)
+        self.sparser = CompressorFactory.create(
+            config=self.cfg, slim_model=self.model, dataloader=self.dataloader
+        )
         if hasattr(self.sparser, "prepare"):
             self.sparser.prepare()
 
@@ -28,8 +30,7 @@ class SparseTask(BaseTask):
         )
         if self.dataloader is not None:
             logger.info(f"Running sparsification algorithm: {self.cfg.type}...")
-            # 这里的 compress 相当于 PTQ 的 calibrate，负责计算权重的重要性并生成 Mask
-            self.sparser.compress(self.dataloader)
+            self.sparser.compress()
         else:
             logger.warning(
                 "No dataloader provided, skipping data-driven sparsification."
@@ -38,6 +39,12 @@ class SparseTask(BaseTask):
 
         logger.success("Sparse Task execution finished.")
 
-    def save(self, save_path: Path):
-        if self.sparser and hasattr(self.sparser, "save"):
-            self.sparser.save(save_path)
+    def save_model(self, save_path: Path | str):
+        if hasattr(self.sparser, "save_model"):
+            return self.sparser.save_model(save_path)
+        return False
+
+    def save_meta(self, save_path: Path | str):
+        if hasattr(self.sparser, "save_meta"):
+            return self.sparser.save_meta(save_path)
+        return False
