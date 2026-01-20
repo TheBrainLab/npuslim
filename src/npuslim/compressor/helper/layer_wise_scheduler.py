@@ -103,6 +103,7 @@ class LayerWiseScheduler:
             for n, m in relative_subset.items():
                 full_path = f"{abs_layer_prefix}.{n}"
                 full_subset[full_path] = m
+
                 if full_path in ignore_layers:
                     logger.info(f"Layer {full_path} is skipped (in ignore list).")
                     continue
@@ -118,14 +119,17 @@ class LayerWiseScheduler:
                 self._collect_statistics(layer, handlers, inps, outs, layer_kwargs)
                 process_fn(i, handlers, full_subset, **kwargs)
 
-            for j in tqdm(
-                range(self.nsamples),
-                desc=f"Calibrating Layer {i+1}/{len(layers)}",
-            ):
-                outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0].detach()
+            if i < len(layers) - 1:
+                for j in tqdm(
+                    range(self.nsamples),
+                    desc=f"Calibrating Layer {i+1}/{len(layers)}",
+                ):
+                    outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0].detach()
+                inps, outs = outs, inps
+            else:
+                logger.info("Last layer reached, skipping final forward pass.")
 
             self._cleanup(layer, handlers)
-            inps, outs = outs, inps
             logger.info(f"Layer {i+1}/{len(layers)} optimized.")
 
     def _collect_statistics(self, layer, handlers, inps, outs, layer_kwargs):

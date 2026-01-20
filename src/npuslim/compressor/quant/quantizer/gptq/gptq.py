@@ -82,7 +82,7 @@ class INT4GPTQ(BasePTQuantizer):
         with tctl.threadpool_limits(limits=1):
             pbar = tqdm(qlayers.keys(), leave=True)
             for name in pbar:
-                pbar.set_description(f"Packing {name}...", refresh=True)
+                pbar.set_description(f"Packing {name:<20.20s}")
 
                 scale, zero, g_idx = self.quantizers[name]
                 # so far can only pack layer on CPU
@@ -130,7 +130,7 @@ class INT4GPTQ(BasePTQuantizer):
             name, rest = name.split(".", 1)
             self._recurse_setattr(getattr(module, name), rest, value)
 
-    def save_model(self, save_dir: str, shard_size="5GB", safetensors=True):
+    def save_model(self, save_dir: str):
         """save quantized model and configs to local disk"""
         self.slim_model.model.cpu()
 
@@ -169,16 +169,10 @@ class INT4GPTQ(BasePTQuantizer):
         save_torch_state_dict(
             state_dict=self.slim_model.model.state_dict(),
             save_directory=save_dir,
-            max_shard_size=shard_size,
-            safe_serialization=safetensors,
+            max_shard_size="5GB",
+            safe_serialization=True,
             force_contiguous=True,
             shared_tensors_to_discard=self.slim_model.model._tied_weights_keys,
         )
         # self.slim_model.model.config.torch_dtype = "float16"
         self.slim_model.model.config.to_json_file(os.path.join(save_dir, "config.json"))
-
-        # save processor and tokenizer
-        if self.slim_model.model_type == "VLM" and self.slim_model.processor is not None:
-            self.slim_model.processor.save_pretrained(save_dir)
-        if self.slim_model.model_type in ["LLM", "VLM"]:
-            self.slim_model.tokenizer.save_pretrained(save_dir)

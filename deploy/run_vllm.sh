@@ -22,7 +22,7 @@ EOF
 }
 
 # 基础默认值
-ASCEND_RT_VISIBLE_DEVICES="0,1"
+VISIBLE_DEVICES="0,1"
 INFERENCE_TP_SIZE=2
 PIPELINE_PARALLEL_SIZE=1
 PORT=8080
@@ -40,7 +40,7 @@ while [[ $# -gt 0 ]]; do
         --model-path)
             MODEL_PATH="$2"; shift 2 ;;
         -d|--devices)
-            ASCEND_RT_VISIBLE_DEVICES="$2"; shift 2 ;;
+            VISIBLE_DEVICES="$2"; shift 2 ;;
         -t|--tensor-parallel)
             INFERENCE_TP_SIZE="$2"; shift 2 ;;
         --port)
@@ -101,7 +101,10 @@ if [ -n "$MEDIA_PATH" ]; then
 fi
 
 # 环境配置
-export ASCEND_RT_VISIBLE_DEVICES=$ASCEND_RT_VISIBLE_DEVICES
+# gpu
+export CUDA_VISIBLE_DEVICES=$VISIBLE_DEVICES
+# npu
+export ASCEND_RT_VISIBLE_DEVICES=$VISIBLE_DEVICES
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:False
 
 # 执行启动

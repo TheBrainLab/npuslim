@@ -1,5 +1,6 @@
 import re
 
+
 from ..base_model import BaseLLMModel
 from npuslim.utils.factory import ModelFactory
 from npuslim.utils.utils import find_layers
@@ -26,8 +27,7 @@ class Qwen3SlimModel(BaseLLMModel):
         for name, module in layers_dict.items():
             if name.startswith(self.block_name) and name.split(".")[-1] in names:
                 if name not in ignore_layers:
-                    observer_layers_dict[name] = module
-        
+                    observer_layers_dict[name] = module    
         return observer_layers_dict
     
     def get_layers(self):

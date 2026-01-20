@@ -1,5 +1,6 @@
 import json
 import torch
+import re
 from loguru import logger
 from pathlib import Path
 from safetensors.torch import load_file
@@ -125,3 +126,60 @@ class INT8Dynamic(BasePTQuantizer):
         logger.success(
             "<<< [Quantization] INT8 dynamic quantization conversion completed successfully."
         )
+
+    def save_model(self, save_dir: str):
+        if bh.name == "npu":
+            return
+
+        ignored_layers = list(self.quant_info.ignore_layers)
+        trtllm_config = {
+            "quantization": {
+                "quant_algo": "INT8",
+                "exclude_modules": ignored_layers,
+                "kv_cache_quant_algo": None,
+            }
+        }
+        hf_quant_path = Path(save_dir) / "hf_quant_config.json"
+        with open(hf_quant_path, "w") as f:
+            json.dump(trtllm_config, f, indent=4)
+
+        # update quant config
+        quantization_config = {
+            "quant_method": "compressed-tensors",
+            "ignore": ignored_layers,
+        }
+        weight_config = {
+            "num_bits": 8,
+            "strategy": re.search(
+                r"per-([a-zA-Z]+)", self.quant_info.w_quant_method
+            ).group(1),
+            "dynamic": False,
+            "type": "int",
+        }
+        act_config = {
+            "num_bits": 8,
+            "strategy": re.search(
+                r"per-([a-zA-Z]+)", self.quant_info.a_quant_method
+            ).group(1),
+            "dynamic": True,
+            "type": "int",
+        }
+        quant_format = "int-quantized"
+        quantization_config.update(
+            {
+                "config_groups": {
+                    "group_0": {
+                        "weights": weight_config,
+                        "input_activations": act_config,
+                        "output_activations": None,
+                        "targets": ["Linear"],
+                    }
+                },
+                "kv_cache_scheme": None,
+                "format": quant_format,
+                "quantization_status": "compressed",
+            }
+        )
+
+        quant_dict = {"quantization_config": quantization_config}
+        self.slim_model.config.update(quant_dict)

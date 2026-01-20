@@ -61,7 +61,6 @@ class BaseLLMModel(ABC):
     def prepare(self):
         AutoModelForCausalLM = get_hub_class(self.model_hub, "AutoModelForCausalLM")
         AutoTokenizer = get_hub_class(self.model_hub, "AutoTokenizer")
-        AutoConfig = get_hub_class(self.model_hub, "AutoTokenizer")
         
         logger.info(
             f"Loading model from: '{self.model_path}' with kwargs: {self.model_kwargs}"
@@ -77,11 +76,8 @@ class BaseLLMModel(ABC):
             pretrained_model_name_or_path=self.model_path,
             **asdict(self.tokenizer_kwargs),
         )
+        self.config = self.model.config
 
-        logger.info(f"Loading configuration from: '{self.model_path}'")
-        self.config = AutoConfig.from_pretrained(
-            pretrained_model_name_or_path=self.model_path,
-        )
         logger.success(
             f"Model, tokenizer, and config loaded successfully. "
             f"Model architecture: {self.config.architectures[0] if hasattr(self.config, 'architectures') and self.config.architectures else 'N/A'}"

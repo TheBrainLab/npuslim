@@ -1,6 +1,7 @@
 from dataclasses import asdict
 from typing import List, Optional, TYPE_CHECKING
 from loguru import logger
+import fnmatch
 from torch.utils.data import DataLoader
 
 from npuslim.utils.config_parser import GlobalConfig
@@ -96,20 +97,54 @@ class SlimEngine:
                 )
             )
 
-    def get_ignore_layers(self, compressor: str = "ptq"):
-        default_ignore = {"lm_head", "embed_tokens", "final_layer_norm"}
+    @staticmethod
+    def expand_patterns_to_names(all_module_names: list, patterns: list) -> list:
+        """
+        将通配符模式列表转换为模型中实际存在的层名列表。
+        """
+        expanded_set = set()
+        for pattern in patterns:
+            if pattern in all_module_names:
+                expanded_set.add(pattern)
+                continue
+
+            matched = fnmatch.filter(all_module_names, pattern)
+            if matched:
+                expanded_set.update(matched)
+            else:
+                logger.warning(
+                    f"Layer pattern '{pattern}' did not match any layers in the model."
+                )
+
+        return sorted(list(expanded_set))
+
+    def get_ignore_layers(self, compressor: str = "ptq") -> List[str]:
+        all_patterns = {"lm_head"}
+
         compressor_cfg = getattr(self.cfg, compressor, None)
-
-        if compressor_cfg is None:
-            user_ignore = []
-        else:
+        if compressor_cfg is not None:
             user_ignore = getattr(compressor_cfg, "ignore_layers", []) or []
+            all_patterns.update(user_ignore)
 
-        final_ignore = default_ignore.union(set(user_ignore))
-        formatted_list = [f"    - {layer}" for layer in sorted(list(final_ignore))]
-        layers_str = "\n".join(formatted_list)
-        logger.info(f"Layers ignored during {compressor.upper()}: \n{layers_str}")
-        return final_ignore
+        all_leaf_names = [
+            name
+            for name, m in self.model.model.named_modules()
+            if len(list(m.children())) == 0 and name
+        ]
+        final_ignore_list = self.expand_patterns_to_names(
+            all_leaf_names, list(all_patterns)
+        )
+
+        if final_ignore_list:
+            formatted_list = [f"    - {layer}" for layer in final_ignore_list]
+            layers_str = "\n".join(formatted_list)
+            logger.info(
+                f"Layers ignored during {compressor.upper()} (Expanded names): \n{layers_str}"
+            )
+        else:
+            logger.info(f"No layers ignored during {compressor.upper()}.")
+
+        return final_ignore_list
 
     def run(self):
         if not self.pipeline:

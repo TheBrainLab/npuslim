@@ -11,7 +11,6 @@ class PTQTask(BaseTask):
         self.model = model
         self.cfg = config
         self.dataloader = dataloader
-
         logger.info("Initializing PTQ Task components...")
         QuantConfigManager.initialize(
             quant_algo=self.cfg.type,
@@ -43,4 +42,3 @@ class PTQTask(BaseTask):
     def save_meta(self, save_path: Path | str):
         if hasattr(self.compressor, "save_meta"):
             return self.compressor.save_meta(save_path)
-        return False

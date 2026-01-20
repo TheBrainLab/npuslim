@@ -2,24 +2,6 @@ from dataclasses import dataclass, field, fields
 from loguru import logger
 from typing import List, Dict, Any, Type, Optional
 
-from ..observers import (
-    AbsMaxChannelWiseWeightObserver,
-    # AbsMaxGroupWiseWeightObserver,
-    AbsmaxPerchannelObserver,
-    # AbsmaxPertensorObserver,
-)
-
-
-ACT_OBSERVERS_CLASS = {
-    # "per-tensor": AbsmaxPertensorObserver,
-    "per-channel": AbsmaxPerchannelObserver,
-}
-WEIGHT_OBSERVERS_CLASS = {
-    # "per-tensor": AbsmaxPertensorObserver,
-    "per-channel": AbsMaxChannelWiseWeightObserver,
-    # "per-group": AbsMaxGroupWiseWeightObserver,
-}
-
 
 @dataclass
 class QuantAlgoInfo:

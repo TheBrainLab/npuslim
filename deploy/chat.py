@@ -1,7 +1,7 @@
 from openai import OpenAI
 
 openai_api_key = "EMPTY"
-openai_api_base = "http://localhost:8080/v1"
+openai_api_base = "http://localhost:50133/v1"
 
 client = OpenAI(
     api_key=openai_api_key,
