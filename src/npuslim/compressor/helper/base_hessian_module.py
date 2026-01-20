@@ -42,6 +42,13 @@ class BaseHessianModule(ABC):
                 damp = percdamp * torch.mean(torch.diag(H))
                 diag = torch.arange(self.columns, device=self.dev)
                 H[diag, diag] += damp
+                if bh.name == "npu":
+                    H_cpu = H.to("cpu")
+                    H_inv = torch.linalg.cholesky(H_cpu)
+                    H_inv = torch.cholesky_inverse(H_inv)
+                    H_inv = torch.linalg.cholesky(H_inv, upper=True)
+                    return H_inv.to(self.dev)
+                
                 H_inv = torch.linalg.cholesky(H)
                 H_inv = torch.cholesky_inverse(H_inv)
                 H_inv = torch.linalg.cholesky(H_inv, upper=True)

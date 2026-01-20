@@ -3,6 +3,7 @@ import torch
 from loguru import logger
 from pathlib import Path
 from safetensors.torch import load_file
+from tqdm import tqdm
 
 from ..base_ptquantizer import BasePTQuantizer
 from npuslim.utils.factory import CompressorFactory
@@ -58,11 +59,14 @@ class INT8Dynamic(BasePTQuantizer):
         logger.info(
             ">>> [Quantization] Starting INT8 dynamic quantization conversion..."
         )
-        for name, sub_layer in self.observer_layers.items():
-            if (
-                getattr(self.ptq_hook.observer_dict[sub_layer], "weight_observer")
-                is not None
-            ):
+        pbar = tqdm(
+            self.observer_layers.items(), desc="Calculating weight scales", unit="layer"
+        )
+        for name, sub_layer in pbar:
+            pbar.set_description(f"Calculating scale for {name[-25:]}")
+
+            observer_info = self.ptq_hook.observer_dict.get(sub_layer)
+            if observer_info and getattr(observer_info, "weight_observer") is not None:
                 # if sub_layer.weight.device.type == "meta":
                 #     absolute_model_path = Path(
                 #         self.meta_cfg.meta_cfg.absolute_model_path

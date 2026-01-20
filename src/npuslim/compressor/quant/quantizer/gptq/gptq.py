@@ -29,11 +29,14 @@ class INT4GPTQ(BasePTQuantizer):
 
     def calibrate(self):
         def quant_worker(layer_idx, handlers, subset, **kwargs):
-            for name in subset.keys():
+            total_sub_layers = len(subset)
+            for i, name in enumerate(subset.keys()):
                 if name not in handlers:
                     logger.info(f"Layer {name} is skipped (not in handlers).")
                     continue
-
+                logger.info(
+                    f"-> [Layer {layer_idx}] Quantizing module ({i+1}/{total_sub_layers}): {name} | "
+                )
                 handler = handlers[name]
                 scale, zero, g_idx = handler.quantize(
                     percdamp=kwargs.get("percdamp", 0.01),
