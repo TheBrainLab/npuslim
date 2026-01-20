@@ -1,12 +1,44 @@
 from typing import TYPE_CHECKING
 from abc import ABC, abstractmethod
 import torch
+import importlib
 from dataclasses import asdict
 from loguru import logger
 from npuslim.utils.config_parser import GlobalConfig
 
 if TYPE_CHECKING:
     from npuslim.utils.config_parser import ModelConfig
+
+
+def get_hub_class(model_hub: str, class_name: str):
+    """
+    Dynamically fetch the specified class from the given hub (hf/ms).
+    
+    :param model_hub: 'hf' (Hugging Face) or 'ms' (ModelScope)
+    :param class_name: The name of the class to import, e.g., 'AutoModelForCausalLM'
+    :return: The class object
+    """
+    hub_pkg_map = {
+        "hf": "transformers",
+        "ms": "modelscope"
+    }
+
+    if model_hub not in hub_pkg_map:
+        raise ValueError(f"❌ Unsupported hub: {model_hub}. Supported hubs are 'hf' and 'ms'.")
+    pkg_name = hub_pkg_map[model_hub]
+
+    try:
+        module = importlib.import_module(pkg_name)
+        cls = getattr(module, class_name)
+        return cls
+
+    except ImportError:
+        raise ImportError(f"⚠️ '{pkg_name}' not installed. Please run: pip install {pkg_name}")
+    except AttributeError:
+        raise AttributeError(
+            f"⚠️ Class '{class_name}' not found in '{pkg_name}'. "
+            f"Please check the class name spelling or package version."
+        )
 
 
 class BaseLLMModel(ABC):
@@ -27,14 +59,9 @@ class BaseLLMModel(ABC):
         self.observer_layer_classes = [torch.nn.Linear]
 
     def prepare(self):
-        if self.model_hub == "hf":
-            from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
-        elif self.model_hub == "ms":
-            from modelscope import AutoModelForCausalLM, AutoTokenizer, AutoConfig
-        else:
-            raise ValueError(
-                f"Unsupported model_hub: {self.model_hub}. Supported hubs are 'hf' and 'ms'."
-            )
+        AutoModelForCausalLM = get_hub_class(self.model_hub, "AutoModelForCausalLM")
+        AutoTokenizer = get_hub_class(self.model_hub, "AutoTokenizer")
+        AutoConfig = get_hub_class(self.model_hub, "AutoTokenizer")
         
         logger.info(
             f"Loading model from: '{self.model_path}' with kwargs: {self.model_kwargs}"

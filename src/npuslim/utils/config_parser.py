@@ -20,11 +20,11 @@ class MetaConfig:
     type: str = field(metadata={"help": "Slim model type: 'llm' or 'vlm'"})
     save_path: str = field(metadata={"help": "Path to save the output model"})
     config_name: str = field(metadata={"help": "Configuration file name"})
-    absolute_model_path: str = field(
-        metadata={
-            "help": "The absolute local file system path to the base model directory or checkpoint file."
-        }
-    )
+    # absolute_model_path: str = field(
+    #     metadata={
+    #         "help": "The absolute local file system path to the base model directory or checkpoint file."
+    #     }
+    # )
     low_memory: bool = field(
         default=False, metadata={"help": "Enable low memory mode."}
     )
@@ -292,7 +292,7 @@ class SlimConfigParser:
         if args.model_path is not None:
             config.model.model_path = args.model_path
         # absolute_model_path
-        config.meta.absolute_model_path = get_hf_model_path(config.model.model_path)
+        # config.meta.absolute_model_path = get_hf_model_path(config.model.model_path)
         # low_memory
         if args.low_memory:
             config.meta.low_memory = True
