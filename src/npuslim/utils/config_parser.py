@@ -95,6 +95,12 @@ class ModelConfig:
             "help": "Local path to the model or remote identifier (e.g., Hugging Face ID)."
         }
     )
+    model_hub: str = field(
+        default="hf",
+        metadata={
+            "help": "Model hub source, e.g., 'ms' (modelscope) or 'hf' (huggingface)."
+        }
+    )
     model_kwargs: ModelKwargs = field(
         default_factory=ModelKwargs,
         metadata={
@@ -363,19 +369,13 @@ class GlobalConfig:
 
     @staticmethod
     def _load_config():
-        try:
-            cfg = SlimConfigParser.from_args()
-            cfg_dict = dict(cfg)
-            final_cfg = from_dict(
-                data_class=FullConfig,
-                data=cfg_dict,
-            )
-            return final_cfg
-
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to load or validate configuration via SlimConfigParser: {e}"
-            )
+        cfg = SlimConfigParser.from_args()
+        cfg_dict = dict(cfg)
+        final_cfg = from_dict(
+            data_class=FullConfig,
+            data=cfg_dict,
+        )
+        return final_cfg
 
     @classmethod
     def get_config(cls):

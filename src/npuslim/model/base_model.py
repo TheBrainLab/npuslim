@@ -3,7 +3,6 @@ from abc import ABC, abstractmethod
 import torch
 from dataclasses import asdict
 from loguru import logger
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from npuslim.utils.config_parser import GlobalConfig
 
 if TYPE_CHECKING:
@@ -13,6 +12,7 @@ if TYPE_CHECKING:
 class BaseLLMModel(ABC):
     def __init__(self, *args, config: "ModelConfig", **kwargs):
         self.model_path = config.model_path
+        self.model_hub = config.model_hub
         self.model_kwargs = config.model_kwargs
         self.tokenizer_kwargs = config.tokenizer_kwargs
         self.low_memory = GlobalConfig.get_config().meta.low_memory
@@ -27,6 +27,15 @@ class BaseLLMModel(ABC):
         self.observer_layer_classes = [torch.nn.Linear]
 
     def prepare(self):
+        if self.model_hub == "hf":
+            from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+        elif self.model_hub == "ms":
+            from modelscope import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+        else:
+            raise ValueError(
+                f"Unsupported model_hub: {self.model_hub}. Supported hubs are 'hf' and 'ms'."
+            )
+        
         logger.info(
             f"Loading model from: '{self.model_path}' with kwargs: {self.model_kwargs}"
         )

@@ -11,9 +11,12 @@ if TYPE_CHECKING:
 class BaseFactory(ABC):
     """Base registry factory supporting subclass registries with lazy import."""
 
-    _registry: Dict[str, Type] = {}
     _package: Optional[str] = None  # Package path for lazy import
     _package_dir: Optional[str] = None
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls._registry = {}
 
     @classmethod
     def set_package(cls, package: str, package_dir: str):
@@ -68,8 +71,6 @@ class BaseFactory(ABC):
 
 
 class ModelFactory(BaseFactory):
-    _registry: Dict[str, Type] = {}
-
     @classmethod
     def create(cls, *args, config: "ModelConfig", **kwargs):
         name = config.type
@@ -83,8 +84,6 @@ ModelFactory.set_package(MODELS_PACKAGE, str(MODELS_PATH))
 
 
 class DatasetFactory(BaseFactory):
-    _registry: Dict[str, Type] = {}
-
     @classmethod
     def create(cls, *args, config: "CalibDatasetConfig", **kwargs):
         name = config.type
@@ -98,8 +97,6 @@ DatasetFactory.set_package(DATALOADER_PACKAGE, str(DATALOADER_PATH))
 
 
 class CompressorFactory(BaseFactory):
-    _registry: Dict[str, Type] = {}
-
     @classmethod
     def create(cls, *args, config: "CompressorConfig", **kwargs):
         name = config.type
