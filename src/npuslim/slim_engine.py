@@ -2,6 +2,7 @@ from dataclasses import asdict
 from typing import List, Optional, TYPE_CHECKING
 from loguru import logger
 import fnmatch
+import re
 from torch.utils.data import DataLoader
 
 from npuslim.utils.config_parser import GlobalConfig
@@ -100,15 +101,31 @@ class SlimEngine:
     @staticmethod
     def expand_patterns_to_names(all_module_names: list, patterns: list) -> list:
         """
-        将通配符模式列表转换为模型中实际存在的层名列表。
+        将通配符模式或正则表达式列表转换为模型中实际存在的层名列表。
+        支持：
+        1. 精确匹配: 'lm_head'
+        2. 通配符匹配: '*.mlp.gate'
+        3. 正则表达式: 're:.*\.mlp\.gate'
         """
         expanded_set = set()
         for pattern in patterns:
-            if pattern in all_module_names:
-                expanded_set.add(pattern)
-                continue
+            matched = []
+        
+            if pattern.startswith("re:"):
+                regex_str = pattern[3:]
+                try:
+                    reg = re.compile(regex_str)
+                    matched = [name for name in all_module_names if reg.fullmatch(name)]
+                except re.error as e:
+                    logger.error(f"Invalid regex pattern '{regex_str}': {e}")
+                    continue
 
-            matched = fnmatch.filter(all_module_names, pattern)
+            else:
+                if pattern in all_module_names:
+                    matched = [pattern]
+                else:
+                    matched = fnmatch.filter(all_module_names, pattern)
+
             if matched:
                 expanded_set.update(matched)
             else:
@@ -119,8 +136,7 @@ class SlimEngine:
         return sorted(list(expanded_set))
 
     def get_ignore_layers(self, compressor: str = "ptq") -> List[str]:
-        all_patterns = {"lm_head"}
-
+        all_patterns = set(self.model.skip_layer_names)
         compressor_cfg = getattr(self.cfg, compressor, None)
         if compressor_cfg is not None:
             user_ignore = getattr(compressor_cfg, "ignore_layers", []) or []

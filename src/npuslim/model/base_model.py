@@ -48,6 +48,7 @@ class BaseLLMModel(ABC):
         self.model_kwargs = config.model_kwargs
         self.tokenizer_kwargs = config.tokenizer_kwargs
         self.low_memory = GlobalConfig.get_config().meta.low_memory
+        self.skip_layer_names = ["lm_head"]
 
         self.model = None
         self.tokenizer = None

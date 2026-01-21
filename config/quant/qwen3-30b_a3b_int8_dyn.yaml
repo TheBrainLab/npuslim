@@ -5,7 +5,7 @@ meta:
 
 # Simplified Configuration for LLM compression
 model:
-  type: Qwen3
+  type: Qwen3MoE
   model_path: Qwen/Qwen3-30B-A3B-Instruct-2507
   model_hub: ms  # ms (modelscope) or hf (huggingface)
   model_kwargs:
@@ -38,5 +38,4 @@ ptq:
     quant_method:
       weight: "per-channel"  # per-channel or per-tensor
       activation: "per-token"
-  ignore_layers:                 # Skip quantization for these layers
-    - 'lm_head'
+  # ignore_layers: []

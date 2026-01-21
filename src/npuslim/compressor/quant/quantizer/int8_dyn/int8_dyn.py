@@ -6,11 +6,11 @@ from pathlib import Path
 from safetensors.torch import load_file
 from tqdm import tqdm
 
+from .int8_dyn_module import INTDynQDQModule
 from ..base_ptquantizer import BasePTQuantizer
 from npuslim.utils.factory import CompressorFactory
 from npuslim.utils.utils import find_parent_layer_and_sub_name
 from npuslim.utils.backend import bh
-from npuslim.compressor.quant.modules import INTDynQDQModule
 from npuslim.compressor.quant.core.ptq_hook import PTQObserverHook
 from npuslim.compressor.quant.observers import WEIGHT_OBSERVERS_CLASS
 
@@ -64,8 +64,6 @@ class INT8Dynamic(BasePTQuantizer):
             self.observer_layers.items(), desc="Calculating weight scales", unit="layer"
         )
         for name, sub_layer in pbar:
-            pbar.set_description(f"Calculating scale for {name[-25:]}")
-
             observer_info = self.ptq_hook.observer_dict.get(sub_layer)
             if observer_info and getattr(observer_info, "weight_observer") is not None:
                 # if sub_layer.weight.device.type == "meta":
@@ -114,7 +112,12 @@ class INT8Dynamic(BasePTQuantizer):
         self.ptq_hook.post_process()
 
         quant_convert_module = self.slim_model.get_quant_convert_module()
-        for name, sub_layer in self.observer_layers.items():
+        pbar = tqdm(
+            self.observer_layers.items(),
+            desc="Inserting QDQ modules", # 默认描述改为插入算子
+            unit="module",
+        )
+        for name, sub_layer in pbar:
             parent_layer, sub_name = find_parent_layer_and_sub_name(
                 quant_convert_module, name
             )

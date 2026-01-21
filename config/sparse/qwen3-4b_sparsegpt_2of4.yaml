@@ -38,6 +38,5 @@ sparse:
     algo_params:
       blocksize: 128
       percdamp: 0.01
-  ignore_layers: 
-    - 'lm_head'
+  ignore_layers: []
 

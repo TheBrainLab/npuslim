@@ -41,5 +41,4 @@ ptq:
       sym: true               # Symmetric quantization
       static_groups: true     # Use static group assignment
       actorder: true         # Use activation order for group assignment
-  ignore_layers:                 # Skip quantization for these layers
-    - 'lm_head'
+  ignore_layers: []
