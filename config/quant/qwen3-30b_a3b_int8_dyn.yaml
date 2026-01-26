@@ -5,7 +5,7 @@ meta:
 
 # Simplified Configuration for LLM compression
 model:
-  type: Qwen3MoE
+  type: Qwen3
   model_path: Qwen/Qwen3-30B-A3B-Instruct-2507
   model_hub: ms  # ms (modelscope) or hf (huggingface)
   model_kwargs:

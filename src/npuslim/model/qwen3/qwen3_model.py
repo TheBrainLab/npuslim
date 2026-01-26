@@ -11,6 +11,8 @@ class Qwen3SlimModel(BaseLLMModel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.block_name = "model.layers"
+        # for moe model
+        self.skip_layer_names.append("model.layers.*.mlp.gate")
 
     def get_observer_layers(self, ignore_layers: list = []):
         names = [
