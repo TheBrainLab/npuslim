@@ -9,11 +9,11 @@ lm_eval --model vllm \
     --output_path outputs/eval/qwen3-30b_a3b_int8_dyn/mmlu_results.json
 
 lm_eval --model vllm \
-    --model_args pretrained="outputs/qwen3-30b_a3b_int8_dyn",tensor_parallel_size=2,gpu_memory_utilization=0.6,max_model_len=4096,trust_remote_code=True \
+    --model_args pretrained="outputs/qwen3-0_6b_int4_rqp",tensor_parallel_size=1,gpu_memory_utilization=0.5,max_model_len=4096,trust_remote_code=True \
     --tasks mmlu \
     --batch_size auto \
     --num_fewshot 5 \
-    --output_path outputs/eval/qwen3-30b_a3b_int8_dyn/mmlu_results.json
+    --output_path outputs/eval/qwen3-0_6b_int4_rqp/mmlu_results.json
 
 lm_eval --model hf \
     --model_args pretrained=Qwen/Qwen3-4B-Instruct-2507 \

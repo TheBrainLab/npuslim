@@ -18,16 +18,16 @@ class SparseGPT(BaseSparser):
 
     def compress(self):
         def sparse_worker(layer_idx, handlers, subset, **kwargs):
-            for name in subset.keys():
+            total_sub_layers = len(subset)
+            for i, name in enumerate(subset.keys()):
                 if name not in handlers:
                     logger.info(f"Layer {name} is skipped (not in handlers).")
                     continue
-
-                handler = handlers[name]
-                handler.prune(
-                    percdamp=kwargs.get("percdamp", 0.01),
-                    blocksize=kwargs.get("blocksize", 128),
+                logger.info(
+                    f"-> [Layer {layer_idx}] Optimizing module ({i+1}/{total_sub_layers}): {name}"
                 )
+                handler = handlers[name]
+                handler.process()
 
         layers = self.slim_model.get_layers()
         info = self.sparse_info
@@ -36,15 +36,14 @@ class SparseGPT(BaseSparser):
             sparsity=info.sparsity,
             prunen=info.prunen,
             prunem=info.prunem,
+            percdamp=info.algo_specific_params.get("percdamp", 0.01),
+            blocksize=info.algo_specific_params.get("blocksize", 128),
         )
         self.scheduler.run(
             layers=layers,
             algo_class=prune_algo,
             process_fn=sparse_worker,
             ignore_layers=self.ignore_layers,
-            # process_fn 的参数
-            percdamp=info.algo_specific_params.get("percdamp", 0.01),
-            blocksize=info.algo_specific_params.get("blocksize", 128),
         )
 
     def apply_masks(self): ...

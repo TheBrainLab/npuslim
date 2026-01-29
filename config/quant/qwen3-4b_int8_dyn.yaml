@@ -18,25 +18,24 @@ model:
     trust_remote_code: true
 
 # Dataset for calibration
-calib_dataset:
-  dataset:
-    type: TextDataset
-    data_path: ./dataset/sharegpt_gpt4_qwen/sharegpt_gpt4-qwen3_a22B_output.jsonl
-    num_samples: 128
-    max_seq_length: 4096
-  dataloader:
-    batch_size: 1
-    shuffle: true
-    num_workers: 0
+# calib_dataset:
+#   dataset:
+#     type: TextDataset
+#     data_path: ./dataset/sharegpt_gpt4_qwen/sharegpt_gpt4-qwen3_a22B_output.jsonl
+#     num_samples: 128
+#     max_seq_length: 4096
+#   dataloader:
+#     batch_size: 1
+#     shuffle: true
+#     num_workers: 0
 
 # Sparse
-sparse:
-  type: SparseGPT
-  sparse_config:
-    sparsity_ratio: 0.5
-    pattern: "2:4"
-    algo_params:
-      blocksize: 128
-      percdamp: 0.01
+ptq:
+  type: INT8Dynamic
+  quant_config:
+    w_bits: 8
+    quant_method:
+      weight: "per-channel"  # per-channel or per-tensor
+      activation: "per-token"
   ignore_layers: []
 

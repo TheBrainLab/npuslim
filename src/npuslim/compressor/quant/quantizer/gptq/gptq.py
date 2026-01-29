@@ -35,20 +35,19 @@ class INT4GPTQ(BasePTQuantizer):
                     logger.info(f"Layer {name} is skipped (not in handlers).")
                     continue
                 logger.info(
-                    f"-> [Layer {layer_idx}] Quantizing module ({i+1}/{total_sub_layers}): {name} | "
+                    f"-> [Layer {layer_idx}] Optimizing module ({i+1}/{total_sub_layers}): {name}"
                 )
                 handler = handlers[name]
-                scale, zero, g_idx = handler.quantize(
-                    percdamp=kwargs.get("percdamp", 0.01),
-                    blocksize=kwargs.get("blocksize", 128),
-                    actorder=kwargs.get("actorder", True),
-                )
+                scale, zero, g_idx = handler.process()
                 self.quantizers[name] = (scale, zero, g_idx)
 
         layers = self.slim_model.get_layers()
         info = self.quant_info
         quant_algo = partial(
             GPTQModule,
+            percdamp=info.algo_specific_params.get("percdamp", 0.01),
+            blocksize=info.algo_specific_params.get("blocksize", 128),
+            actorder=info.algo_specific_params.get("actorder", True),
             quant_bits=info.w_quant_bits,
             group_size=info.group_size,
             sym=info.algo_specific_params.get("sym", True),
@@ -59,10 +58,6 @@ class INT4GPTQ(BasePTQuantizer):
             algo_class=quant_algo,
             process_fn=quant_worker,
             ignore_layers=self.ignore_layers,
-            # process_fn 的参数
-            percdamp=info.algo_specific_params.get("percdamp", 0.01),
-            blocksize=info.algo_specific_params.get("blocksize", 128),
-            actorder=info.algo_specific_params.get("actorder", True),
         )
         info.target_quant_layers = list(self.quantizers.keys())
 

@@ -3,75 +3,78 @@ from npuslim.compressor.helper.base_hessian_module import BaseHessianModule
 
 
 class SparseGPTModule(BaseHessianModule):
-    def __init__(self, layer, sparsity=0, prunen=0, prunem=0):
-        super().__init__(layer)
+    def __init__(self, layer, sparsity=0, prunen=0, prunem=0, **kwargs):
+        super().__init__(layer, **kwargs)
         self.sparsity = sparsity
         self.prunen = prunen
         self.prunem = prunem
-        
-        # 对应源码中的 mask1 和当前块的局部计数
-        self.mask1 = None
-        self._local_i = 0
 
-    def on_block_start(self, W1, Hinv1, block_idxs):
-        """
-        对应源码中 block 循环开始处对 mask1 的初始化逻辑
-        """
-        self._local_i = 0
-        
-        if self.prunen == 0:
-            # --- 源码逻辑: 非结构化剪枝 ---
-            # tmp = W1 ** 2 / (torch.diag(Hinv1).reshape((1, -1))) ** 2
-            tmp = W1 ** 2 / (torch.diag(Hinv1).reshape((1, -1))) ** 2
-            # thresh = torch.sort(tmp.flatten())[0][int(tmp.numel() * sparsity)]
-            thresh = torch.sort(tmp.flatten())[0][int(tmp.numel() * self.sparsity)]
-            # mask1 = tmp <= thresh
-            self.mask1 = tmp <= thresh
-        else:
-            # --- 源码逻辑: N:M 结构化剪枝初始化 ---
-            # mask1 = torch.zeros_like(W1) == 1
-            self.mask1 = torch.zeros_like(W1) == 1
-        
-        # 将 W1 和 Hinv1 暂存，供 N:M 在 transform_column 中使用
-        self._current_W1 = W1
-        self._current_Hinv1 = Hinv1
+    def process(self):
+        W, H = self.prepare_weight_and_hessian()
 
-    def transform_column(self, w, d, col_idx):
-        """
-        对应源码中列循环内部的逻辑
-        """
-        i = self._local_i
-        
-        # --- 源码逻辑: N:M 结构化剪枝实时计算 ---
-        if self.prunen != 0 and i % self.prunem == 0:
-            # tmp = W1[:, i:(i + prunem)] ** 2 / (torch.diag(Hinv1)[i:(i + prunem)].reshape((1, -1))) ** 2
-            # 注意：这里的 W1 会随误差传播更新，完全符合源码
-            W_slice = self._current_W1[:, i:(i + self.prunem)]
-            H_diag_slice = torch.diag(self._current_Hinv1)[i:(i + self.prunem)].reshape((1, -1))
-            tmp = W_slice ** 2 / (H_diag_slice ** 2)
+        losses = torch.zeros(self.rows, device=self.dev)
+        mask = None
+        Hinv = self.compute_hinv(H, self.percdamp)
+        for i1 in range(0, self.columns, self.blocksize):
+            i2 = min(i1 + self.blocksize, self.columns)
+            count = i2 - i1
+
+            W1 = W[:, i1:i2].clone()
+            Q1 = torch.zeros_like(W1)
+            Err1 = torch.zeros_like(W1)
+            losses1 = torch.zeros_like(W1)
+            Hinv1 = Hinv[i1:i2, i1:i2]
+
+            if self.prunen == 0:
+                if mask is not None:
+                    mask1 = mask[:, i1:i2]
+                else:
+                    tmp = W1**2 / (torch.diag(Hinv1).reshape((1, -1))) ** 2
+                    thresh = torch.sort(tmp.flatten())[0][
+                        int(tmp.numel() * self.sparsity)
+                    ]
+                    mask1 = tmp <= thresh
+            else:
+                mask1 = torch.zeros_like(W1) == 1
+
+            for i in range(count):
+                w = W1[:, i]
+                d = Hinv1[i, i]
+
+                if self.prunen != 0 and i % self.prunem == 0:
+                    tmp = (
+                        W1[:, i : (i + self.prunem)] ** 2
+                        / (torch.diag(Hinv1)[i : (i + self.prunem)].reshape((1, -1)))
+                        ** 2
+                    )
+                    mask1.scatter_(
+                        1,
+                        i + torch.topk(tmp, self.prunen, dim=1, largest=False)[1],
+                        True,
+                    )
+
+                q = w.clone()
+                q[mask1[:, i]] = 0
+                Q1[:, i] = q
+                losses1[:, i] = (w - q) ** 2 / d**2
+
+                err1 = (w - q) / d
+                W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
+                Err1[:, i] = err1
             
-            # mask1.scatter_(1, i + torch.topk(tmp, prunen, dim=1, largest=False)[1], True)
-            indices = torch.topk(tmp, self.prunen, dim=1, largest=False)[1]
-            self.mask1.scatter_(1, i + indices, True)
-
-        # --- 源码逻辑: 应用 Mask ---
-        q = w.clone()
-        # q[mask1[:, i]] = 0
-        q[self.mask1[:, i]] = 0
+            W[:, i1:i2] = Q1
+            losses += torch.sum(losses1, 1) / 2
+            W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
         
-        self._local_i += 1
-        return q
+        self.print_log(losses=losses, q_weight=W)
+        self.write_back(q_weight=W)
 
-    def prune(self, blocksize=128, percdamp=0.01, actorder=False):
-        """
-        封装执行函数
-        """
-        # 调用基类的 OBS 核心逻辑
-        W_after = self._execute_obs_process(
-            blocksize=blocksize, 
-            percdamp=percdamp, 
-            actorder=actorder
-        )
-        # 写回权重
-        self.write_back(W_after)
+        losses = losses.cpu()
+        W = W.cpu()
+        H = H.cpu()
+        Hinv = Hinv.cpu()
+        del losses, W, H, Hinv
+        self.W = self.W.cpu()
+        del self.W
+        
         self.free()
