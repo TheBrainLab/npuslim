@@ -31,7 +31,7 @@ calib_dataset:
 
 # Post-Training Quantization
 ptq:
-  type: INT4GPTQ
+  type: GPTQ
   quant_config:
     w_bits: 4
     quant_method:

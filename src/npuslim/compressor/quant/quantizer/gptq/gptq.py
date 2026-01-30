@@ -15,7 +15,7 @@ from npuslim.compressor.helper.layer_wise_scheduler import LayerWiseScheduler
 
 
 @CompressorFactory.register()
-class INT4GPTQ(BasePTQuantizer):
+class GPTQ(BasePTQuantizer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.scheduler = None
