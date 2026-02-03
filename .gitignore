@@ -142,6 +142,7 @@ proc_data
 kernel_meta
 runs
 outputs
+debug
 /runs_old
 /wandb
 /examples/runs

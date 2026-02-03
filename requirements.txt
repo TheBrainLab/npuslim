@@ -1,0 +1,10 @@
+torch
+torchvision
+torchaudio
+transformers
+datasets
+vllm
+gptqmodel
+evalscope
+lm-eval
+

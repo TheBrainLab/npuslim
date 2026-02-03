@@ -1,0 +1,44 @@
+#  configuration of pipeline
+meta:
+  type: llm
+  save_path: ./outputs
+
+# Simplified Configuration for LLM compression
+model:
+  type: Qwen3
+  model_path: Qwen/Qwen3-32B
+  model_hub: hf  # ms (modelscope) or hf (huggingface)
+  model_kwargs:
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    use_cache: false
+    torch_dtype: auto
+    device_map: cpu
+  tokenizer_kwargs:
+    trust_remote_code: true
+
+# Dataset for calibration
+calib_dataset:
+  dataset:
+    type: TextDataset
+    data_path: ./dataset/sharegpt_gpt4_qwen/sharegpt_gpt4-qwen3_a22B_output.jsonl
+    num_samples: 128
+    max_seq_length: 4096
+  dataloader:
+    batch_size: 1
+    shuffle: true
+    num_workers: 0
+
+# Post-Training Quantization
+ptq:
+  type: GPTQ
+  quant_config:
+    w_bits: 4
+    quant_method:
+      weight: "per-group"  # per-channel/per-tensor or per-group
+      group_size: 128
+    algo_params:
+      sym: true               # Symmetric quantization
+      static_groups: true     # Use static group assignment
+      actorder: true          # Use activation order for group assignment
+  ignore_layers: []

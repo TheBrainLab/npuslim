@@ -22,4 +22,26 @@ lm_eval --model hf \
     --batch_size auto \
     --num_fewshot 5 \
     --output_path ./mmlu_results_raw.json
+
+lm_eval --model vllm \
+    --model_args pretrained="outputs/qwen3-4b_int4_gptq",tensor_parallel_size=1,gpu_memory_utilization=0.6,max_model_len=4096,trust_remote_code=True \
+    --tasks wikitext \
+    --batch_size auto \
+    --output_path outputs/eval/outputs/qwen3-4b_int4_gptq-skip/wikitext2_results.json
+
+lm_eval --model hf \
+    --model_args pretrained=outputs/qwen3-4b_int4_gptq \
+    --tasks arc_easy,arc_challenge,boolq,headqa_en,openbookqa,hellaswag,piqa,winogrande \
+    --device cuda:1 \
+    --batch_size auto
+
+CUDA_VISIBLE_DEVICES=0 lm_eval --model vllm \
+    --model_args pretrained=Qwen/Qwen3-32B,max_model_len=4096,tensor_parallel_size=2,gpu_memory_utilization=0.8,trust_remote_code=True \
+    --tasks arc_easy,arc_challenge,boolq,headqa_en,openbookqa,hellaswag,piqa,winogrande \
+    --batch_size auto
+
+CUDA_VISIBLE_DEVICES=0 lm_eval --model vllm \
+    --model_args pretrained=/data16t/MODELSCOPE/models/Qwen/Qwen3-30B-A3B-Instruct-2507,max_model_len=4096,tensor_parallel_size=2,gpu_memory_utilization=0.8,trust_remote_code=True \
+    --tasks arc_easy,arc_challenge,boolq,headqa_en,openbookqa,hellaswag,piqa,winogrande \
+    --batch_size auto
 ```

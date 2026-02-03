@@ -16,10 +16,12 @@ dependencies = [
     "threadpoolctl",
     "datasets",
     "accelerate",
-    "transformers",
+    "transformers<5.0.0",
     "vllm", 
     "lm-eval", 
-    "evalscope"
+    "evalscope",
+    "optimum",
+    # "gptqmodel"
 ]
 
 [project.scripts]
