@@ -10,6 +10,7 @@ __pycache__/
 **cann_ops**
 
 # tests and logs
+test/
 tests/fixtures/cached_*_text.txt
 logs/
 lightning_logs/
