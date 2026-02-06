@@ -1,49 +1,68 @@
-from typing import Type, Optional, Dict, TYPE_CHECKING
+from typing import Type, Optional, Dict, Any, TYPE_CHECKING
 from abc import ABC, abstractmethod
-import pkgutil
 import importlib
-from pathlib import Path
+from loguru import logger
 
 if TYPE_CHECKING:
-    from .config_parser import ModelConfig, CalibDatasetConfig, CompressorConfig
+    from npuslim.utils.config_parser import ModelConfig, DatasetConfig
+
+# ================================= Global Settings ================================= #
+ROOT_PACKAGE = "npuslim"
 
 
 class BaseFactory(ABC):
-    """Base registry factory supporting subclass registries with lazy import."""
-
-    _package: Optional[str] = None  # Package path for lazy import
-    _package_dir: Optional[str] = None
+    _registry: Dict[str, Type] = {}
+    _map_loaded: bool = False
+    _SUBMODULE: Optional[str] = None
+    _lazy_map: Dict[str, str] = {}
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         cls._registry = {}
+        cls._lazy_map = {}
+        cls._map_loaded = False
 
     @classmethod
-    def set_package(cls, package: str, package_dir: str):
-        """Set the package to lazy import for automatic registration."""
-        cls._package = package
-        cls._package_dir = package_dir
+    def _load_submodule_map(cls):
+        if cls._map_loaded or not cls._SUBMODULE:
+            return
 
-    @classmethod
-    def _lazy_import(cls):
-        if cls._package and cls._package_dir:
-            for finder, name, ispkg in pkgutil.walk_packages([cls._package_dir]):
-                if name.startswith("_"):
-                    continue
-                importlib.import_module(f"{cls._package}.{name}")
-            cls._package = None  # avoid repeated imports
+        package_name = f"{ROOT_PACKAGE}.{cls._SUBMODULE}"
+        try:
+            pkg = importlib.import_module(package_name)
+            if hasattr(pkg, "_REGISTRY_MAP"):
+                raw_map = getattr(pkg, "_REGISTRY_MAP")
+                if not isinstance(raw_map, dict):
+                    logger.warning(
+                        f"⚠️ [Factory] _REGISTRY_MAP in {package_name} is not a dict."
+                    )
+                    return
+
+                for algo_name, rel_path in raw_map.items():
+                    key = algo_name.lower()
+                    if rel_path.startswith("."):
+                        full_path = f"{package_name}{rel_path}"
+                    else:
+                        full_path = rel_path
+                    cls._lazy_map[key] = full_path
+            else:
+                logger.debug(
+                    f"ℹ️ [Factory] No _REGISTRY_MAP found in {package_name}. Only pre-imported classes are available."
+                )
+
+        except ImportError as e:
+            logger.error(
+                f"❌ [Factory] Critical: Could not import package '{package_name}': {e}"
+            )
+
+        cls._map_loaded = True
 
     @classmethod
     def register(cls, name: Optional[str] = None):
-        """Decorator for registering a class."""
-
         def decorator(target_cls: Type):
             reg_name = (name or target_cls.__name__).lower()
             if reg_name in cls._registry:
-                raise KeyError(
-                    f"'{reg_name}' already registered in {cls.__name__} "
-                    f"by {cls._registry[reg_name].__name__}"
-                )
+                raise KeyError(f"'{reg_name}' already registered in {cls.__name__}")
             cls._registry[reg_name] = target_cls
             return target_cls
 
@@ -51,59 +70,84 @@ class BaseFactory(ABC):
 
     @classmethod
     def get(cls, name: str) -> Type:
-        cls._lazy_import()
         key = name.lower()
-        if key not in cls._registry:
-            available = ", ".join(cls._registry.keys())
-            raise KeyError(
-                f"'{name}' not found in {cls.__name__}. Available: {available}"
-            )
-        return cls._registry[key]
+        if key in cls._registry:
+            return cls._registry[key]
+
+        cls._load_submodule_map()
+
+        if key in cls._lazy_map:
+            module_path = cls._lazy_map[key]
+            try:
+                # logger.debug(f"🎯 [Factory] Loading: {key} -> {module_path}")
+                importlib.import_module(module_path)
+                if key in cls._registry:
+                    return cls._registry[key]
+                else:
+                    raise ImportError(
+                        f"Module '{module_path}' was imported, but '{key}' was not found in registry. "
+                        f"Did you forget @{cls.__name__}.register or match the name?"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"❌ [Factory] Failed to import '{module_path}' for '{key}': {e}"
+                )
+                raise e
+
+        available = list(cls._registry.keys()) + list(cls._lazy_map.keys())
+        msg = f"'{name}' not found in {cls.__name__}."
+        if not available:
+            msg += " Registry is empty. Did you define _REGISTRY_MAP in __init__.py?"
+        else:
+            msg += f" Available: {', '.join(sorted(available))}"
+
+        raise KeyError(msg)
 
     @classmethod
     @abstractmethod
     def create(cls, *args, **kwargs): ...
 
-    @classmethod
-    def available(cls):
-        cls._lazy_import()
-        return list(cls._registry.keys())
+
+# ================================= Concrete Factories ================================= #
 
 
 class ModelFactory(BaseFactory):
+    _SUBMODULE = "model"
+
     @classmethod
     def create(cls, *args, config: "ModelConfig", **kwargs):
-        name = config.type
-        target_cls = cls.get(name)
-        return target_cls(*args, config=config, **kwargs)
-
-
-MODELS_PACKAGE = "npuslim.model"
-MODELS_PATH = Path(__file__).resolve().parent.parent / "model"
-ModelFactory.set_package(MODELS_PACKAGE, str(MODELS_PATH))
+        return cls.get(config.type)(*args, config=config, **kwargs)
 
 
 class DatasetFactory(BaseFactory):
+    _SUBMODULE = "dataset"
+
     @classmethod
-    def create(cls, *args, config: "CalibDatasetConfig", **kwargs):
-        name = config.type
-        target_cls = cls.get(name)
-        return target_cls(*args, config=config, **kwargs)
+    def create(cls, *args, config: "DatasetConfig", **kwargs):
+        return cls.get(config.type)(*args, config=config, **kwargs)
 
 
-DATALOADER_PACKAGE = "npuslim.dataset"
-DATALOADER_PATH = Path(__file__).resolve().parent.parent / "dataset"
-DatasetFactory.set_package(DATALOADER_PACKAGE, str(DATALOADER_PATH))
+class TaskFactory(BaseFactory):
+    _SUBMODULE = "tasks"
+
+    @classmethod
+    def create(
+        cls, task_key: str, raw_config: Dict[str, Any], resources: Dict[str, Any]
+    ):
+        return cls.get(task_key)(config=raw_config, resources=resources)
 
 
 class CompressorFactory(BaseFactory):
+    _SUBMODULE = "compressor"
+
     @classmethod
-    def create(cls, *args, config: "CompressorConfig", **kwargs):
-        name = config.type
-        target_cls = cls.get(name)
-        return target_cls(*args, **kwargs)
+    def create(cls, algo_name: str, *args, **kwargs):
+        return cls.get(algo_name)(*args, **kwargs)
 
 
-COMPRESSOR_PACKAGE = "npuslim.compressor"
-COMPRESSOR_PATH = Path(__file__).resolve().parent.parent / "compressor"
-CompressorFactory.set_package(COMPRESSOR_PACKAGE, str(COMPRESSOR_PATH))
+class SaverFactory(BaseFactory):
+    _SUBMODULE = "saver"
+
+    @classmethod
+    def create(cls, format_name: str, *args, **kwargs):
+        return cls.get(format_name)(*args, **kwargs)

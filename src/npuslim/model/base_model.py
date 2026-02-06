@@ -1,5 +1,5 @@
 from typing import TYPE_CHECKING
-from abc import ABC, abstractmethod
+from abc import ABC
 import torch
 import importlib
 from dataclasses import asdict
@@ -13,18 +13,17 @@ if TYPE_CHECKING:
 def get_hub_class(model_hub: str, class_name: str):
     """
     Dynamically fetch the specified class from the given hub (hf/ms).
-    
+
     :param model_hub: 'hf' (Hugging Face) or 'ms' (ModelScope)
     :param class_name: The name of the class to import, e.g., 'AutoModelForCausalLM'
     :return: The class object
     """
-    hub_pkg_map = {
-        "hf": "transformers",
-        "ms": "modelscope"
-    }
+    hub_pkg_map = {"hf": "transformers", "ms": "modelscope"}
 
     if model_hub not in hub_pkg_map:
-        raise ValueError(f"❌ Unsupported hub: {model_hub}. Supported hubs are 'hf' and 'ms'.")
+        raise ValueError(
+            f"❌ Unsupported hub: {model_hub}. Supported hubs are 'hf' and 'ms'."
+        )
     pkg_name = hub_pkg_map[model_hub]
 
     try:
@@ -33,7 +32,9 @@ def get_hub_class(model_hub: str, class_name: str):
         return cls
 
     except ImportError:
-        raise ImportError(f"⚠️ '{pkg_name}' not installed. Please run: pip install {pkg_name}")
+        raise ImportError(
+            f"⚠️ '{pkg_name}' not installed. Please run: pip install {pkg_name}"
+        )
     except AttributeError:
         raise AttributeError(
             f"⚠️ Class '{class_name}' not found in '{pkg_name}'. "
@@ -62,7 +63,7 @@ class BaseLLMModel(ABC):
     def prepare(self):
         AutoModelForCausalLM = get_hub_class(self.model_hub, "AutoModelForCausalLM")
         AutoTokenizer = get_hub_class(self.model_hub, "AutoTokenizer")
-        
+
         logger.info(
             f"Loading model from: '{self.model_path}' with kwargs: {self.model_kwargs}"
         )
@@ -92,6 +93,31 @@ class BaseLLMModel(ABC):
             raise NotImplementedError
             # return self._streaming_forward(*args, **kwargs)
 
+    def get_quant_convert_module(self):
+        """
+        Returns the module that will be converted to quantized.
+        This is typically the main transformer module of the model.
+        """
+        return self.model
+    
+    def get_layers(self):
+        return self.model.model.layers
+
+    def get_observer_layers(self, ignore_layers: list = []):
+        """
+        Default implementation: Returns all Linear layers except those in ignore_layers.
+        Subclasses can override this for complex architectures (e.g., MoE).
+        """
+        all_modules = dict(self.model.named_modules())
+        target_layers = {}
+        for name, module in all_modules.items():
+            if isinstance(module, torch.nn.Linear):
+                if ignore_layers and any(ignored in name for ignored in ignore_layers):
+                    continue
+                target_layers[name] = module
+
+        return target_layers
+
     def get_pre_transformer_modules(self):
         pre_transformer_modules_dict = {}
         for full_name in self.pre_transformer_module_names:
@@ -114,22 +140,3 @@ class BaseLLMModel(ABC):
             if k.startswith(self.block_name)
             and k.split(".")[-2] + "." + k.split(".")[-1] in names
         ]
-
-    def get_quant_convert_module(self):
-        """
-        Returns the module that will be converted to quantized.
-        This is typically the main transformer module of the model.
-        """
-        return self.model
-
-    def save_pretrained(self, save_path):
-        self.model.save_pretrained(save_path, safe_serialization=True)
-        self.tokenizer.save_pretrained(save_path)
-
-    @abstractmethod
-    def get_observer_layers(self, ignore_layers: list = []): ...
-
-    def get_layers(self): ...
-
-    # @abstractmethod
-    # def get_save_func(self): ...

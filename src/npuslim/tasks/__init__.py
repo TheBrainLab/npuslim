@@ -1,6 +1,9 @@
-from .ptq_task import PTQTask
-from .sparse_task import SparseTask
-from .speculative_task import SpeculativeTask
+# file: src/npuslim/tasks/__init__.py
 
-
-__all__ = ["PTQTask", "SparseTask", "SpeculativeTask"]
+_REGISTRY_MAP = {
+    "ptq": ".compressor_task",
+    "sparse": ".compressor_task",
+    "save": ".save_task",
+    "eval": ".eval_task",
+    "speculative": ".speculative_task",
+}

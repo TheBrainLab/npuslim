@@ -21,6 +21,7 @@ dependencies = [
     "lm-eval", 
     "evalscope",
     "optimum",
+    "primefac"
     # "gptqmodel"
 ]
 
