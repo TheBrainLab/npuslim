@@ -20,10 +20,10 @@ help:
 	@$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
 
 
-# 在 Makefile 末尾添加
+# Build both Chinese and English HTML versions
 all-html:
 	@echo "Building Chinese version..."
-	@sphinx-build -b html source build/html/zh_CN
+	@sphinx-build -b html -D language=zh_CN source build/html/zh_CN
 	@echo "Building English version..."
 	@sphinx-build -b html -D language=en source build/html/en
 	@echo "Done! Both languages are in build/html/"

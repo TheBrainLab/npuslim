@@ -1,25 +1,25 @@
 document.addEventListener("DOMContentLoaded", function() {
-    // 1. 找到那个语言切换按钮 (通过你之前定义的 id)
+    // 1. Switch language button logic
     var btn = document.getElementById("lang-switcher-btn");
     
     if (btn) {
-        // 2. 获取当前页面的路径 (比如 /en/benchmark/index.html)
+        // 2. Get the current path and determine the new path for switching languages
         var currentPath = window.location.pathname;
         var newPath = currentPath;
 
-        // 3. 执行路径替换逻辑
+        // 3. Replace the language code in the path
         if (currentPath.includes("/zh_CN/")) {
-            // 如果当前是中文，换成英文路径
+            // If currently in Chinese, switch to English path
             newPath = currentPath.replace("/zh_CN/", "/en/");
         } else if (currentPath.includes("/en/")) {
-            // 如果当前是英文，换成中文路径
+            // If currently in English, switch to Chinese path
             newPath = currentPath.replace("/en/", "/zh_CN/");
         }
         
-        // 4. 更新按钮的链接
+        // 4. Update the button's href to the new path
         btn.setAttribute("href", newPath);
 
-        // 5. 【补刀】强制在当前窗口打开 (解决新标签页问题)
+        // 5. Ensure the link opens in the same tab
         btn.removeAttribute("target");
         btn.setAttribute("target", "_self");
     }

@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: NPUSlim \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-02-14 04:04+0800\n"
+"POT-Creation-Date: 2026-02-14 13:21+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -18,30 +18,32 @@ msgstr ""
 "Generated-By: Babel 2.10.3\n"
 
 #: ../../source/index.md:6
-msgid "教程"
-msgstr "Tutorials"
+msgid "Tutorials"
+msgstr "教程"
 
 #: ../../source/index.md:6
-msgid "API 文档"
-msgstr "API Reference"
+msgid "API Reference"
+msgstr "API 参考"
 
 #: ../../source/index.md:6
-msgid "性能基准"
-msgstr "Performance Benchmark"
+msgid "Performance Benchmarks"
+msgstr "性能基准"
 
 #: ../../source/index.md:6
-msgid "常见问题"
-msgstr "FAQ"
+msgid "FAQ"
+msgstr "常见问题"
 
 #: ../../source/index.md:6
-msgid "关于"
-msgstr "About"
+msgid "About"
+msgstr "关于"
 
 #: ../../source/index.md:1
-msgid "NPUSlim: NPU 加速模型压缩"
-msgstr "NPUSlim: NPU Accelerated Model Compression"
+msgid "NPUSlim: NPU-accelerated Model Compression"
+msgstr "NPUSlim：NPU 加速的模型压缩工具"
 
 #: ../../source/index.md:3
-msgid "(这里放原本在 index.md 里的所有正文内容...) NPUSlim 是一个专为华为昇腾 NPU 设计的..."
-msgstr "(Here goes all the original content from index.md...) NPUSlim is a model compression toolkit specifically designed for Huawei Ascend NPU..."
+msgid ""
+"(Original main content of index.md goes here...) NPUSlim is designed "
+"specifically for Huawei Ascend NPU..."
+msgstr "(index.md 的原始主要内容在这里...) NPUSlim 是专门为华为 Ascend NPU 设计的..."
 

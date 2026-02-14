@@ -1,15 +1,15 @@
-# NPUSlim: NPU 加速模型压缩
+# NPUSlim: NPU-accelerated Model Compression
 
-(这里放原本在 index.md 里的所有正文内容...)
-NPUSlim 是一个专为华为昇腾 NPU 设计的...
+(Original main content of index.md goes here...)
+NPUSlim is designed specifically for Huawei Ascend NPU...
 
 ```{toctree}
 :maxdepth: 2
 :hidden:
 
-教程 <tutorials/index>
-API 文档 <reference/index>
-性能基准 <benchmark/index>
-常见问题 <faq/index>
-关于 <about>
+Tutorials <tutorials/index>
+API Reference <reference/index>
+Performance Benchmarks <benchmark/index>
+FAQ <faq/index>
+About <about>
 ```
