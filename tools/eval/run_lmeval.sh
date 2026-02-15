@@ -27,7 +27,7 @@ Description:
 Options:
   --model-path PATH       Path to model (Optional if first arg)
   --backend TYPE          Backend to use: 'vllm' or 'hf' (default: vllm)
-  --tasks LIST            Comma-separated tasks (e.g. mmlu,ceval-valid) (default: mmlu)
+  --tasks LIST            Comma-separated tasks (e.g. wikitext,ceval-valid) (default: wikitext)
   --fewshot INT           Number of few-shot examples (default: 0)
   --batch-size SIZE       Batch size or 'auto' (default: auto)
   --output-dir DIR        Directory to save results (default: outputs/eval)
@@ -41,14 +41,14 @@ Options:
                           (Auto-set to 'ascend' on NPU if using vllm)
 
 Example:
-  bash $0 outputs/qwen-int8 --tasks mmlu --fewshot 5 -d 0,1 -t 2
+  bash $0 outputs/qwen-int8 --tasks wikitext --fewshot 5 -d 0,1 -t 2
 EOF
 }
 
 # --- 默认配置 ---
 MODEL_PATH=""
 BACKEND="vllm"
-TASKS="mmlu"
+TASKS="wikitext"
 FEWSHOT=0
 BATCH_SIZE="auto"
 OUTPUT_DIR="outputs/lmeval"
