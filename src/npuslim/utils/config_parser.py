@@ -93,10 +93,11 @@ class ModelConfig:
 @dataclass(frozen=True)
 class DatasetConfig:
     type: str = field(metadata={"help": "Dataset Factory identifier."})
-    data_path: str = field(metadata={"help": "Path to the raw dataset."})
+    data_path: Optional[str] = field(default=None, metadata={"help": "Path to the raw dataset (optional for some datasets like C4)."})
     num_samples: int = field(default=256, metadata={"help": "Max samples."})
     max_seq_length: int = field(default=2048, metadata={"help": "Max context length."})
     device: str = field(default="cpu", metadata={"help": "Device for data tensors."})
+    seed: int = field(default=0, metadata={"help": "Random seed for sampling."})
 
 
 @dataclass(frozen=True)

@@ -132,6 +132,9 @@ dmypy.json
 # Pycharm
 .idea
 
+# Claude
+.claude
+
 # TF code
 tensorflow_code
 

@@ -2,4 +2,5 @@
 
 _REGISTRY_MAP = {
     "Qwen3": ".qwen3.qwen3_model",
+    "OPT": ".opt.opt_model",
 }
