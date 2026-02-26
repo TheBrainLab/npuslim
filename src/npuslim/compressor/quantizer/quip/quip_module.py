@@ -15,8 +15,8 @@ import torch.nn as nn
 import transformers
 
 from npuslim.compressor.core.base_hessian_module import BaseHessianModule
-from npuslim.compressor.core.quant_func import WeightQuantizer
-from .vector_balance import quantize_weight_vecbal
+from npuslim.compressor.core.quant_func import compute_scales_with_zero
+from .vector_balance import quantize_weight_ldlq, LDLQConfig
 
 
 class QuIPModule(BaseHessianModule):
@@ -24,8 +24,8 @@ class QuIPModule(BaseHessianModule):
     QuIP Module using LDLQ/Vector Balance algorithm.
 
     Following original QuIP's Balance class (bal.py):
-    - Uses quantize_weight_vecbal for quantization
-    - Supports qfn='a' (minmax) or qfn='b' (RMS)
+    - Uses quantize_weight_ldlq for quantization
+    - Supports quant_func="minmax" or "rms"
     - Outputs float16 weights (fake quantization)
     """
 
@@ -36,18 +36,14 @@ class QuIPModule(BaseHessianModule):
         self.w_bits = getattr(self.config, "w_bits", 4)
         self.npasses = getattr(self.config, "npasses", 0)  # greedy passes
         self.unbiased = getattr(self.config, "unbiased", False)
-        self.qfn = getattr(self.config, "qfn", "b")  # 'a' or 'b'
-        self.qmethod = getattr(self.config, "qmethod", "ldlq")  # 'ldlq', 'ldl_gptqequiv', etc.
-        self.lazy_batch = getattr(self.config, "lazy_batch", False)  # Use blocked version
-        self.blocksize = getattr(self.config, "blocksize", 128)  # Only used when lazy_batch=True
+        self.quant_func = getattr(self.config, "quant_func", "rms")  # "minmax" or "rms"
+        self.ldlq_method = getattr(self.config, "ldlq_method", "ldlq")
+        self.blocksize = getattr(self.config, "blocksize", 128)
 
-        # For computing initial scale/zero (used with qfn='a')
-        self.quantizer = WeightQuantizer(
-            bits=self.w_bits,
-            method="minmax",
-            sym=False,  # QuIP uses sym=False
-            perchannel=True,
-        )
+        # Scale/zero for minmax mode (computed in fasterquant)
+        self.scale = None
+        self.zero = None
+        self.maxq = 2**self.w_bits - 1
 
     def fasterquant(self, **kwargs):
         """
@@ -55,7 +51,7 @@ class QuIPModule(BaseHessianModule):
 
         Following original QuIP's Balance.fasterquant():
         1. Get weight and Hessian
-        2. Apply quantize_weight_vecbal
+        2. Apply quantize_weight_ldlq
         3. Update layer weight
         4. Apply postproc (reverse preprocessing)
 
@@ -71,34 +67,30 @@ class QuIPModule(BaseHessianModule):
         full_w = w.clone()
         tick = time.time()
 
-        # Initialize quantizer for scale/zero (used with qfn='a')
-        if not self.quantizer.ready():
-            self.quantizer.find_params(w)
+        # Only compute scale/zero for minmax mode
+        if self.quant_func == "minmax":
+            if self.scale is None:
+                self.scale, self.zero = compute_scales_with_zero(
+                    w, bits=self.w_bits, sym=False
+                )
 
         # Get Hessian
         H = self.H.data.clone()
 
-        # Quantization parameters
-        maxq = 2**self.w_bits - 1
-        # Keep scale/zero in correct shape for broadcasting [out_features, 1]
-        scale = self.quantizer.scale if self.quantizer.scale is not None else None
-        zero = self.quantizer.zero if self.quantizer.zero is not None else None
+        # Build LDLQConfig
+        ldlq_config = LDLQConfig(
+            nbits=self.w_bits,
+            quant_func=self.quant_func,
+            ldlq_method=self.ldlq_method,
+            npasses=self.npasses,
+            unbiased=self.unbiased,
+            blocksize=self.blocksize,
+            scale=self.scale,
+            zero=self.zero,
+        )
 
         # Apply LDLQ quantization
-        quant_w = quantize_weight_vecbal(
-            w=w,
-            H=H,
-            nbits=self.w_bits,
-            npasses=self.npasses,
-            scale=scale,
-            zero=zero,
-            maxq=maxq,
-            unbiased=self.unbiased,
-            qfn=self.qfn,
-            qmethod=self.qmethod,
-            lazy_batch=self.lazy_batch,
-            blocksize=self.blocksize,
-        )
+        quant_w = quantize_weight_ldlq(w=w, H=H, config=ldlq_config)
 
         # Update layer weight
         if isinstance(self.layer, transformers.Conv1D):

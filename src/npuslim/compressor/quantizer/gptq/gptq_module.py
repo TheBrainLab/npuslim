@@ -3,24 +3,31 @@ import torch.nn as nn
 import transformers
 from loguru import logger
 from npuslim.compressor.core.base_hessian_module import BaseHessianModule
-from ...core.quant_func import WeightQuantizer
+from npuslim.compressor.core.quant_func import compute_scales_with_zero, quantize_with_scale_zero
 
 
 class GPTQModule(BaseHessianModule):
+    """GPTQ quantization module for individual layers."""
+
     def __init__(self, *args, **kwargs):
         super(GPTQModule, self).__init__(*args, **kwargs)
+
+        # Quantization parameters
+        self.w_bits = getattr(self.config, "w_bits", 4)
         self.groupsize = getattr(self.config, "group_size", 128)
         self.blocksize = getattr(self.config, "blocksize", 128)
         self.actorder = getattr(self.config, "actorder", True)
         self.static_groups = getattr(self.config, "static_groups", True)
-        self.quantizer = WeightQuantizer(
-            bits=getattr(self.config, "w_bits", 4),
-            method=getattr(self.config, "qfn_method", "minmax"),
-            sym=getattr(self.config, "sym", True),
-            perchannel=getattr(self.config, "perchannel", True),
-        )
+        self.sym = getattr(self.config, "sym", True)
+
+        # Pre-computed scales and zeros (replaces WeightQuantizer state)
+        self.scales = []
+        self.zeros = []
+        self.scale = None
+        self.zero = None
 
     def fasterquant(self, **kwargs):
+        """Execute GPTQ quantization algorithm."""
         W = self.layer.weight.data.clone().float()
         if isinstance(self.layer, nn.Conv2d):
             W = W.flatten(1)
@@ -33,17 +40,24 @@ class GPTQModule(BaseHessianModule):
             )
             self.static_groups = True
 
-        scales = []
-        zeros = []
+        # Pre-compute scales/zeros for static groups (replaces quantizer.find_params)
         if self.static_groups and self.groupsize != -1:
             for i in range(0, self.columns, self.groupsize):
-                self.quantizer.find_params(W[:, i : i + self.groupsize])
-                scales.append(self.quantizer.scale.clone())
-                zeros.append(self.quantizer.zero.clone())
+                scale, zero = compute_scales_with_zero(
+                    W[:, i : i + self.groupsize],
+                    bits=self.w_bits,
+                    sym=self.sym,
+                )
+                self.scales.append(scale)
+                self.zeros.append(zero)
 
+        # For non-grouped quantization, compute scale/zero once
         if self.groupsize == -1:
-            if not self.quantizer.ready():
-                self.quantizer.find_params(W)
+            self.scale, self.zero = compute_scales_with_zero(
+                W,
+                bits=self.w_bits,
+                sym=self.sym,
+            )
 
         H = self.H
         if self.actorder:
@@ -74,21 +88,37 @@ class GPTQModule(BaseHessianModule):
                 d = Hinv1[i, i]
                 current_col = i1 + i
 
+                # Get scale/zero for current position (replaces quantizer state access)
                 if self.groupsize != -1:
                     if self.static_groups:
                         original_idx = perm[current_col]
                         group_idx = original_idx // self.groupsize
-                        self.quantizer.scale = scales[group_idx]
-                        self.quantizer.zero = zeros[group_idx]
+                        scale = self.scales[group_idx]
+                        zero = self.zeros[group_idx]
                     else:
                         if current_col % self.groupsize == 0:
-                            self.quantizer.find_params(
-                                W[:, current_col : current_col + self.groupsize]
+                            scale, zero = compute_scales_with_zero(
+                                W[:, current_col : current_col + self.groupsize],
+                                bits=self.w_bits,
+                                sym=self.sym,
                             )
-                            scales.append(self.quantizer.scale.clone())
-                            zeros.append(self.quantizer.zero.clone())
+                            self.scales.append(scale)
+                            self.zeros.append(zero)
+                        else:
+                            scale = self.scales[current_col // self.groupsize]
+                            zero = self.zeros[current_col // self.groupsize]
+                else:
+                    scale = self.scale
+                    zero = self.zero
 
-                q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+                # Quantize (replaces quantizer.quantize)
+                q = quantize_with_scale_zero(
+                    w.unsqueeze(1),
+                    scale,
+                    zero,
+                    bits=self.w_bits,
+                ).flatten()
+
                 Q1[:, i] = q
                 Losses1[:, i] = (w - q) ** 2 / d**2
 
@@ -100,6 +130,7 @@ class GPTQModule(BaseHessianModule):
             Losses[:, i1:i2] = Losses1 / 2
             W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
 
+        # Build group index
         if self.groupsize == -1:
             g_idx = torch.zeros(self.columns, dtype=torch.int32, device="cpu")
         else:
@@ -127,12 +158,13 @@ class GPTQModule(BaseHessianModule):
             self.layer.weight.data.dtype
         )
 
+        # Prepare final scales and zeros
         if self.groupsize != -1:
-            final_scale = torch.cat(scales, dim=1)
-            final_zero = torch.cat(zeros, dim=1)
+            final_scale = torch.cat(self.scales, dim=1)
+            final_zero = torch.cat(self.zeros, dim=1)
         else:
-            final_scale = self.quantizer.scale
-            final_zero = self.quantizer.zero
+            final_scale = self.scale
+            final_zero = self.zero
 
         self.postproc()
         self.free()

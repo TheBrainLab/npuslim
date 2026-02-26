@@ -32,16 +32,20 @@ class QuIPConfig:
     group_size: int = -1  # QuIP doesn't use grouping by default
 
     # --- QuIP-specific LDLQ Parameters ---
-    # qfn: Quantization function - 'a' for minmax, 'b' for RMS (default with incoherence processing)
-    qfn: str = "b"
-    # qmethod: Quantization method - 'ldlq', 'ldl_gptqequiv'
-    qmethod: str = "ldlq"
+    # quant_func: Quantization function - "minmax" or "rms" (default with incoherence processing)
+    quant_func: str = "rms"
+    # ldlq_method: LDLQ method - "ldlq", "ldl_gptqequiv", "ldlqRG", "allbal", "ldlbal_admm"
+    ldlq_method: str = "ldlq"
     # npasses: Number of greedy refinement passes (0 means no refinement)
     npasses: int = 0
     # unbiased: Use unbiased rounding
     unbiased: bool = False
     # blocksize: Block size for LDLQ processing
     blocksize: int = 128
+
+    # --- Incoherence Processing (便捷参数) ---
+    # When True, automatically sets: quant_func="rms", preproc_*=True
+    incoh_processing: bool = True
 
     # --- Pre-processing Parameters (Incoherence Processing) ---
     preproc_rescale: bool = True  # Weight/Hessian diagonal rescaling
@@ -52,6 +56,16 @@ class QuIPConfig:
     # --- Fake Quantization (no packing) ---
     # Set to True for testing - outputs float16 weights without integer packing
     fake_quant: bool = True
+
+    def __post_init__(self):
+        """Apply incoh_processing convenience settings."""
+        if self.incoh_processing:
+            # Override quant_func to rms for incoherence processing
+            self.quant_func = "rms"
+            # Ensure all preprocessing is enabled
+            self.preproc_hessian = True
+            self.preproc_rescale = True
+            self.preproc_proj = True
 
 
 @CompressorFactory.register("QuIP")

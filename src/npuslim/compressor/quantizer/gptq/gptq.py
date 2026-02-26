@@ -29,8 +29,6 @@ class GPTQConfig:
     w_bits: int = 4
     group_size: int = 128
     sym: bool = True
-    qfn_method: str = "minmax"  # Method used by WeightQuantizer
-    mse: bool = False
 
     # --- Pre-processing Parameters (Used during Observer find_params stage) ---
     preproc_rescale: bool = False
