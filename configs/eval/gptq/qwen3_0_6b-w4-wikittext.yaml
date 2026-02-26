@@ -4,7 +4,7 @@ meta:
 
 model:
   type: Qwen3
-  model_path: outputs/compressor/gptq/qwen3_0_6b
+  model_path: outputs/compressor/quip/qwen3_0_6b-w4
   model_hub: hf
   model_kwargs:
     trust_remote_code: true
@@ -12,13 +12,10 @@ model:
     use_cache: false
     torch_dtype: auto
     device_map: cpu
+    # 禁用 transformers 的量化加载，使用模型自带的量化层
+    # 这样可以避免 optimum GPTQ quantizer 的 bug
   tokenizer_kwargs:
     trust_remote_code: true
 
 pipeline:
   - type: eval
-    output_dir: ./outputs
-    datasets: [ wikitext ]
-    num_fewshot: 0
-    batch_size: 1
-    limit: null

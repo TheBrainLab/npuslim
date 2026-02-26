@@ -1,0 +1,64 @@
+meta:
+  type: llm
+  work_dir: ./logs
+
+model:
+  type: OPT
+  model_path: facebook/opt-125m
+  model_hub: hf
+  model_kwargs:
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    use_cache: false
+    torch_dtype: auto
+    device_map: cpu
+  tokenizer_kwargs:
+    trust_remote_code: true
+
+calib_dataset:
+  dataset:
+    type: C4Dataset
+    num_samples: 128
+    max_seq_length: 2048
+    seed: 0
+  dataloader:
+    batch_size: 1
+    shuffle: true
+    num_workers: 0
+
+pipeline:
+  - type: ptq
+    algo_name: QuIP
+    ignore_layers: []
+    algo_config:
+      # QuIP uses 4-bit quantization by default
+      w_bits: 4
+      # No grouping for QuIP (works on full matrix)
+      group_size: -1
+
+      # QuIP-specific LDLQ parameters
+      # qfn: 'a' for minmax, 'b' for RMS (default with incoherence processing)
+      qfn: b
+      # qmethod: 'ldlq' is the standard LDL quantization
+      qmethod: ldlq
+      # npasses: greedy refinement passes (5 works better for our implementation)
+      npasses: 5
+      # unbiased: use unbiased rounding
+      unbiased: false
+      # blocksize: block size for LDLQ processing
+      blocksize: 128
+
+      # Incoherence preprocessing - enable for qfn='b'
+      preproc_rescale: true
+      preproc_proj: true
+      preproc_proj_mode: 1  # butterfly_noblock (original QuIP default)
+      preproc_hessian: true
+
+      # Fake quantization mode - output float16 weights without packing
+      fake_quant: true
+
+  - type: eval
+
+  - type: save
+    algo_name: HuggingFaceSaver
+    save_dir: ./outputs

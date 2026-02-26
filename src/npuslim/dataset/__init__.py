@@ -3,4 +3,5 @@
 _REGISTRY_MAP = {
     "TextDataset": ".text_dataset",
     "C4Dataset": ".c4_dataset",
+    "WikiText2Dataset": ".wikitext2_dataset",
 }

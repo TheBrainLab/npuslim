@@ -146,7 +146,20 @@ class BaseHessianModule:
         self.preproc_hessian = getattr(self.config, "preproc_hessian", False)
         self.preproc_rescale = getattr(self.config, "preproc_rescale", False)
         self.preproc_proj = getattr(self.config, "preproc_proj", False)
-        self.preproc_proj_mode = getattr(self.config, "preproc_proj_mode", 0)
+
+        # Convert integer mode to ButterflyMode enum for comparison
+        # Official QuIP mapping: 0=butterfly_permute, 1=butterfly_noblock, 2=butterfly_nopermute, 3=random_ortho
+        preproc_proj_mode = getattr(self.config, "preproc_proj_mode", 1)
+        if isinstance(preproc_proj_mode, int):
+            mode_map = {
+                0: ButterflyMode.BUTTERFLY_PERMUTE,
+                1: ButterflyMode.BUTTERFLY_PERMUTE_NOBLOCK,
+                2: ButterflyMode.BUTTERFLY_NOPERMUTE,
+                3: ButterflyMode.RANDOM_ORTHO,
+            }
+            self.preproc_proj_mode = mode_map.get(preproc_proj_mode, ButterflyMode.BUTTERFLY_PERMUTE_NOBLOCK)
+        else:
+            self.preproc_proj_mode = preproc_proj_mode
 
     def add_batch(self, inp, out):
         if len(inp.shape) == 2:

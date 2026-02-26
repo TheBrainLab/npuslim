@@ -33,6 +33,7 @@ pipeline:
     algo_config:
       w_bits: 4
       qfn_method: minmax
+      fake_quant: true  # Output float16 weights without packing (like QuIP)
 
   - type: eval
 

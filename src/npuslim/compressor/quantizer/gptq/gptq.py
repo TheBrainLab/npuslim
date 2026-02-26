@@ -44,6 +44,10 @@ class GPTQConfig:
     percdamp: float = 0.01
     preproc_hessian: bool = True  # Whether to pre-process the Hessian matrix
 
+    # --- Fake Quantization (no packing) ---
+    # Set to True for testing - outputs float16 weights without integer packing
+    fake_quant: bool = True
+
 
 @CompressorFactory.register("GPTQ")
 class GPTQ(BaseCompressorAlgo):
@@ -99,6 +103,12 @@ class GPTQ(BaseCompressorAlgo):
         """
         Conversion phase: Perform operator replacement and weight packing into low-bit formats.
         """
+        if self.cfg.fake_quant:
+            logger.info("🔄 [GPTQ] Fake quantization mode - skipping packing.")
+            logger.info("   Weights are already quantized to float16 in calibrate phase.")
+            self.model.quantized = True
+            return
+
         logger.info("🔄 [GPTQ] Converting modules and packing weights...")
 
         # 1. Identify layers that need to be replaced

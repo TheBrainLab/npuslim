@@ -66,6 +66,8 @@ class WeightQuantizer(nn.Module):
             self.scale = None
             self.zero = None
             self.maxq = 2**self.bits - 1
+        elif self.method == "rms_symmetric":
+            self._find_params_rms_symmetric(x)
         else:
             raise ValueError(f"Unknown quantization method: {self.method}")
 
@@ -104,17 +106,57 @@ class WeightQuantizer(nn.Module):
         self.zero = zero.reshape(out_shape)
         self.maxq = maxq
 
+    @torch.no_grad()
+    def _find_params_rms_symmetric(self, x: torch.Tensor):
+        """
+        RMS symmetric quantization method compatible with GPTQ packing format.
+
+        For symmetric quantization:
+        - scale = 2.4 * sqrt(mean(x^2)) per output channel
+        - zero = maxq / 2 (symmetric zero point)
+
+        This produces scale/zero compatible with GPTQQuantLinear.pack().
+        """
+        maxq = 2**self.bits - 1
+        shape = x.shape
+
+        if self.perchannel:
+            x_flat = x.flatten(1)  # [out_features, in_features]
+        else:
+            x_flat = x.flatten().unsqueeze(0)
+
+        # RMS scale: 2.4 * sqrt(mean(x^2)) per output channel (row-wise)
+        scale = 2.4 * x_flat.square().mean(dim=1).sqrt() + 1e-16
+
+        # Symmetric zero point: maxq / 2
+        zero = torch.full_like(scale, maxq / 2)
+
+        out_shape = [-1] + [1] * (len(shape) - 1)
+        self.scale = scale.reshape(out_shape)
+        self.zero = zero.reshape(out_shape)
+        self.maxq = maxq
+
     # ------------------------------------------------------------
     # Float quantization (for analysis / forward)
     # ------------------------------------------------------------
 
     @torch.no_grad()
-    def quantize(self, x: torch.Tensor) -> torch.Tensor:
+    def quantize(self, x: torch.Tensor, scale: torch.Tensor = None) -> torch.Tensor:
+        """
+        Quantize input tensor.
+
+        Args:
+            x: Input tensor to quantize
+            scale: Pre-computed scale for RMS method. If None, will compute internally.
+        """
         if self.method == "minmax":
             assert self.ready()
             return self._quant_minmax(x)
         elif self.method == "rms":
-            return self._quant_rms(x)
+            return self._quant_rms(x, scale)
+        elif self.method == "rms_symmetric":
+            assert self.ready()
+            return self._quant_rms_symmetric(x)
         else:
             raise ValueError(f"Unknown quantization method: {self.method}")
 
@@ -125,20 +167,71 @@ class WeightQuantizer(nn.Module):
         return self.scale * (q - self.zero)
 
     @torch.no_grad()
-    def _quant_rms(self, x: torch.Tensor) -> torch.Tensor:
-        scale = 2.4 * x.square().mean().sqrt() + 1e-16
-        maxq = 2**self.bits - 1
+    def _quant_rms(self, x: torch.Tensor, scale: torch.Tensor = None) -> torch.Tensor:
+        """
+        RMS quantization method.
+
+        Args:
+            x: Input tensor to quantize
+            scale: Pre-computed RMS scale. If None, will compute internally.
+        """
+        maxq = self.maxq if self.maxq is not None else (2**self.bits - 1)
+
+        # Use provided scale or compute internally
+        if scale is not None:
+            scale = scale.to(x.device)
+        else:
+            scale = self.get_rms_scale(x)
 
         q = (x / scale + 1.0) / 2.0
         q = torch.round(q * maxq).clamp(0, maxq)
         q = q / maxq * 2.0 - 1.0
         return q * scale
 
+    @torch.no_grad()
+    def _quant_rms_symmetric(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        RMS symmetric quantization compatible with GPTQ packing format.
+
+        Uses clamp-before-round (LDL equivalent) for better numerical stability.
+
+        Quantization formula (symmetric):
+            q = clamp(round(x / scale) + zero, 0, maxq)
+            x_dequant = scale * (q - zero)
+        """
+        q = torch.round(x / self.scale) + self.zero
+        q = torch.clamp(q, 0, self.maxq)
+        return self.scale * (q - self.zero)
+
+    @torch.no_grad()
+    def get_rms_scale(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Get RMS scale for a given input tensor.
+        
+        RMS scale formula: scale = 2.4 * sqrt(mean(x^2))
+        
+        Args:
+            x: Input tensor of shape [..., features]
+        
+        Returns:
+            Scale tensor. If perchannel=True, returns scale per output channel.
+        """
+        if self.perchannel:
+            # Per-channel scale: compute mean over all dimensions except the last (feature dim)
+            # For weight tensor of shape [out_features, in_features]
+            # We want scale per output channel (row)
+            return 2.4 * x.square().mean(dim=list(range(1, x.ndim))).sqrt() + 1e-16
+        else:
+            # Single scale for the entire tensor
+            return 2.4 * x.square().mean().sqrt() + 1e-16
+
     # ------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------
 
     def ready(self) -> bool:
+        # rms method computes scale dynamically, doesn't need pre-computed scale
+        # rms_symmetric and minmax require pre-computed scale/zero
         return self.method == "rms" or self.scale is not None
 
     def clear(self):
