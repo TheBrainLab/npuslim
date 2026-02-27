@@ -1,0 +1,140 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, weiyangdaren
+# This file is distributed under the same license as the NPUSlim package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: NPUSlim \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-02-26 18:19+0800\n"
+"PO-Revision-Date: 2026-02-26 18:34+0800\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_Hans_CN\n"
+"Language-Team: zh_Hans_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.10.3\n"
+
+#: ../../source/reference/datasets.md:1
+msgid "Datasets"
+msgstr ""
+
+#: ../../source/reference/datasets.md:3
+msgid "BaseDataset"
+msgstr ""
+
+#: ../../source/reference/datasets.md:12
+msgid "Dataset Classes"
+msgstr ""
+
+#: ../../source/reference/datasets.md:14
+msgid "C4Dataset"
+msgstr ""
+
+#: ../../source/reference/datasets.md:16
+msgid "C4 web text dataset for calibration."
+msgstr ""
+
+#: ../../source/reference/datasets.md:24
+msgid "WikiText2Dataset"
+msgstr ""
+
+#: ../../source/reference/datasets.md:26
+msgid "WikiText-2 dataset for calibration."
+msgstr ""
+
+#: ../../source/reference/datasets.md:34
+msgid "MMLUDataset"
+msgstr ""
+
+#: ../../source/reference/datasets.md:36
+msgid "MMLU (Massive Multitask Language Understanding) dataset for evaluation."
+msgstr ""
+
+#: ../../source/reference/datasets.md:44
+msgid "TextDataset"
+msgstr ""
+
+#: ../../source/reference/datasets.md:46
+msgid "Custom text dataset from local files."
+msgstr ""
+
+#: ../../source/reference/datasets.md:54
+msgid "Usage"
+msgstr ""
+
+#: ../../source/reference/datasets.md:82
+msgid "Configuration"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "Parameter"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "Type"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "Description"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "`type`"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "str"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "Dataset factory identifier"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "`data_path`"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "Path to raw data (optional)"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "`num_samples`"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "int"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "Maximum samples to load"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "`max_seq_length`"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "Maximum sequence length"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "`device`"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "Device for tensors"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "`seed`"
+msgstr ""
+
+#: ../../source/reference/datasets.md
+msgid "Random seed for sampling"
+msgstr ""
+

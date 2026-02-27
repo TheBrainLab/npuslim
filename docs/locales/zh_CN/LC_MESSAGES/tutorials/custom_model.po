@@ -1,0 +1,102 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, weiyangdaren
+# This file is distributed under the same license as the NPUSlim package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: NPUSlim \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-02-26 18:19+0800\n"
+"PO-Revision-Date: 2026-02-26 18:34+0800\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_Hans_CN\n"
+"Language-Team: zh_Hans_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.10.3\n"
+
+#: ../../source/tutorials/custom_model.md:1
+msgid "Adding Custom Model Support"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:3
+msgid ""
+"This guide shows how to add support for new model architectures to "
+"NPUSlim."
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:5
+msgid "Overview"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:7
+msgid "NPUSlim uses a factory pattern for model creation. To add a new model:"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:9
+msgid "Create a model adapter class inheriting from `BaseLLMModel`"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:10
+msgid "Register the model in the factory registry"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:11
+msgid "Update config parser if needed"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:13
+msgid "Step 1: Create Model Adapter"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:15
+msgid "Create a new file in `src/npuslim/model/<model_name>/`:"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:33
+msgid "Step 2: Register Model"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:35
+msgid "Update `src/npuslim/model/llama/__init__.py`:"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:48
+msgid "Or use the `_REGISTRY_MAP` for lazy loading:"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:57
+msgid "Step 3: Update Config"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:59
+msgid "Add your model to the config template:"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:68
+msgid "Optional: Custom Layer Handling"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:70
+msgid "If your model has special layer types, override `get_observer_layers`:"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:89
+msgid "Test Your Model"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:108
+msgid "See Also"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:110
+msgid "[BaseLLMModel Reference](../reference/models.md)"
+msgstr ""
+
+#: ../../source/tutorials/custom_model.md:111
+msgid "[Quantization Algorithms](../reference/quantizers.md)"
+msgstr ""
+

@@ -1,0 +1,154 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, weiyangdaren
+# This file is distributed under the same license as the NPUSlim package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: NPUSlim \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-02-26 18:19+0800\n"
+"PO-Revision-Date: 2026-02-26 18:34+0800\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_Hans_CN\n"
+"Language-Team: zh_Hans_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.10.3\n"
+
+#: ../../source/tutorials/sparsegpt.md:1
+msgid "SparseGPT Quantization"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:3
+msgid ""
+"SparseGPT combines structured pruning with quantization for additional "
+"compression."
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:5
+msgid "Overview"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:7
+msgid "**Sparsification**: Structured pruning using Hessian information"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:8
+msgid "**Quantization**: 4-bit weight quantization after pruning"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:9
+msgid "**Two-Phase**: Pruning phase + quantization phase"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:10
+msgid "**Target Aware**: Can target specific sparsity levels"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:12
+msgid "Configuration"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:27
+msgid "Parameters"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "Parameter"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "Type"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "Description"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "Default"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "`w_bits`"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "int"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "Weight bit width"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "4"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "`sparsity`"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "float"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "Target sparsity ratio (0-1)"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "0.5"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "`prunen`"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "Pruning ratio per iteration"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md
+msgid "0.1"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:35
+msgid "Example"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:61
+msgid "Run Command"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:67
+msgid "Output Format"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:69
+msgid "SparseGPT stores sparse quantized weights:"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:78
+msgid "Notes"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:80
+msgid "Higher `sparsity` = more compression, potential accuracy loss"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:81
+msgid "Sparse inference requires NPU sparse kernel support"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:82
+msgid "Calibration dataset quality significantly affects pruning quality"
+msgstr ""
+
+#: ../../source/tutorials/sparsegpt.md:83
+msgid "Use structured sparsity patterns for better hardware efficiency"
+msgstr ""
+

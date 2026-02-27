@@ -1,0 +1,199 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, weiyangdaren
+# This file is distributed under the same license as the NPUSlim package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: NPUSlim \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-02-27 09:54+0800\n"
+"PO-Revision-Date: 2026-02-27 09:54+0800\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_Hans_CN\n"
+"Language-Team: zh_Hans_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../source/tutorials/quantization_overview.md:1
+msgid "Quantization Methods Overview"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:3
+msgid ""
+"NPUSlim supports multiple post-training quantization (PTQ) algorithms. "
+"This page provides a comparison to help you choose the right method for "
+"your use case."
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:5
+msgid "Algorithm Comparison"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "Algorithm"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "Weight Bits"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "Activation"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "Speed"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "Accuracy"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "Best For"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+#: ../../source/tutorials/quantization_overview.md:16
+msgid "INT8Dynamic"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "8"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "Dynamic INT8"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "⚡⚡⚡"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "Good"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "General purpose, fast"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+#: ../../source/tutorials/quantization_overview.md:22
+msgid "GPTQ"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "4-8"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "FP16"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "⚡⚡"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "Better"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "Accuracy-critical tasks"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+#: ../../source/tutorials/quantization_overview.md:28
+msgid "QuIP"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "2-4"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "⚡"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "Best"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "Extreme compression"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+#: ../../source/tutorials/quantization_overview.md:34
+msgid "SparseGPT"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "4-8 + Pruning"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md
+msgid "Structured sparsity"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:14
+msgid "When to Use Each"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:18
+msgid "**Recommended for**: First-time users, production deployment"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:19
+msgid "**Pros**: Fast quantization, no calibration data needed"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:20
+msgid "**Cons**: Lower compression ratio"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:24
+msgid "**Recommended for**: When accuracy matters more than speed"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:25
+msgid "**Pros**: Better accuracy at lower bits"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:26
+msgid "**Cons**: Slower quantization, requires calibration data"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:30
+msgid "**Recommended for**: Extreme compression (2-4 bits)"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:31
+msgid "**Pros**: State-of-the-art low-bit quantization"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:32
+msgid "**Cons**: Slowest quantization, experimental"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:36
+msgid "**Recommended for**: When you need both pruning and quantization"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:37
+msgid "**Pros**: Combines sparsity with quantization"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:38
+msgid "**Cons**: More complex, requires tuning"
+msgstr ""
+
+#: ../../source/tutorials/quantization_overview.md:40
+msgid "Quick Reference"
+msgstr ""
+

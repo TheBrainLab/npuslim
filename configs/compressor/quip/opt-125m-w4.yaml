@@ -42,21 +42,11 @@ pipeline:
       # ldlq_method: "ldlq" is the standard LDL quantization
       ldlq_method: ldlq
       # npasses: greedy refinement passes (5 works better for our implementation)
-      npasses: 5
-      # unbiased: use unbiased rounding
-      unbiased: false
-      # blocksize: block size for LDLQ processing
-      blocksize: 128
+      npasses: 0
 
       # Incoherence processing convenience parameter
       # When True, auto-sets: quant_func=rms, preproc_*=True
       incoh_processing: true
-
-      # Incoherence preprocessing (can be omitted when incoh_processing=true)
-      preproc_rescale: true
-      preproc_proj: true
-      preproc_proj_mode: 1  # butterfly_noblock (original QuIP default)
-      preproc_hessian: true
 
       # Fake quantization mode - output float16 weights without packing
       fake_quant: true

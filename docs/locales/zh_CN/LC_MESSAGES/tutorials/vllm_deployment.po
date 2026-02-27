@@ -1,0 +1,166 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, weiyangdaren
+# This file is distributed under the same license as the NPUSlim package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: NPUSlim \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-02-26 18:19+0800\n"
+"PO-Revision-Date: 2026-02-26 18:34+0800\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_Hans_CN\n"
+"Language-Team: zh_Hans_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.10.3\n"
+
+#: ../../source/tutorials/vllm_deployment.md:1
+msgid "vLLM Deployment"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:3
+msgid "Deploy quantized models with vLLM-ascend for high-throughput inference."
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:5
+msgid "Prerequisites"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:7
+msgid "vLLM-ascend installed"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:8
+msgid "Quantized model saved via NPUSlim"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:9
+msgid "NPUSlim plugin registered (via `pip install -e .`)"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:11
+msgid "Quick Deploy"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:17
+msgid "Parameters"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md
+msgid "Parameter"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md
+msgid "Description"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md
+msgid "`--model-path`"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md
+msgid "Path to quantized model"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md
+msgid "`-d, --devices`"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md
+msgid "NPU devices to use (e.g., `4,5`)"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md
+msgid "`-t, --tp`"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md
+msgid "Tensor parallel size"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md
+msgid "`-q, --quantization`"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md
+msgid "Enable quantization (required for NPUSlim models)"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:26
+msgid "Verify Deployment"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:28
+msgid "Start the vLLM server, then test with the chat script:"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:34
+msgid "Or make an API request:"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:46
+msgid "Troubleshooting"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:48
+msgid "Plugin Not Found"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:50
+msgid "Ensure NPUSlim is installed:"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:56
+msgid "Quantization Error"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:58
+msgid "Verify the model was quantized with a supported method:"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:65
+msgid ""
+"The `quantization_config` should contain `\"quant_method\"` matching "
+"NPUSlim algorithms."
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:67
+msgid "OOM During Inference"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:69
+msgid "Reduce tensor parallel size or use smaller models:"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:75
+msgid "Performance Tuning"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:77
+msgid "Use multiple NPUs with tensor parallelism (`-t 2, -t 4`)"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:78
+msgid "Adjust `gpu_memory_utilization` in vLLM config for NPU memory"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:79
+msgid "Enable KV cache quantization for additional memory savings"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:81
+msgid "See Also"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:83
+msgid "[LM-Eval Guide](../benchmark/) for evaluation"
+msgstr ""
+
+#: ../../source/tutorials/vllm_deployment.md:84
+msgid "[Troubleshooting](../faq/) for common issues"
+msgstr ""
+

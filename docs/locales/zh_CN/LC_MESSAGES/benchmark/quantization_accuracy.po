@@ -1,0 +1,110 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, weiyangdaren
+# This file is distributed under the same license as the NPUSlim package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: NPUSlim \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-02-26 18:19+0800\n"
+"PO-Revision-Date: 2026-02-26 18:34+0800\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_Hans_CN\n"
+"Language-Team: zh_Hans_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.10.3\n"
+
+#: ../../source/benchmark/quantization_accuracy.md:1
+msgid "Quantization Accuracy"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md:3
+msgid "[TO BE ADDED]"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md:5
+msgid "Overview"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md:7
+msgid ""
+"Comparison of quantization accuracy across different algorithms and bit "
+"widths."
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md:9
+msgid "Results"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md
+msgid "Model"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md
+msgid "Algorithm"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md
+msgid "Bits"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md
+msgid "PPL (WikiText2)"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md
+msgid "PPL (C4)"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md
+msgid "Qwen3-0.6B"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md
+msgid "FP16"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md
+msgid "16"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md
+msgid "-"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md
+msgid "INT8Dynamic"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md
+msgid "8"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md
+msgid "GPTQ"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md
+msgid "4"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md
+msgid "QuIP"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md:18
+msgid "Evaluation Method"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md:28
+msgid "Analysis"
+msgstr ""
+
+#: ../../source/benchmark/quantization_accuracy.md:30
+msgid "[Detailed analysis of accuracy vs compression trade-offs]"
+msgstr ""
+

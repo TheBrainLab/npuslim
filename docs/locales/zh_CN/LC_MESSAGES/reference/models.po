@@ -1,0 +1,70 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, weiyangdaren
+# This file is distributed under the same license as the NPUSlim package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: NPUSlim \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-02-26 18:19+0800\n"
+"PO-Revision-Date: 2026-02-26 18:34+0800\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_Hans_CN\n"
+"Language-Team: zh_Hans_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.10.3\n"
+
+#: ../../source/reference/models.md:1
+msgid "Models"
+msgstr ""
+
+#: ../../source/reference/models.md:3
+msgid "BaseLLMModel"
+msgstr ""
+
+#: ../../source/reference/models.md:12
+msgid "Usage Example"
+msgstr ""
+
+#: ../../source/reference/models.md:33
+msgid "Model Adapters"
+msgstr ""
+
+#: ../../source/reference/models.md:35
+msgid "Qwen3"
+msgstr ""
+
+#: ../../source/reference/models.md:37
+msgid "Qwen3 model adapter with Ascend NPU support."
+msgstr ""
+
+#: ../../source/reference/models.md:39
+msgid "**File**: `src/npuslim/model/qwen3/qwen3_model.py`"
+msgstr ""
+
+#: ../../source/reference/models.md:47
+msgid "OPT"
+msgstr ""
+
+#: ../../source/reference/models.md:49
+msgid "OPT model adapter."
+msgstr ""
+
+#: ../../source/reference/models.md:51
+msgid "**File**: `src/npuslim/model/opt/opt_model.py`"
+msgstr ""
+
+#: ../../source/reference/models.md:59
+msgid "Adding Custom Models"
+msgstr ""
+
+#: ../../source/reference/models.md:61
+msgid ""
+"See [Adding Custom Model Support](../tutorials/custom_model.md) for a "
+"complete guide."
+msgstr ""
+

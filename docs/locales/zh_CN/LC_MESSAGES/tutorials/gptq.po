@@ -1,0 +1,181 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, weiyangdaren
+# This file is distributed under the same license as the NPUSlim package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: NPUSlim \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-02-26 18:19+0800\n"
+"PO-Revision-Date: 2026-02-26 18:34+0800\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_Hans_CN\n"
+"Language-Team: zh_Hans_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.10.3\n"
+
+#: ../../source/tutorials/gptq.md:1
+msgid "GPTQ Quantization"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:3
+msgid ""
+"GPTQ (Group-wise Post-training Quantization) is an activation-aware "
+"weight quantization method that achieves high accuracy with 4-bit "
+"weights."
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:5
+msgid "Overview"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:7
+msgid "**Weight Quantization**: 4-bit, group-wise"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:8
+msgid "**Activation-Aware**: Uses Hessian information for optimal rounding"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:9
+msgid "**Two-Phase**: Calibration phase + conversion phase"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:10
+msgid ""
+"**True Quantization**: Stores packed int4 weights with dequantization "
+"parameters"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:12
+msgid "Configuration"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:28
+msgid "Parameters"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "Parameter"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "Type"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "Description"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "Default"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "`w_bits`"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "int"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "Weight bit width (usually 4)"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "4"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "`group_size`"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "Group size for quantization"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "128"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "`actorder`"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "bool"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "Sort activation by magnitude"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "True"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "`damp_percent`"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "float"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "Damping factor for Hessian"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md
+msgid "0.01"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:37
+msgid "Example"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:68
+msgid "Run Command"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:74
+msgid "Output Format"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:76
+msgid "GPTQ stores quantized weights in packed format:"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:87
+msgid "Deployment"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:89
+msgid "GPTQ models can be deployed with vLLM-ascend:"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:95
+msgid "Notes"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:97
+msgid "Smaller `group_size` = better accuracy, slower inference"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:98
+msgid "Larger `group_size` = faster inference, lower accuracy"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:99
+msgid "Use `actorder=True` for better quality"
+msgstr ""
+
+#: ../../source/tutorials/gptq.md:100
+msgid "Hessian computation requires calibration data"
+msgstr ""
+
