@@ -44,7 +44,7 @@ class GPTQConfig:
 
     # --- Fake Quantization (no packing) ---
     # Set to True for testing - outputs float16 weights without integer packing
-    fake_quant: bool = True
+    fake_quant: bool = False
 
 
 @CompressorFactory.register("GPTQ")

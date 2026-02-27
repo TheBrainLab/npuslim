@@ -13,7 +13,7 @@ from npuslim.utils.backend import bh
 from ..base_algo import BaseCompressorAlgo
 
 from .quip_module import QuIPModule
-from ..gptq.gptq_linear import GPTQQuantLinear  # Reuse GPTQ's linear layer
+from .quip_linear import QuIPLinear
 
 from npuslim.compressor.core.layer_wise_scheduler import (
     LayerWiseScheduler,
@@ -55,7 +55,7 @@ class QuIPConfig:
 
     # --- Fake Quantization (no packing) ---
     # Set to True for testing - outputs float16 weights without integer packing
-    fake_quant: bool = True
+    fake_quant: bool = False
 
     def __post_init__(self):
         """Apply incoh_processing convenience settings."""
@@ -149,26 +149,39 @@ class QuIP(BaseCompressorAlgo):
                 continue
 
             ori_layer = all_layers[name]
-            scale, zero, g_idx = self.quantizer_results[name]
+            result = self.quantizer_results[name]
 
             # Retrieve parent module info for in-place replacement
             parent_module, sub_name = find_parent_layer_and_sub_name(self.model.model, name)
 
-            # Initialize QuIP-specific QuantLinear layer (reuses GPTQQuantLinear)
-            new_layer = GPTQQuantLinear(
+            # Determine if this layer uses zero points (minmax mode)
+            has_zero = result["zeros"] is not None
+
+            # Initialize QuIPLinear layer
+            new_layer = QuIPLinear(
                 bits=self.cfg.w_bits,
-                group_size=self.cfg.group_size,
                 infeatures=ori_layer.in_features,
                 outfeatures=ori_layer.out_features,
-                bias=ori_layer.bias is not None,
-                weight_dtype=ori_layer.weight.dtype,
+                has_zero=has_zero,
+                bias=result["bias"] is not None,
+                proj_mode=result["proj_mode"],
             )
 
             # Weight packing process (Must be executed on CPU to handle complex indexing)
             device = ori_layer.weight.device
             new_layer.cpu()
             ori_layer.cpu()
-            new_layer.pack(ori_layer, scale.cpu(), zero.cpu(), g_idx.cpu())
+
+            # Pack weights using the new format
+            new_layer.pack(
+                w_int=result["w_int"],
+                scales=result["scales"],
+                zeros=result["zeros"],
+                scaleWH=result["scaleWH"],
+                proj_seed_u=result["proj_seed_u"],
+                proj_seed_v=result["proj_seed_v"],
+                bias=result["bias"],
+            )
 
             # Replace the original layer and move the new one back to the target device
             setattr(parent_module, sub_name, new_layer.to(device))
@@ -183,14 +196,13 @@ class QuIP(BaseCompressorAlgo):
         """
         Synchronize quantization metadata with the model configuration for deployment compatibility.
 
-        Note: We use "gptq" as quant_method for HuggingFace compatibility, since QuIP uses
-        the same packing format as GPTQ.
+        Note: QuIP uses a custom format different from GPTQ.
         """
         self.model.model.config.quantization_config = {
             "bits": self.cfg.w_bits,
-            "group_size": self.cfg.group_size,
-            "sym": True,
-            "quant_method": "gptq",
-            "checkpoint_format": "gptq",
+            "quant_func": self.cfg.quant_func,
+            "quant_method": "quip",
+            "checkpoint_format": "quip",
+            "preproc_proj_mode": self.cfg.preproc_proj_mode,
         }
         logger.info("✅ QuIP metadata updated in model config.")

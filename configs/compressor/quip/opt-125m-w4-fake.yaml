@@ -3,8 +3,8 @@ meta:
   work_dir: ./logs
 
 model:
-  type: Qwen3
-  model_path: Qwen/Qwen3-0.6B
+  type: OPT
+  model_path: facebook/opt-125m
   model_hub: hf
   model_kwargs:
     trust_remote_code: true
@@ -31,15 +31,27 @@ pipeline:
     algo_name: QuIP
     ignore_layers: []
     algo_config:
+      # QuIP uses 4-bit quantization by default
       w_bits: 4
+      # No grouping for QuIP (works on full matrix)
+      group_size: -1
 
       # QuIP-specific LDLQ parameters
+      # quant_func: "minmax" or "rms" (default with incoherence processing)
       quant_func: rms
+      # ldlq_method: "ldlq" is the standard LDL quantization
       ldlq_method: ldlq
+      # npasses: greedy refinement passes (5 works better for our implementation)
       npasses: 0
 
-      # Incoherence processing
+      # Incoherence processing convenience parameter
+      # When True, auto-sets: quant_func=rms, preproc_*=True
       incoh_processing: true
+
+      # Fake quantization mode - output float16 weights without packing
+      fake_quant: true
+
+  # - type: eval
 
   - type: save
     algo_name: HuggingFaceSaver

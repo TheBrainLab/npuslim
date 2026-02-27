@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import primefac
 import transformers
+import numpy as np
 from enum import Enum
 from loguru import logger
 
@@ -33,7 +34,9 @@ def butterfly_factors(n):
 
 def gen_rand_orthos(m, p):
     if p != 2:
-        return torch.tensor(scipy.stats.special_ortho_group.rvs(p, size=m)).to(
+        # Use torch's RNG to generate seed for scipy (deterministic with torch.manual_seed)
+        seed = int(torch.randint(0, 2**31, (1,)).item())
+        return torch.tensor(scipy.stats.special_ortho_group.rvs(p, size=m, random_state=seed)).to(
             torch.float32
         )
     X = torch.zeros(m, 2, 2)
@@ -276,17 +279,19 @@ class BaseHessianModule:
         if preproc_proj:
             w = self.layer.weight.data.clone().to(torch.float32)
             H = self.H.data.clone().to(torch.float32)
+
+            # Generate and save seeds for reproducible Butterfly matrix generation
+            self.proj_seed_u = int(torch.randint(0, 2**31, (1,)).item())
+            self.proj_seed_v = int(torch.randint(0, 2**31, (1,)).item())
+
+            # Generate U matrix with seed (must set both torch and numpy/scipy seeds)
+            torch.manual_seed(self.proj_seed_u)
+            np.random.seed(self.proj_seed_u % (2**32))
             if preproc_proj_mode == ButterflyMode.BUTTERFLY_PERMUTE:
                 U = rand_ortho_butterfly(w.shape[0]).to(torch.float32).to(w.device)
-                V = rand_ortho_butterfly(w.shape[1]).to(torch.float32).to(w.device)
             elif preproc_proj_mode == ButterflyMode.BUTTERFLY_PERMUTE_NOBLOCK:
                 U = (
                     rand_ortho_butterfly_noblock(w.shape[0])
-                    .to(torch.float32)
-                    .to(w.device)
-                )
-                V = (
-                    rand_ortho_butterfly_noblock(w.shape[1])
                     .to(torch.float32)
                     .to(w.device)
                 )
@@ -296,13 +301,31 @@ class BaseHessianModule:
                     .to(torch.float32)
                     .to(w.device)
                 )
+            elif preproc_proj_mode == ButterflyMode.RANDOM_ORTHO:
+                U = rand_ortho_matrix(w.shape[0]).to(w.device)
+            else:
+                raise NotImplementedError(
+                    f"Projection mode '{preproc_proj_mode}' is not implemented yet"
+                )
+
+            # Generate V matrix with seed (must set both torch and numpy/scipy seeds)
+            torch.manual_seed(self.proj_seed_v)
+            np.random.seed(self.proj_seed_v % (2**32))
+            if preproc_proj_mode == ButterflyMode.BUTTERFLY_PERMUTE:
+                V = rand_ortho_butterfly(w.shape[1]).to(torch.float32).to(w.device)
+            elif preproc_proj_mode == ButterflyMode.BUTTERFLY_PERMUTE_NOBLOCK:
+                V = (
+                    rand_ortho_butterfly_noblock(w.shape[1])
+                    .to(torch.float32)
+                    .to(w.device)
+                )
+            elif preproc_proj_mode == ButterflyMode.BUTTERFLY_NOPERMUTE:
                 V = (
                     rand_ortho_butterfly_nopermute(w.shape[1])
                     .to(torch.float32)
                     .to(w.device)
                 )
             elif preproc_proj_mode == ButterflyMode.RANDOM_ORTHO:
-                U = rand_ortho_matrix(w.shape[0]).to(w.device)
                 V = rand_ortho_matrix(w.shape[1]).to(w.device)
             else:
                 raise NotImplementedError(

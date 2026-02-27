@@ -148,6 +148,7 @@ kernel_meta
 runs
 outputs
 debug
+debugs
 /runs_old
 /wandb
 /examples/runs

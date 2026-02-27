@@ -412,7 +412,8 @@ def quantize_weight_ldlq(
     w: torch.Tensor,
     H: torch.Tensor,
     config: LDLQConfig,
-) -> torch.Tensor:
+    return_int: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """
     Main quantization function for QuIP using LDLQ algorithm.
 
@@ -425,11 +426,14 @@ def quantize_weight_ldlq(
         w: Weight tensor [m, d]
         H: Hessian matrix [d, d]
         config: LDLQ configuration
+        return_int: If True, also return rounded integer weights
 
     Returns:
         Quantized weight tensor (float16)
+        If return_int=True, also returns w_int (int32) in [0, maxq] range
     """
     maxq = 2**config.nbits - 1
+    scale_rms = None  # Track for return
 
     # Special case: minmax + ldl_gptqequiv (GPTQ-compatible path)
     if config.quant_func == "minmax" and config.ldlq_method == "ldl_gptqequiv":
@@ -438,7 +442,10 @@ def quantize_weight_ldlq(
             nbits=config.nbits,
             unbiased=config.unbiased,
         )
-        return (config.scale * (wr - config.zero)).half()
+        quant_w = (config.scale * (wr - config.zero)).half()
+        if return_int:
+            return quant_w, wr.to(torch.int32)
+        return quant_w
 
     # --- Phase 1: Pre-processing based on quant_func ---
     if config.quant_func == "minmax":
@@ -455,6 +462,9 @@ def quantize_weight_ldlq(
     # --- Phase 2: LDLQ rounding ---
     wr = round_ldlq(wr, H, config)
 
+    # Save rounded integers BEFORE dequantization
+    w_int = wr.to(torch.int32)
+
     # --- Phase 3: Post-processing based on quant_func ---
     if config.quant_func == "minmax":
         wr = config.scale * (wr - config.zero)
@@ -462,4 +472,7 @@ def quantize_weight_ldlq(
         wr = (wr / maxq) * 2 - 1
         wr = wr * scale_rms
 
-    return wr.half()
+    quant_w = wr.half()
+    if return_int:
+        return quant_w, w_int
+    return quant_w

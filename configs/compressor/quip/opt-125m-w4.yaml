@@ -49,7 +49,7 @@ pipeline:
       incoh_processing: true
 
       # Fake quantization mode - output float16 weights without packing
-      fake_quant: true
+      fake_quant: false
 
   # - type: eval
 
