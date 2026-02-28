@@ -17,10 +17,10 @@ model:
 
 calib_dataset:
   dataset:
-    type: C4Dataset
+    type: TextDataset
+    data_path: ./dataset/sharegpt_gpt4_qwen/sharegpt_gpt4-qwen3_a22B_output.jsonl
     num_samples: 128
-    max_seq_length: 2048
-    seed: 0
+    max_seq_length: 4096
   dataloader:
     batch_size: 1
     shuffle: true
@@ -38,8 +38,11 @@ pipeline:
       ldlq_method: ldlq
       npasses: 0
 
-      # Incoherence processing
-      incoh_processing: true
+      # Incoherence processing - use projection only (rescale breaks Qwen3)
+      incoh_processing: false
+      preproc_hessian: true
+      preproc_rescale: false
+      preproc_proj: true
 
   - type: save
     algo_name: HuggingFaceSaver

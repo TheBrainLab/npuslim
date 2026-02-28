@@ -35,7 +35,7 @@ Options:
   # Hardware/Model Config
   -d, --devices DEV       Devices to use (e.g. "0,1") (default: 0)
   -t, --tp SIZE           Tensor Parallel size (default: 1)
-  --gpu-memory UTIL       GPU memory utilization (default: 0.9)
+  --gpu-memory UTIL       GPU memory utilization (default: 0.6)
   --max-model-len LEN     Max model length (default: 4096)
   -q, --quantization TYPE Quantization method (e.g., awq, gptq, ascend). 
                           (Auto-set to 'ascend' on NPU if using vllm)
@@ -154,14 +154,26 @@ echo "🔧 Model Args: $MODEL_ARGS"
 echo "📂 Output:     $OUTPUT_FILE"
 
 # --- 4. 执行评测 ---
-# 检查 lm_eval 是否安装
-if ! command -v lm_eval &> /dev/null; then
-    echo "❌ Error: 'lm_eval' command not found."
-    echo "   Please install: pip install lm-evaluation-harness"
+# 检查环境是否包含必要的库
+python -c "import npuslim; import lm_eval" &> /dev/null || {
+    echo "❌ Error: 'npuslim' or 'lm-evaluation-harness' not found in current Python environment."
     exit 1
-fi
+}
 
-lm_eval \
+echo "🚀 Launching lm_eval with NPUSlim plugin injection..."
+
+# 我们通过 python -c 启动，在进入 lm_eval 主程序前强制执行 npuslim 的注册逻辑
+python -c "
+import npuslim.plugins as plugin
+try:
+    plugin.register()
+    print('✅ NPUSlim plugin registered successfully.')
+except Exception as e:
+    print(f'⚠️  Plugin registration failed: {e}')
+
+from lm_eval.__main__ import cli_evaluate
+cli_evaluate()
+" \
     --model "$BACKEND" \
     --model_args "$MODEL_ARGS" \
     --tasks "$TASKS" \

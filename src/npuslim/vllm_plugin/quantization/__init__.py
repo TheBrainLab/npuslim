@@ -1,1 +1,0 @@
-ASCEND_QUANTIZATION_METHOD = "npuslim"
