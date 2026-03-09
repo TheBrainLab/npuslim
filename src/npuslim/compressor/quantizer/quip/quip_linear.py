@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from npuslim.compressor.core.base_hessian_module import (
+from npuslim.compressor.quantizer.quip.quip_module import (
     ButterflyMode,
     gen_rand_ortho_butterfly,
     gen_rand_ortho_butterfly_noblock,

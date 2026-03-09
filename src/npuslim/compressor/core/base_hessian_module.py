@@ -1,124 +1,13 @@
 import math
-import scipy
 import torch
 import torch.nn as nn
-import primefac
 import transformers
-import numpy as np
-from enum import Enum
 from loguru import logger
 
 from npuslim.utils.backend import bh
 
 
 DEBUG = False
-
-
-class ButterflyMode(str, Enum):
-    """Butterfly matrix generation modes for orthogonal projection"""
-
-    # 2-factor butterfly + permutation + blocking
-    BUTTERFLY_PERMUTE = "butterfly_permute"
-    # 2-factor butterfly + permutation (default, faster)
-    BUTTERFLY_PERMUTE_NOBLOCK = "butterfly_permute_noblock"
-    # 2-factor butterfly only (no permutation)
-    BUTTERFLY_NOPERMUTE = "butterfly_nopermute"
-    # Random orthogonal matrix (slower but more general)
-    RANDOM_ORTHO = "random_ortho"
-
-
-def butterfly_factors(n):
-    pf = list(primefac.primefac(n))
-    return (math.prod(pf[0::2]), math.prod(pf[1::2]))
-
-
-def gen_rand_orthos(m, p):
-    if p != 2:
-        # Use torch's RNG to generate seed for scipy (deterministic with torch.manual_seed)
-        seed = int(torch.randint(0, 2**31, (1,)).item())
-        return torch.tensor(scipy.stats.special_ortho_group.rvs(p, size=m, random_state=seed)).to(
-            torch.float32
-        )
-    X = torch.zeros(m, 2, 2)
-    t = torch.rand(m) * (2 * math.pi)
-    sin_t = torch.sin(t)
-    cos_t = torch.cos(t)
-    X[:, 0, 0] = cos_t
-    X[:, 1, 1] = cos_t
-    X[:, 0, 1] = sin_t
-    X[:, 1, 0] = -sin_t
-    return X
-
-
-# generates a random orthogonal butterfly matrix of dimension n
-def gen_rand_ortho_butterfly(n):
-    return (
-        [gen_rand_orthos(n // p, p) for p in butterfly_factors(n)],
-        torch.randperm(n),
-        torch.randperm(n),
-    )
-
-
-# generates a random orthogonal butterfly matrix of dimension n, without blocking
-def gen_rand_ortho_butterfly_noblock(n):
-    return (
-        [gen_rand_orthos(1, p) for p in butterfly_factors(n)],
-        torch.randperm(n),
-        torch.randperm(n),
-    )
-
-
-# generates a random orthogonal butterfly matrix of dimension n, no permutation, but yes blocking
-def gen_rand_ortho_butterfly_nopermute(n):
-    return (
-        [gen_rand_orthos(n // p, p) for p in butterfly_factors(n)],
-        torch.arange(n),
-        torch.arange(n),
-    )
-
-
-# multiply by a random orthogonal butterfly matrix
-def mul_ortho_butterfly(Bpp, x):
-    (B, p_in, p_out) = Bpp
-    assert (len(x.shape) == 1) or (len(x.shape) == 2)
-    orig_dim = 2
-    if len(x.shape) == 1:
-        (n,) = x.shape
-        x = x.reshape(n, 1)
-        orig_dim = 1
-    (n, q) = x.shape
-    x = x[p_in, :]
-    pfn = tuple(butterfly_factors(n))
-    for i in range(len(pfn)):
-        mpfx = math.prod(pfn[0:i])
-        p = pfn[i]
-        msfx = math.prod(pfn[(i + 1) :])
-        x = x.reshape(mpfx, p, msfx, q).permute(0, 2, 1, 3).reshape(mpfx * msfx, p, q)
-        x = B[i] @ x
-        x = x.reshape(mpfx, msfx, p, q).permute(0, 2, 1, 3).reshape(n, q)
-    x = x[p_out, :]
-    if orig_dim == 1:
-        x = x.reshape(n)
-    return x
-
-
-# generates a random orthogonal butterfly matrix of dimension n
-# and converts it to a dense matrix
-def rand_ortho_butterfly(n):
-    return mul_ortho_butterfly(gen_rand_ortho_butterfly(n), torch.eye(n))
-
-
-def rand_ortho_butterfly_noblock(n):
-    return mul_ortho_butterfly(gen_rand_ortho_butterfly_noblock(n), torch.eye(n))
-
-
-def rand_ortho_butterfly_nopermute(n):
-    return mul_ortho_butterfly(gen_rand_ortho_butterfly_nopermute(n), torch.eye(n))
-
-
-def rand_ortho_matrix(n):
-    """Generate a random orthogonal matrix of dimension n using scipy"""
-    return torch.tensor(scipy.stats.special_ortho_group.rvs(n), dtype=torch.float32)
 
 
 class BaseHessianModule:
@@ -147,22 +36,6 @@ class BaseHessianModule:
     def _apply_config(self):
         self.percdamp = getattr(self.config, "percdamp", 0.01)
         self.preproc_hessian = getattr(self.config, "preproc_hessian", False)
-        self.preproc_rescale = getattr(self.config, "preproc_rescale", False)
-        self.preproc_proj = getattr(self.config, "preproc_proj", False)
-
-        # Convert integer mode to ButterflyMode enum for comparison
-        # Official QuIP mapping: 0=butterfly_permute, 1=butterfly_noblock, 2=butterfly_nopermute, 3=random_ortho
-        preproc_proj_mode = getattr(self.config, "preproc_proj_mode", 1)
-        if isinstance(preproc_proj_mode, int):
-            mode_map = {
-                0: ButterflyMode.BUTTERFLY_PERMUTE,
-                1: ButterflyMode.BUTTERFLY_PERMUTE_NOBLOCK,
-                2: ButterflyMode.BUTTERFLY_NOPERMUTE,
-                3: ButterflyMode.RANDOM_ORTHO,
-            }
-            self.preproc_proj_mode = mode_map.get(preproc_proj_mode, ButterflyMode.BUTTERFLY_PERMUTE_NOBLOCK)
-        else:
-            self.preproc_proj_mode = preproc_proj_mode
 
     def add_batch(self, inp, out):
         if len(inp.shape) == 2:
@@ -251,97 +124,14 @@ class BaseHessianModule:
         return Hinv
 
     def preproc(self):
+        """
+        Preprocessing for Hessian-based quantization.
+
+        Handles shared preprocessing logic (preproc_hessian).
+        Subclasses can override to add algorithm-specific preprocessing.
+        """
         percdamp = self.percdamp
         preproc_hessian = self.preproc_hessian
-        preproc_rescale = self.preproc_rescale
-        preproc_proj = self.preproc_proj
-        preproc_proj_mode = self.preproc_proj_mode
-
-        if preproc_rescale:
-            w = self.layer.weight.data.clone().to(torch.float32)
-            H = self.H.to(torch.float32)
-            H /= H.abs().max()
-            diagH = torch.diag(H)
-            diagW2 = torch.diag(w.T @ w)
-            diagH = torch.clamp(diagH, min=1e-8)
-            diagW2 = torch.clamp(diagW2, min=1e-8)
-            scaleWH = (diagH / diagW2).sqrt().sqrt().to(torch.float32)
-            scaleWH = scaleWH.clamp(min=1e-8)
-            w *= scaleWH[None, :]
-            H /= scaleWH[None, :]
-            H /= scaleWH[:, None]
-            w = w.to(torch.float32)
-            scaleWH = scaleWH.to(torch.float32)
-            self.scaleWH = scaleWH.cpu()
-            self.layer.weight.data = w.to(self.layer.weight.data.dtype)
-            self.H.data = H.to(self.H.data.dtype)
-
-        if preproc_proj:
-            w = self.layer.weight.data.clone().to(torch.float32)
-            H = self.H.data.clone().to(torch.float32)
-
-            # Generate and save seeds for reproducible Butterfly matrix generation
-            self.proj_seed_u = int(torch.randint(0, 2**31, (1,)).item())
-            self.proj_seed_v = int(torch.randint(0, 2**31, (1,)).item())
-
-            # Generate U matrix with seed (must set both torch and numpy/scipy seeds)
-            torch.manual_seed(self.proj_seed_u)
-            np.random.seed(self.proj_seed_u % (2**32))
-            if preproc_proj_mode == ButterflyMode.BUTTERFLY_PERMUTE:
-                U = rand_ortho_butterfly(w.shape[0]).to(torch.float32).to(w.device)
-            elif preproc_proj_mode == ButterflyMode.BUTTERFLY_PERMUTE_NOBLOCK:
-                U = (
-                    rand_ortho_butterfly_noblock(w.shape[0])
-                    .to(torch.float32)
-                    .to(w.device)
-                )
-            elif preproc_proj_mode == ButterflyMode.BUTTERFLY_NOPERMUTE:
-                U = (
-                    rand_ortho_butterfly_nopermute(w.shape[0])
-                    .to(torch.float32)
-                    .to(w.device)
-                )
-            elif preproc_proj_mode == ButterflyMode.RANDOM_ORTHO:
-                U = rand_ortho_matrix(w.shape[0]).to(w.device)
-            else:
-                raise NotImplementedError(
-                    f"Projection mode '{preproc_proj_mode}' is not implemented yet"
-                )
-
-            # Generate V matrix with seed (must set both torch and numpy/scipy seeds)
-            torch.manual_seed(self.proj_seed_v)
-            np.random.seed(self.proj_seed_v % (2**32))
-            if preproc_proj_mode == ButterflyMode.BUTTERFLY_PERMUTE:
-                V = rand_ortho_butterfly(w.shape[1]).to(torch.float32).to(w.device)
-            elif preproc_proj_mode == ButterflyMode.BUTTERFLY_PERMUTE_NOBLOCK:
-                V = (
-                    rand_ortho_butterfly_noblock(w.shape[1])
-                    .to(torch.float32)
-                    .to(w.device)
-                )
-            elif preproc_proj_mode == ButterflyMode.BUTTERFLY_NOPERMUTE:
-                V = (
-                    rand_ortho_butterfly_nopermute(w.shape[1])
-                    .to(torch.float32)
-                    .to(w.device)
-                )
-            elif preproc_proj_mode == ButterflyMode.RANDOM_ORTHO:
-                V = rand_ortho_matrix(w.shape[1]).to(w.device)
-            else:
-                raise NotImplementedError(
-                    f"Projection mode '{preproc_proj_mode}' is not implemented yet"
-                )
-
-            H = H * (H.shape[0] / (torch.trace(H) + 1e-8)) + 1e-2 * torch.eye(
-                H.shape[0], device=w.device
-            )
-            H = H.to(torch.float32)
-            w = U @ w @ V.T
-            H = V @ H @ V.T
-            self.projU = U.cpu()
-            self.projV = V.cpu()
-            self.layer.weight.data = w.to(self.layer.weight.data.dtype)
-            self.H.data = H.to(self.H.data.dtype)
 
         if preproc_hessian:
             w = self.layer.weight.data.clone()
@@ -357,26 +147,13 @@ class BaseHessianModule:
         self.preproc_done = True
 
     def postproc(self):
-        assert self.preproc_done is True
-        if self.preproc_proj:
-            w = self.layer.weight.data.clone().to(torch.float32)
-            H = self.H.data.clone().to(torch.float32)
-            U = self.projU.to(w.device)
-            V = self.projV.to(w.device)
-            w = U.T @ w @ V
-            H = V.T @ H @ V
-            self.layer.weight.data = w.to(self.layer.weight.data.dtype)
-            self.H.data = H.to(self.H.data.dtype)
+        """
+        Post-processing to reverse preprocessing transformations.
 
-        if self.preproc_rescale:
-            w = self.layer.weight.data.clone()
-            H = self.H.data.clone()
-            scaleWH = self.scaleWH.to(w.device)
-            w = w / scaleWH[None, :]
-            H = H * scaleWH[:, None]
-            H = H * scaleWH[None, :]
-            self.layer.weight.data = w.to(self.layer.weight.data.dtype)
-            self.H.data = H.to(self.H.data.dtype)
+        Base implementation is a no-op.
+        Subclasses should override to reverse algorithm-specific preprocessing.
+        """
+        assert self.preproc_done is True
 
     def free(self):
         if DEBUG:
@@ -385,9 +162,6 @@ class BaseHessianModule:
         self.H = None
         self.Losses = None
         self.Trace = None
-        self.scaleWH = None
-        self.projU = None
-        self.projV = None
         bh.empty_cache()
 
     def print_log(self, avg_loss, norm_loss):
