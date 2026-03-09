@@ -43,6 +43,7 @@ def eval_perplexity(model, testenc, device="cuda"):
     model.config.use_cache = False
 
     # Get model components
+    rotary_emb = None
     if hasattr(model, 'model'):
         if hasattr(model.model, 'decoder'):
             # OPT model
@@ -51,13 +52,17 @@ def eval_perplexity(model, testenc, device="cuda"):
             embed_positions = model.model.decoder.embed_positions
             final_layer_norm = getattr(model.model.decoder, 'final_layer_norm', None)
             project_out = getattr(model.model.decoder, 'project_out', None)
+            model_type = 'opt'
         else:
-            # LLaMA-style model
+            # LLaMA-style model (including Qwen, Qwen2, Qwen3, etc.)
             layers = model.model.layers
             embed_tokens = model.model.embed_tokens
             embed_positions = None
             final_layer_norm = model.model.norm
             project_out = None
+            # Get rotary embedding for RoPE-based models (Qwen3, LLaMA, etc.)
+            rotary_emb = getattr(model.model, 'rotary_emb', None)
+            model_type = 'llama'
     else:
         raise ValueError("Unsupported model architecture")
 
@@ -77,7 +82,7 @@ def eval_perplexity(model, testenc, device="cuda"):
     # Capture inputs to each layer
     dtype = next(iter(model.parameters())).dtype
     inps = torch.zeros((nsamples, seqlen, model.config.hidden_size), dtype=dtype, device=device)
-    cache = {'i': 0, 'attention_mask': None}
+    cache = {'i': 0, 'attention_mask': None, 'position_ids': None, 'position_embeddings': None}
 
     class Catcher(nn.Module):
         def __init__(self, module):
@@ -88,7 +93,15 @@ def eval_perplexity(model, testenc, device="cuda"):
             inps[cache['i']] = inp
             cache['i'] += 1
             cache['attention_mask'] = kwargs.get('attention_mask', None)
+            cache['position_ids'] = kwargs.get('position_ids', None)
+            cache['position_embeddings'] = kwargs.get('position_embeddings', None)
             raise ValueError
+
+        def __getattr__(self, name):
+            try:
+                return super().__getattr__(name)
+            except AttributeError:
+                return getattr(self.module, name)
 
     layers[0] = Catcher(layers[0])
 
@@ -108,8 +121,21 @@ def eval_perplexity(model, testenc, device="cuda"):
         embed_positions = embed_positions.cpu()
     torch.cuda.empty_cache()
 
-    # Store attention mask
+    # Store attention mask and position_ids
     attention_mask = cache['attention_mask']
+    position_ids = cache['position_ids']
+    position_embeddings = cache['position_embeddings']
+
+    # For RoPE-based models (Qwen3, etc.), generate position_embeddings if not captured
+    if position_embeddings is None and rotary_emb is not None:
+        if position_ids is None:
+            position_ids = torch.arange(seqlen, device=device).unsqueeze(0)
+        # Generate cos/sin for RoPE
+        # rotary_emb expects (x, position_ids) where x is used for dtype/device
+        dummy_x = torch.zeros(1, seqlen, model.config.hidden_size, dtype=dtype, device=device)
+        position_embeddings = rotary_emb(dummy_x, position_ids)
+        print(f"Generated position_embeddings for RoPE model")
+
     outs = torch.zeros_like(inps)
 
     # Process through each layer
@@ -117,7 +143,16 @@ def eval_perplexity(model, testenc, device="cuda"):
         layer = layers[i].to(device)
 
         for j in range(nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+            # Build kwargs for layer forward
+            layer_kwargs = {}
+            if attention_mask is not None:
+                layer_kwargs['attention_mask'] = attention_mask
+            if position_ids is not None:
+                layer_kwargs['position_ids'] = position_ids
+            if position_embeddings is not None:
+                layer_kwargs['position_embeddings'] = position_embeddings
+
+            outs[j] = layer(inps[j].unsqueeze(0), **layer_kwargs)[0]
 
         layers[i] = layer.cpu()
         del layer

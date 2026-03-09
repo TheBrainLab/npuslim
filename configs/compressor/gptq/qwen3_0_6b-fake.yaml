@@ -32,8 +32,9 @@ pipeline:
     ignore_layers: []
     algo_config:
       w_bits: 4
+      fake_quant: true
   
-  - type: eval
+  # - type: eval
 
   - type: save
     algo_name: HuggingFaceSaver
