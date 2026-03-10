@@ -4,8 +4,8 @@ meta:
 
 model:
   type: Qwen3
-  model_path: Qwen/Qwen3-30B-A3B-Instruct-2507
-  model_hub: ms
+  model_path: Qwen/Qwen3-30B-A3B
+  model_hub: hf
   model_kwargs:
     trust_remote_code: true
     low_cpu_mem_usage: true
@@ -32,7 +32,6 @@ pipeline:
     ignore_layers: []
     algo_config:
       w_bits: 4
-      qfn_method: minmax
 
   - type: save
     algo_name: HuggingFaceSaver
