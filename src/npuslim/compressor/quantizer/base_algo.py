@@ -76,3 +76,14 @@ class BaseCompressorAlgo(ABC):
         Entry point for module conversion and final quantization (Specific to PTQ algorithms).
         """
         raise NotImplementedError
+
+    def _update_ascend_metadata(self):
+        """
+        Store Ascend-specific metadata for quant_model_description.json generation.
+
+        Subclasses should override this method to define their Ascend format.
+        The metadata is stored in model.config.ascend_quant_config and read by AscendSaver.
+
+        Default implementation: No Ascend metadata (model treated as FLOAT by AscendSaver).
+        """
+        pass

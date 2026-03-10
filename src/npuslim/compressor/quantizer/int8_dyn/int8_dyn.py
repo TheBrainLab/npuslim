@@ -144,7 +144,13 @@ class INT8Dynamic(BaseCompressorAlgo):
 
         # Update model status and metadata
         self.model.quantized = True
-        self._update_model_config()
+
+        # Update model config based on backend
+        if bh.name == "npu":
+            self._update_ascend_metadata()
+        else:
+            self._update_model_config()
+
         logger.success("✅ [INT8Dynamic] Conversion completed.")
 
     def _update_model_config(self):
@@ -197,3 +203,19 @@ class INT8Dynamic(BaseCompressorAlgo):
         self.model.model.config.quantization_config = quantization_config
 
         logger.info("✅ Quantization metadata updated.")
+
+    def _update_ascend_metadata(self):
+        """
+        Store Ascend-specific metadata for vLLM-Ascend deployment.
+        INT8 Dynamic uses per-channel weight quantization with dynamic activation.
+        """
+        from .int8_dyn_module import INTDynQDQModule
+
+        self.model.model.config.ascend_quant_config = {
+            "model_quant_type": "W8A8_dynamic",
+            "group_size": -1,  # Per-channel quantization
+            "quant_layer_types": [INTDynQDQModule.__name__],
+            "include_g_idx": False,
+            "has_offset": False,  # Only scale, no offset
+        }
+        logger.info("✅ INT8Dynamic Ascend metadata updated in model config.")

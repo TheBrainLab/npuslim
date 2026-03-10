@@ -13,7 +13,12 @@ else
     }
     setup_env() {
         local type=$1; local devs=$2
-        if [[ "$type" == "npu" ]]; then export ASCEND_RT_VISIBLE_DEVICES=$devs; export PYTORCH_NPU_ALLOC_CONF=expandable_segments:False;
+        if [[ "$type" == "npu" ]]; then
+            export ASCEND_RT_VISIBLE_DEVICES=$devs
+            export PYTORCH_NPU_ALLOC_CONF=expandable_segments:False
+            # vLLM-ascend v0.15.0rc1 need this
+            export HCCL_OP_EXPANSION_MODE=AIV
+            export TASK_QUEUE_ENABLE=1
         elif [[ "$type" == "gpu" ]]; then export CUDA_VISIBLE_DEVICES=$devs; fi
     }
 fi
@@ -29,11 +34,12 @@ Options:
   -d, --devices DEVICES     Device IDs (default: 0,1)
   -t, --tensor-parallel     TP size (default: 2)
   -p, --pipeline-parallel   PP size (default: 1)
-  -g, --memory-util         Memory utilization (default: 0.9)
+  -g, --memory-util         Memory utilization (default: 0.8)
   --max-model-len           Max model length (default: 4096)
   -q, --quantization [M]    Quantization method
   --media-path PATH         Allowed local media path for VLM
   --wait                    Wait until the server is healthy
+  --enforce-eager           Use eager execution mode
   -h, --help                Show this message
 EOF
 }
@@ -43,11 +49,12 @@ VISIBLE_DEVICES="0,1"
 INFERENCE_TP_SIZE=2
 PIPELINE_PARALLEL_SIZE=1
 PORT=8080
-MEMORY_UTILIZATION=0.6
+MEMORY_UTILIZATION=0.8
 MAX_MODEL_LEN=4096
 QUANT_METHOD=""
 MEDIA_PATH=""
 WAIT_FOR_READY=false
+ENFORCE_EAGER=false
 POSITIONAL_ARGS=()
 
 # --- 3. 参数解析 ---
@@ -66,6 +73,7 @@ while [[ $# -gt 0 ]]; do
             else QUANT_METHOD="auto"; shift 1; fi ;;
         --media-path) MEDIA_PATH="$2"; shift 2 ;;
         --wait) WAIT_FOR_READY=true; shift 1 ;;
+        --enforce-eager) ENFORCE_EAGER=true; shift 1 ;;
         -h|--help) usage; exit 0 ;;
         *) POSITIONAL_ARGS+=("$1"); shift ;; # 关键：收集位置参数
     esac
@@ -84,11 +92,6 @@ if [[ -z "$MODEL_PATH" ]]; then
     exit 1
 fi
 
-if [[ ! -e "$MODEL_PATH" ]]; then
-    echo "❌ Error: Model path does not exist: $MODEL_PATH"
-    exit 1
-fi
-
 # 自动检测设备
 [[ -z "$DEVICE_TYPE" ]] && DEVICE_TYPE=$(detect_device)
 setup_env "$DEVICE_TYPE" "$VISIBLE_DEVICES"
@@ -102,10 +105,10 @@ fi
 EXTRA_PARAMS=()
 [ -n "$QUANT_METHOD" ] && EXTRA_PARAMS+=("--quantization" "$QUANT_METHOD")
 [ -n "$MEDIA_PATH" ] && EXTRA_PARAMS+=("--allowed-local-media-path" "$MEDIA_PATH")
-[ "$DEVICE_TYPE" == "npu" ] && EXTRA_PARAMS+=("--device" "npu")
+[ "$ENFORCE_EAGER" = true ] && EXTRA_PARAMS+=("--enforce-eager")
 
 echo "🔍 Using Model Path: $MODEL_PATH"
-echo "🚀 Starting vLLM on ${DEVICE_TYPE^^} (Port: ${PORT})..."
+echo "🚀 Starting vLLM on ${DEVICE_TYPE^^} (Port: ${PORT}) | Devices: [${VISIBLE_DEVICES}]..."
 
 # --- 7. 执行启动 ---
 python -m vllm.entrypoints.openai.api_server \

@@ -29,12 +29,15 @@ calib_dataset:
 pipeline:
   - type: ptq
     algo_name: GPTQ
-    ignore_layers: []
+    ignore_layers:
+      - model.layers.*.mlp.down_proj
     algo_config:
       w_bits: 4
-  
-  # - type: eval
+
+  - type: eval
 
   - type: save
-    algo_name: HuggingFaceSaver
+    algo_name: AscendSaver
     save_dir: ./outputs
+    saver_args:
+      strip_quant_config: true

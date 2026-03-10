@@ -189,7 +189,13 @@ class QuIP(BaseCompressorAlgo):
         # Cleanup memory and update model status
         bh.empty_cache()
         self.model.quantized = True
-        self._update_model_config()
+
+        # Update model config based on backend
+        if bh.name == "npu":
+            self._update_ascend_metadata()
+        else:
+            self._update_model_config()
+
         logger.success("✅ [QuIP] Packing completed.")
 
     def _update_model_config(self):
@@ -206,3 +212,16 @@ class QuIP(BaseCompressorAlgo):
             "preproc_proj_mode": self.cfg.preproc_proj_mode,
         }
         logger.info("✅ QuIP metadata updated in model config.")
+
+    def _update_ascend_metadata(self):
+        """
+        Store Ascend-specific metadata for vLLM-Ascend deployment.
+        """
+        self.model.model.config.ascend_quant_config = {
+            "model_quant_type": f"W{self.cfg.w_bits}A16",
+            "group_size": self.cfg.group_size,
+            "quant_layer_types": [QuIPLinear.__name__],
+            "include_g_idx": False,
+            "has_offset": True,  # QuIP uses zeros/offset
+        }
+        logger.info("✅ QuIP Ascend metadata updated in model config.")

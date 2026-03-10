@@ -29,13 +29,20 @@ calib_dataset:
 pipeline:
   - type: ptq
     algo_name: GPTQ
-    ignore_layers: []
+    ignore_layers: 
+      - model.decoder.layers.7.*
+      - model.decoder.layers.8.*
+      - model.decoder.layers.9.*
+      - model.decoder.layers.10.*
+      - model.decoder.layers.11.*
+      - model.decoder.layers.12.*
     algo_config:
       w_bits: 4
-      fake_quant: true  # Output float16 weights without packing
 
   # - type: eval
 
   - type: save
-    algo_name: HuggingFaceSaver
+    algo_name: AscendSaver
     save_dir: ./outputs
+    saver_args:
+      strip_quant_config: true

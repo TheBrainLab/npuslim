@@ -19,6 +19,10 @@ setup_env() {
     if [[ "$device_type" == "npu" ]]; then
         export ASCEND_RT_VISIBLE_DEVICES=$devices
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:False
+        # vLLM-ascend v0.15.0rc1 need this for multi-NPU tensor parallelism
+        export HCCL_OP_EXPANSION_MODE=AIV
+        export TASK_QUEUE_ENABLE=1
+
     elif [[ "$device_type" == "gpu" ]]; then
         export CUDA_VISIBLE_DEVICES=$devices
     fi

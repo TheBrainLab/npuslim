@@ -3,6 +3,8 @@ import torch.nn as nn
 import numpy as np
 import math
 
+from npuslim.utils.backend import bh
+
 
 class GPTQQuantLinear(nn.Module):
 
@@ -25,230 +27,354 @@ class GPTQQuantLinear(nn.Module):
         self.group_size = group_size if group_size != -1 else infeatures
         self.maxq = 2**self.bits - 1
 
-        self.register_buffer(
-            "qweight",
-            torch.zeros((infeatures // 32 * self.bits, outfeatures), dtype=torch.int32),
-        )
-        self.register_buffer(
-            "qzeros",
-            torch.zeros(
-                (
-                    math.ceil(infeatures / self.group_size),
-                    outfeatures // 32 * self.bits,
+        # Backend-aware buffer registration
+        self._is_ascend_format = (bh.name == "npu")
+
+        if self._is_ascend_format:
+            # Ascend NPU backend only supports 4-bit quantization
+            assert bits == 4, f"Ascend backend only supports 4-bit, got {bits}"
+
+            # weight: [out//2, in] packed int4; scale/offset: [out, groups] bfloat16
+            self.register_buffer(
+                "weight",
+                torch.zeros((outfeatures // 2, infeatures), dtype=torch.int8),
+            )
+            num_groups = math.ceil(infeatures / self.group_size)
+            self.register_buffer(
+                "weight_scale",
+                torch.zeros((outfeatures, num_groups), dtype=torch.bfloat16),
+            )
+            self.register_buffer(
+                "weight_offset",
+                torch.zeros((outfeatures, num_groups), dtype=torch.bfloat16),
+            )
+            # No g_idx needed for Ascend format as grouping is handled during packing
+
+        else:
+            # GPTQ format: packed int32 weights (original behavior)
+            self.register_buffer(
+                "qweight",
+                torch.zeros((infeatures // 32 * self.bits, outfeatures), dtype=torch.int32),
+            )
+            self.register_buffer(
+                "qzeros",
+                torch.zeros(
+                    (
+                        math.ceil(infeatures / self.group_size),
+                        outfeatures // 32 * self.bits,
+                    ),
+                    dtype=torch.int32,
                 ),
-                dtype=torch.int32,
-            ),
-        )
-        self.register_buffer(
-            "scales",
-            torch.zeros(
-                (math.ceil(infeatures / self.group_size), outfeatures),
-                dtype=weight_dtype,
-            ),
-        )
-        self.register_buffer(
-            "g_idx",
-            torch.tensor(
-                [i // self.group_size for i in range(infeatures)], dtype=torch.int32
-            ),
-        )
+            )
+            self.register_buffer(
+                "scales",
+                torch.zeros(
+                    (math.ceil(infeatures / self.group_size), outfeatures),
+                    dtype=weight_dtype,
+                ),
+            )
+            self.register_buffer(
+                "g_idx",
+                torch.tensor(
+                    [i // self.group_size for i in range(infeatures)], dtype=torch.int32
+                ),
+            )
+
         if bias:
             self.register_buffer("bias", torch.zeros((outfeatures), dtype=weight_dtype))
         else:
             self.bias = None
 
-        # is performed by unpacking the weights and using torch.matmul
-        if self.bits in [2, 4, 8]:
-            self.wf = torch.tensor(
-                list(range(0, 32, self.bits)), dtype=torch.int32
-            ).unsqueeze(0)
-        elif self.bits == 3:
-            self.wf = torch.tensor(
-                [
-                    [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 0],
-                    [0, 1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31],
-                    [0, 2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 0],
-                ],
-                dtype=torch.int32,
-            ).reshape(1, 3, 12)
+        # Unpacking factors for GPTQ format (only used for GPU/CPU)
+        if not self._is_ascend_format:
+            if self.bits in [2, 4, 8]:
+                self.wf = torch.tensor(
+                    list(range(0, 32, self.bits)), dtype=torch.int32
+                ).unsqueeze(0)
+            elif self.bits == 3:
+                self.wf = torch.tensor(
+                    [
+                        [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 0],
+                        [0, 1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31],
+                        [0, 2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 0],
+                    ],
+                    dtype=torch.int32,
+                ).reshape(1, 3, 12)
 
     def post_init(self):
         pass
 
     def pack(self, linear, scales, zeros, g_idx=None):
-        w = linear.weight.data.clone()
+        """Pack weights in backend-specific format."""
+        W = linear.weight.data.clone()
+        outfeatures, infeatures = W.shape
 
-        self.g_idx = g_idx.clone() if g_idx is not None else self.g_idx
+        if self._is_ascend_format:
+            # ===== Ascend format: PACKED int4 (2 per int8 along output dim) =====
+            # vLLM-Ascend expects:
+            #   weight:       [outfeatures // 2, infeatures] as int8 (packed int4)
+            #   weight_scale:  [outfeatures, num_groups] as bfloat16
+            #   weight_offset: [outfeatures, num_groups] as bfloat16
 
-        scales = scales.t().contiguous()
-        zeros = zeros.t().contiguous()
-        scale_zeros = zeros * scales
-        self.scales = scales.clone().to(dtype=linear.weight.dtype)
-        if linear.bias is not None:
-            self.bias = linear.bias.clone().to(dtype=linear.weight.dtype)
+            if g_idx is None:
+                g_idx = torch.tensor(
+                    [i // self.group_size for i in range(infeatures)],
+                    dtype=torch.int32, device=W.device
+                )
 
-        intweight = []
-        for idx in range(self.infeatures):
-            intweight.append(
-                torch.round(
-                    (w[:, idx] + scale_zeros[self.g_idx[idx]])
-                    / self.scales[self.g_idx[idx]]
-                ).to(torch.int)[:, None]
+            # Calculate scale_zeros for each group: (outfeatures, num_groups)
+            scale_zeros = zeros * scales
+
+            # Quantize to signed range: vLLM-Ascend uses signed int4 [-8, 7] with zero point 0.
+            # We convert from standard GPTQ unsigned [0, 15] by applying a -8 offset.
+            intweight = torch.zeros((outfeatures, infeatures), dtype=torch.float32)
+            signed_offset = 2 ** (self.bits - 1)  # 8 for 4-bit
+            
+            for i in range(infeatures):
+                group = g_idx[i].item()
+                q = torch.round((W[:, i] + scale_zeros[:, group]) / scales[:, group]) - signed_offset
+                intweight[:, i] = q.clamp(-signed_offset, signed_offset - 1)
+
+            # Pack int4 weights: even indices in low nibble, odd indices in high nibble.
+            # Reshape to [N, K] and use & 0x0F to handle two's complement for signed values.
+            intweight_2d = intweight.reshape(outfeatures, infeatures).to(torch.int8)
+            even_weight = intweight_2d[0::2, :] & 0x0F
+            odd_weight = intweight_2d[1::2, :] & 0x0F
+            packed_weight = even_weight | (odd_weight << 4)
+
+            self.weight = packed_weight.contiguous().to(torch.int8)
+            self.weight_scale = scales.contiguous().to(torch.bfloat16)
+            
+            # Set weight_offset=0 to match msmodelslim, as the signed shift is 
+            # already integrated into the packed weight values.
+            self.weight_offset = torch.zeros_like(zeros, dtype=torch.bfloat16)
+
+            if linear.bias is not None:
+                self.bias = linear.bias.clone().to(dtype=linear.weight.dtype)
+        else:
+            # ===== GPTQ format: pack to int32 (original logic) =====
+            self.g_idx = g_idx.clone() if g_idx is not None else self.g_idx
+
+            scales = scales.t().contiguous()
+            zeros = zeros.t().contiguous()
+            scale_zeros = zeros * scales
+            self.scales = scales.clone().to(dtype=linear.weight.dtype)
+            if linear.bias is not None:
+                self.bias = linear.bias.clone().to(dtype=linear.weight.dtype)
+
+            intweight = []
+            for idx in range(self.infeatures):
+                intweight.append(
+                    torch.round(
+                        (W[:, idx] + scale_zeros[self.g_idx[idx]])
+                        / self.scales[self.g_idx[idx]]
+                    ).to(torch.int)[:, None]
+                )
+            intweight = torch.cat(intweight, dim=1)
+            intweight = intweight.t().contiguous()
+            intweight = intweight.numpy().astype(np.uint32)
+
+            i = 0
+            row = 0
+            qweight = np.zeros(
+                (intweight.shape[0] // 32 * self.bits, intweight.shape[1]), dtype=np.uint32
             )
-        intweight = torch.cat(intweight, dim=1)
-        intweight = intweight.t().contiguous()
-        intweight = intweight.numpy().astype(np.uint32)
+            while row < qweight.shape[0]:
+                if self.bits in [2, 4, 8]:
+                    for j in range(i, i + (32 // self.bits)):
+                        qweight[row] |= intweight[j] << (self.bits * (j - i))
+                    i += 32 // self.bits
+                    row += 1
+                elif self.bits == 3:
+                    for j in range(i, i + 10):
+                        qweight[row] |= intweight[j] << (3 * (j - i))
+                    i += 10
+                    qweight[row] |= intweight[i] << 30
+                    row += 1
+                    qweight[row] |= (intweight[i] >> 2) & 1
+                    i += 1
+                    for j in range(i, i + 10):
+                        qweight[row] |= intweight[j] << (3 * (j - i) + 1)
+                    i += 10
+                    qweight[row] |= intweight[i] << 31
+                    row += 1
+                    qweight[row] |= (intweight[i] >> 1) & 0x3
+                    i += 1
+                    for j in range(i, i + 10):
+                        qweight[row] |= intweight[j] << (3 * (j - i) + 2)
+                    i += 10
+                    row += 1
+                else:
+                    raise NotImplementedError("Only 2,3,4,8 bits are supported.")
 
-        i = 0
-        row = 0
-        qweight = np.zeros(
-            (intweight.shape[0] // 32 * self.bits, intweight.shape[1]), dtype=np.uint32
-        )
-        while row < qweight.shape[0]:
-            if self.bits in [2, 4, 8]:
-                for j in range(i, i + (32 // self.bits)):
-                    qweight[row] |= intweight[j] << (self.bits * (j - i))
-                i += 32 // self.bits
-                row += 1
-            elif self.bits == 3:
-                for j in range(i, i + 10):
-                    qweight[row] |= intweight[j] << (3 * (j - i))
-                i += 10
-                qweight[row] |= intweight[i] << 30
-                row += 1
-                qweight[row] |= (intweight[i] >> 2) & 1
-                i += 1
-                for j in range(i, i + 10):
-                    qweight[row] |= intweight[j] << (3 * (j - i) + 1)
-                i += 10
-                qweight[row] |= intweight[i] << 31
-                row += 1
-                qweight[row] |= (intweight[i] >> 1) & 0x3
-                i += 1
-                for j in range(i, i + 10):
-                    qweight[row] |= intweight[j] << (3 * (j - i) + 2)
-                i += 10
-                row += 1
-            else:
-                raise NotImplementedError("Only 2,3,4,8 bits are supported.")
+            qweight = qweight.astype(np.int32)
+            self.qweight = torch.from_numpy(qweight)
 
-        qweight = qweight.astype(np.int32)
-        self.qweight = torch.from_numpy(qweight)
+            zeros -= 1
+            zeros = zeros.numpy().astype(np.uint32)
+            qzeros = np.zeros(
+                (zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=np.uint32
+            )
+            i = 0
+            col = 0
+            while col < qzeros.shape[1]:
+                if self.bits in [2, 4, 8]:
+                    for j in range(i, i + (32 // self.bits)):
+                        qzeros[:, col] |= zeros[:, j] << (self.bits * (j - i))
+                    i += 32 // self.bits
+                    col += 1
+                elif self.bits == 3:
+                    for j in range(i, i + 10):
+                        qzeros[:, col] |= zeros[:, j] << (3 * (j - i))
+                    i += 10
+                    qzeros[:, col] |= zeros[:, i] << 30
+                    col += 1
+                    qzeros[:, col] |= (zeros[:, i] >> 2) & 1
+                    i += 1
+                    for j in range(i, i + 10):
+                        qzeros[:, col] |= zeros[:, j] << (3 * (j - i) + 1)
+                    i += 10
+                    qzeros[:, col] |= zeros[:, i] << 31
+                    col += 1
+                    qzeros[:, col] |= (zeros[:, i] >> 1) & 0x3
+                    i += 1
+                    for j in range(i, i + 10):
+                        qzeros[:, col] |= zeros[:, j] << (3 * (j - i) + 2)
+                    i += 10
+                    col += 1
+                else:
+                    raise NotImplementedError("Only 2,3,4,8 bits are supported.")
 
-        zeros -= 1
-        zeros = zeros.numpy().astype(np.uint32)
-        qzeros = np.zeros(
-            (zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=np.uint32
-        )
-        i = 0
-        col = 0
-        while col < qzeros.shape[1]:
-            if self.bits in [2, 4, 8]:
-                for j in range(i, i + (32 // self.bits)):
-                    qzeros[:, col] |= zeros[:, j] << (self.bits * (j - i))
-                i += 32 // self.bits
-                col += 1
-            elif self.bits == 3:
-                for j in range(i, i + 10):
-                    qzeros[:, col] |= zeros[:, j] << (3 * (j - i))
-                i += 10
-                qzeros[:, col] |= zeros[:, i] << 30
-                col += 1
-                qzeros[:, col] |= (zeros[:, i] >> 2) & 1
-                i += 1
-                for j in range(i, i + 10):
-                    qzeros[:, col] |= zeros[:, j] << (3 * (j - i) + 1)
-                i += 10
-                qzeros[:, col] |= zeros[:, i] << 31
-                col += 1
-                qzeros[:, col] |= (zeros[:, i] >> 1) & 0x3
-                i += 1
-                for j in range(i, i + 10):
-                    qzeros[:, col] |= zeros[:, j] << (3 * (j - i) + 2)
-                i += 10
-                col += 1
-            else:
-                raise NotImplementedError("Only 2,3,4,8 bits are supported.")
-
-        qzeros = qzeros.astype(np.int32)
-        self.qzeros = torch.from_numpy(qzeros)
+            qzeros = qzeros.astype(np.int32)
+            self.qzeros = torch.from_numpy(qzeros)
 
     def forward(self, x: torch.Tensor):
         out_shape = x.shape[:-1] + (self.outfeatures,)
         x = x.reshape(-1, x.shape[-1])
         x_dtype = x.dtype
 
-        if self.wf.device != self.qzeros.device:
-            self.wf = self.wf.to(self.qzeros.device)
+        if self._is_ascend_format:
+            # ===== Ascend format: PACKED int4 weights (2 per int8) =====
+            # vLLM-Ascend will unpack these during process_weights_after_loading
+            # For NPUSlim internal use (calibration verification), unpack here
+            #
+            # Packed weight shape: (outfeatures // 2, infeatures) int8
+            # Scale/offset shape: (outfeatures, num_groups) bfloat16
 
-        if self.bits in [2, 4, 8]:
-            zeros = torch.bitwise_right_shift(
-                torch.unsqueeze(self.qzeros, 2).expand(-1, -1, 32 // self.bits),
-                self.wf.unsqueeze(0),
-            ).to(torch.int16 if self.bits == 8 else torch.int8)
-            zeros = torch.bitwise_and(zeros, (2**self.bits) - 1)
+            # Unpack int4 weights: each int8 contains 2 int4 values
+            # Pattern: packed[i] = low_nibble | (high_nibble << 4)
+            packed_weight = self.weight  # [out//2, in]
+            out_half, in_feat = packed_weight.shape
+            out_full = out_half * 2
 
-            zeros = zeros + 1
-            zeros = zeros.reshape(self.scales.shape)
+            # Extract low and high nibbles (unsigned 0-15)
+            low_nibble = (packed_weight & 0x0F).to(torch.int8)
+            high_nibble = ((packed_weight >> 4) & 0x0F).to(torch.int8)
 
-            weight = torch.bitwise_right_shift(
-                torch.unsqueeze(self.qweight, 1).expand(-1, 32 // self.bits, -1),
-                self.wf.unsqueeze(-1),
-            ).to(torch.int16 if self.bits == 8 else torch.int8)
-            weight = torch.bitwise_and(weight, (2**self.bits) - 1)
-        elif self.bits == 3:
-            zeros = self.qzeros.reshape(
-                self.qzeros.shape[0], self.qzeros.shape[1] // 3, 3, 1
-            ).expand(-1, -1, -1, 12)
-            zeros = zeros >> self.wf.unsqueeze(0)
-            zeros[:, :, 0, 10] = (zeros[:, :, 0, 10] & 0x3) | (
-                (zeros[:, :, 1, 0] << 2) & 0x4
-            )
-            zeros[:, :, 1, 11] = (zeros[:, :, 1, 11] & 0x1) | (
-                (zeros[:, :, 2, 0] << 1) & 0x6
-            )
-            zeros = zeros & 0x7
-            zeros = torch.cat(
-                [zeros[:, :, 0, :11], zeros[:, :, 1, 1:12], zeros[:, :, 2, 1:11]],
-                dim=2,
-            )
+            # Convert from unsigned nibble (0-15) to signed int8
+            # Values 8-15 represent -8 to -1 (offset by 8)
+            low_nibble = torch.where(low_nibble >= 8, low_nibble - 16, low_nibble)
+            high_nibble = torch.where(high_nibble >= 8, high_nibble - 16, high_nibble)
 
-            zeros = zeros + 1
-            zeros = zeros.reshape(self.scales.shape)
+            # Interleave to get [out_full, in_feat]
+            unpacked_weight = torch.zeros(out_full, in_feat, dtype=torch.int8, device=packed_weight.device)
+            unpacked_weight[0::2, :] = low_nibble
+            unpacked_weight[1::2, :] = high_nibble
 
-            weight = self.qweight.reshape(
-                self.qweight.shape[0] // 3, 3, 1, self.qweight.shape[1]
-            ).expand(-1, -1, 12, -1)
-            weight = (weight >> self.wf.unsqueeze(-1)) & 0x7
-            weight[:, 0, 10] = (weight[:, 0, 10] & 0x3) | ((weight[:, 1, 0] << 2) & 0x4)
-            weight[:, 1, 11] = (weight[:, 1, 11] & 0x1) | ((weight[:, 2, 0] << 1) & 0x6)
-            weight = weight & 0x7
-            weight = torch.cat(
-                [weight[:, 0, :11], weight[:, 1, 1:12], weight[:, 2, 1:11]], dim=1
-            )
+            # Dequantize using scale/offset
+            # weight_fp = (int_weight - offset) * scale
+            num_groups = self.weight_scale.shape[1]
+
+            # Create group indices for each input feature
+            group_idx = torch.arange(self.infeatures, device=x.device) // self.group_size
+            group_idx = group_idx.clamp(0, num_groups - 1)
+
+            # Get scale and offset per column: (outfeatures, infeatures)
+            scale_per_col = self.weight_scale[:, group_idx]  # [out, in]
+            offset_per_col = self.weight_offset[:, group_idx]  # [out, in]
+
+            # Dequantize weight
+            # After signed conversion (0-15 -> -8 to 7), use addition instead of subtraction
+            # because: q_signed + 8 = q for all values (since q = q_signed for q<8, and q = q_signed+16 for q>=8)
+            weight_fp = (unpacked_weight.to(torch.float32) + offset_per_col.float()) * scale_per_col.float()
+
+            # Matrix multiply: x @ weight_fp.T
+            out = torch.matmul(x, weight_fp.T)
+            out = out.to(x_dtype)
         else:
-            raise NotImplementedError("Only 2,3,4,8 bits are supported.")
+            # ===== GPTQ format: unpack and dequantize (original logic) =====
+            if self.wf.device != self.qzeros.device:
+                self.wf = self.wf.to(self.qzeros.device)
 
-        weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
-        num_itr = self.g_idx.shape[0] // x.shape[-1]
-        if num_itr == 1:
-            weights = self.scales[self.g_idx.long()] * (
-                weight - zeros[self.g_idx.long()]
-            )
-        else:
-            num_dim = self.g_idx.shape[0] // num_itr
-            weights = []
-            for i in range(num_itr):
-                scale_i = self.scales[:, i * num_dim : (i + 1) * num_dim]
-                weight_i = weight[:, i * num_dim : (i + 1) * num_dim]
-                zeros_i = zeros[:, i * num_dim : (i + 1) * num_dim]
-                g_idx_i = self.g_idx[i * num_dim : (i + 1) * num_dim]
-                weights.append(
-                    scale_i[g_idx_i.long()] * (weight_i - zeros_i[g_idx_i.long()])
+            if self.bits in [2, 4, 8]:
+                zeros = torch.bitwise_right_shift(
+                    torch.unsqueeze(self.qzeros, 2).expand(-1, -1, 32 // self.bits),
+                    self.wf.unsqueeze(0),
+                ).to(torch.int16 if self.bits == 8 else torch.int8)
+                zeros = torch.bitwise_and(zeros, (2**self.bits) - 1)
+
+                zeros = zeros + 1
+                zeros = zeros.reshape(self.scales.shape)
+
+                weight = torch.bitwise_right_shift(
+                    torch.unsqueeze(self.qweight, 1).expand(-1, 32 // self.bits, -1),
+                    self.wf.unsqueeze(-1),
+                ).to(torch.int16 if self.bits == 8 else torch.int8)
+                weight = torch.bitwise_and(weight, (2**self.bits) - 1)
+            elif self.bits == 3:
+                zeros = self.qzeros.reshape(
+                    self.qzeros.shape[0], self.qzeros.shape[1] // 3, 3, 1
+                ).expand(-1, -1, -1, 12)
+                zeros = zeros >> self.wf.unsqueeze(0)
+                zeros[:, :, 0, 10] = (zeros[:, :, 0, 10] & 0x3) | (
+                    (zeros[:, :, 1, 0] << 2) & 0x4
                 )
-            weights = torch.cat(weights, dim=1)
-        out = torch.matmul(x, weights)
-        out = out.to(x_dtype)
+                zeros[:, :, 1, 11] = (zeros[:, :, 1, 11] & 0x1) | (
+                    (zeros[:, :, 2, 0] << 1) & 0x6
+                )
+                zeros = zeros & 0x7
+                zeros = torch.cat(
+                    [zeros[:, :, 0, :11], zeros[:, :, 1, 1:12], zeros[:, :, 2, 1:11]],
+                    dim=2,
+                )
+
+                zeros = zeros + 1
+                zeros = zeros.reshape(self.scales.shape)
+
+                weight = self.qweight.reshape(
+                    self.qweight.shape[0] // 3, 3, 1, self.qweight.shape[1]
+                ).expand(-1, -1, 12, -1)
+                weight = (weight >> self.wf.unsqueeze(-1)) & 0x7
+                weight[:, 0, 10] = (weight[:, 0, 10] & 0x3) | ((weight[:, 1, 0] << 2) & 0x4)
+                weight[:, 1, 11] = (weight[:, 1, 11] & 0x1) | ((weight[:, 2, 0] << 1) & 0x6)
+                weight = weight & 0x7
+                weight = torch.cat(
+                    [weight[:, 0, :11], weight[:, 1, 1:12], weight[:, 2, 1:11]], dim=1
+                )
+            else:
+                raise NotImplementedError("Only 2,3,4,8 bits are supported.")
+
+            weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
+            num_itr = self.g_idx.shape[0] // x.shape[-1]
+            if num_itr == 1:
+                weights = self.scales[self.g_idx.long()] * (
+                    weight - zeros[self.g_idx.long()]
+                )
+            else:
+                num_dim = self.g_idx.shape[0] // num_itr
+                weights = []
+                for i in range(num_itr):
+                    scale_i = self.scales[:, i * num_dim : (i + 1) * num_dim]
+                    weight_i = weight[:, i * num_dim : (i + 1) * num_dim]
+                    zeros_i = zeros[:, i * num_dim : (i + 1) * num_dim]
+                    g_idx_i = self.g_idx[i * num_dim : (i + 1) * num_dim]
+                    weights.append(
+                        scale_i[g_idx_i.long()] * (weight_i - zeros_i[g_idx_i.long()])
+                    )
+                weights = torch.cat(weights, dim=1)
+            out = torch.matmul(x, weights)
+            out = out.to(x_dtype)
+
         out = out.reshape(out_shape)
         out = out + self.bias if self.bias is not None else out
         return out

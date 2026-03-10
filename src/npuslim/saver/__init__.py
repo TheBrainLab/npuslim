@@ -2,4 +2,5 @@
 
 _REGISTRY_MAP = {
     "HuggingFaceSaver": ".huggingface",
+    "AscendSaver": ".ascend",
 }
