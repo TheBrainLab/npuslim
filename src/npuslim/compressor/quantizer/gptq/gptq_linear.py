@@ -28,7 +28,7 @@ class GPTQQuantLinear(nn.Module):
         self.maxq = 2**self.bits - 1
 
         # Backend-aware buffer registration
-        self._is_ascend_format = (bh.name == "npu")
+        self._is_ascend_format = bh.name == "npu"
 
         if self._is_ascend_format:
             # Ascend NPU backend only supports 4-bit quantization
@@ -54,7 +54,9 @@ class GPTQQuantLinear(nn.Module):
             # GPTQ format: packed int32 weights (original behavior)
             self.register_buffer(
                 "qweight",
-                torch.zeros((infeatures // 32 * self.bits, outfeatures), dtype=torch.int32),
+                torch.zeros(
+                    (infeatures // 32 * self.bits, outfeatures), dtype=torch.int32
+                ),
             )
             self.register_buffer(
                 "qzeros",
@@ -119,7 +121,8 @@ class GPTQQuantLinear(nn.Module):
             if g_idx is None:
                 g_idx = torch.tensor(
                     [i // self.group_size for i in range(infeatures)],
-                    dtype=torch.int32, device=W.device
+                    dtype=torch.int32,
+                    device=W.device,
                 )
 
             # Calculate scale_zeros for each group: (outfeatures, num_groups)
@@ -129,10 +132,13 @@ class GPTQQuantLinear(nn.Module):
             # We convert from standard GPTQ unsigned [0, 15] by applying a -8 offset.
             intweight = torch.zeros((outfeatures, infeatures), dtype=torch.float32)
             signed_offset = 2 ** (self.bits - 1)  # 8 for 4-bit
-            
+
             for i in range(infeatures):
                 group = g_idx[i].item()
-                q = torch.round((W[:, i] + scale_zeros[:, group]) / scales[:, group]) - signed_offset
+                q = (
+                    torch.round((W[:, i] + scale_zeros[:, group]) / scales[:, group])
+                    - signed_offset
+                )
                 intweight[:, i] = q.clamp(-signed_offset, signed_offset - 1)
 
             # Pack int4 weights: even indices in low nibble, odd indices in high nibble.
@@ -144,8 +150,8 @@ class GPTQQuantLinear(nn.Module):
 
             self.weight = packed_weight.contiguous().to(torch.int8)
             self.weight_scale = scales.contiguous().to(torch.bfloat16)
-            
-            # Set weight_offset=0 to match msmodelslim, as the signed shift is 
+
+            # Set weight_offset=0 to match msmodelslim, as the signed shift is
             # already integrated into the packed weight values.
             self.weight_offset = torch.zeros_like(zeros, dtype=torch.bfloat16)
 
@@ -177,7 +183,8 @@ class GPTQQuantLinear(nn.Module):
             i = 0
             row = 0
             qweight = np.zeros(
-                (intweight.shape[0] // 32 * self.bits, intweight.shape[1]), dtype=np.uint32
+                (intweight.shape[0] // 32 * self.bits, intweight.shape[1]),
+                dtype=np.uint32,
             )
             while row < qweight.shape[0]:
                 if self.bits in [2, 4, 8]:
@@ -254,6 +261,9 @@ class GPTQQuantLinear(nn.Module):
         x_dtype = x.dtype
 
         if self._is_ascend_format:
+            assert (
+                self.bits == 4
+            ), f"Ascend backend only supports 4-bit now, got {self.bits}"
             # ===== Ascend format: PACKED int4 weights (2 per int8) =====
             # vLLM-Ascend will unpack these during process_weights_after_loading
             # For NPUSlim internal use (calibration verification), unpack here
@@ -277,7 +287,9 @@ class GPTQQuantLinear(nn.Module):
             high_nibble = torch.where(high_nibble >= 8, high_nibble - 16, high_nibble)
 
             # Interleave to get [out_full, in_feat]
-            unpacked_weight = torch.zeros(out_full, in_feat, dtype=torch.int8, device=packed_weight.device)
+            unpacked_weight = torch.zeros(
+                out_full, in_feat, dtype=torch.int8, device=packed_weight.device
+            )
             unpacked_weight[0::2, :] = low_nibble
             unpacked_weight[1::2, :] = high_nibble
 
@@ -286,7 +298,9 @@ class GPTQQuantLinear(nn.Module):
             num_groups = self.weight_scale.shape[1]
 
             # Create group indices for each input feature
-            group_idx = torch.arange(self.infeatures, device=x.device) // self.group_size
+            group_idx = (
+                torch.arange(self.infeatures, device=x.device) // self.group_size
+            )
             group_idx = group_idx.clamp(0, num_groups - 1)
 
             # Get scale and offset per column: (outfeatures, infeatures)
@@ -296,7 +310,9 @@ class GPTQQuantLinear(nn.Module):
             # Dequantize weight
             # After signed conversion (0-15 -> -8 to 7), use addition instead of subtraction
             # because: q_signed + 8 = q for all values (since q = q_signed for q<8, and q = q_signed+16 for q>=8)
-            weight_fp = (unpacked_weight.to(torch.float32) + offset_per_col.float()) * scale_per_col.float()
+            weight_fp = (
+                unpacked_weight.to(torch.float32) + offset_per_col.float()
+            ) * scale_per_col.float()
 
             # Matrix multiply: x @ weight_fp.T
             out = torch.matmul(x, weight_fp.T)
@@ -345,8 +361,12 @@ class GPTQQuantLinear(nn.Module):
                     self.qweight.shape[0] // 3, 3, 1, self.qweight.shape[1]
                 ).expand(-1, -1, 12, -1)
                 weight = (weight >> self.wf.unsqueeze(-1)) & 0x7
-                weight[:, 0, 10] = (weight[:, 0, 10] & 0x3) | ((weight[:, 1, 0] << 2) & 0x4)
-                weight[:, 1, 11] = (weight[:, 1, 11] & 0x1) | ((weight[:, 2, 0] << 1) & 0x6)
+                weight[:, 0, 10] = (weight[:, 0, 10] & 0x3) | (
+                    (weight[:, 1, 0] << 2) & 0x4
+                )
+                weight[:, 1, 11] = (weight[:, 1, 11] & 0x1) | (
+                    (weight[:, 2, 0] << 1) & 0x6
+                )
                 weight = weight & 0x7
                 weight = torch.cat(
                     [weight[:, 0, :11], weight[:, 1, 1:12], weight[:, 2, 1:11]], dim=1
