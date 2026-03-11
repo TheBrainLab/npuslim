@@ -35,4 +35,4 @@ where = ["src"]
 npuslim_ascend = "npuslim.plugins.vllm_ascend:register"
 
 [project.entry-points."transformers.quantizers"]
-quip = "npuslim.plugins.transformers.quip:QuipHfQuantizer"
+quip = "npuslim.plugins.transformers.quantizers.quantizer_quip:QuipHfQuantizer"

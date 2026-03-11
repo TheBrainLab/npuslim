@@ -1,7 +1,10 @@
-"""
-NPUSlim quantization methods for vLLM-Ascend.
-"""
+"""Quantization extensions for vLLM-Ascend.
 
-from .utils import NPUSLIM_QUANTIZATION_METHOD_MAP
+This package contains:
+- Patches for vllm-ascend quantization modules
+- New quantization schemes (W4A16, etc.)
 
-__all__ = ["NPUSLIM_QUANTIZATION_METHOD_MAP"]
+All extensions use decorators for self-registration:
+- @register_patch from npuslim.plugins.registry for patches
+- @register_scheme from vllm-ascend for schemes
+"""

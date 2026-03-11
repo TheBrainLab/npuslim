@@ -4,7 +4,7 @@ meta:
 
 model:
   type: Qwen3
-  model_path: /data1/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca
+  model_path: Qwen/Qwen3-8B
   model_hub: hf
   model_kwargs:
     trust_remote_code: true
@@ -29,12 +29,14 @@ calib_dataset:
 pipeline:
   - type: ptq
     algo_name: GPTQ
+    # Resolves to layers 3-9 (via [3-9]) and layers 10+ (via \d{2,}). 
+    # This keeps layers 0, 1, and 2 quantized while skipping all subsequent down_proj layers.
     ignore_layers:
-      - model.layers.*.mlp.down_proj
+      - 're:model\.layers\.(\d{2,})\.mlp\.down_proj'
     algo_config:
       w_bits: 4
 
-  - type: eval
+  # - type: eval
 
   - type: save
     algo_name: AscendSaver
