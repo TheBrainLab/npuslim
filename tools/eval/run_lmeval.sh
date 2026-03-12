@@ -35,13 +35,18 @@ Options:
   # Hardware/Model Config
   -d, --devices DEV       Devices to use (e.g. "0,1") (default: 0)
   -t, --tp SIZE           Tensor Parallel size (default: 1)
-  --gpu-memory UTIL       GPU memory utilization (default: 0.6)
+  --gpu-memory UTIL       GPU memory utilization (default: 0.8)
   --max-model-len LEN     Max model length (default: 4096)
   -q, --quantization TYPE Quantization method (e.g., awq, gptq, ascend). 
                           (Auto-set to 'ascend' on NPU if using vllm)
 
 Example:
   bash $0 outputs/qwen-int8 --tasks wikitext --fewshot 5 -d 0,1 -t 2
+  bash $0 \
+    outputs/compressor/gptq/ascend-qwen3_4b \
+    --tasks arc_challenge,arc_easy,boolq,headqa_en,hellaswag,openbookqa,piqa,winogrande \
+    -d 1 \
+    -q
 EOF
 }
 
@@ -56,7 +61,7 @@ OUTPUT_DIR="outputs/lmeval"
 # 硬件配置
 DEVICES="0"
 TP_SIZE=1
-MEM_UTIL=0.9
+MEM_UTIL=0.8
 MAX_LEN=4096
 QUANT_METHOD=""
 DEVICE_TYPE=""
@@ -71,15 +76,17 @@ while [[ $# -gt 0 ]]; do
         --tasks) TASKS="$2"; shift 2 ;;
         --fewshot|--num-fewshot) FEWSHOT="$2"; shift 2 ;;
         --batch-size) BATCH_SIZE="$2"; shift 2 ;;
-        --output-dir|--output-path) OUTPUT_DIR="$2"; shift 2 ;;
-        
+        --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
         -d|--devices) DEVICES="$2"; shift 2 ;;
-        -t|--tp|--tensor-parallel) TP_SIZE="$2"; shift 2 ;;
+        -t|--tp) TP_SIZE="$2"; shift 2 ;;
         --gpu-memory) MEM_UTIL="$2"; shift 2 ;;
         --max-model-len) MAX_LEN="$2"; shift 2 ;;
-        -q|--quantization) QUANT_METHOD="$2"; shift 2 ;;
-        
-        --device-type) DEVICE_TYPE="$2"; shift 2 ;;
+        -q|--quantization)
+            if [[ -n "$2" && ! "$2" =~ ^- ]]; then
+                QUANT_METHOD="$2"; shift 2
+            else
+                QUANT_METHOD="ascend"; shift 1
+            fi ;;
         -h|--help) usage; exit 0 ;;
         *) POSITIONAL_ARGS+=("$1"); shift ;;
     esac
@@ -112,11 +119,8 @@ echo "============================================================"
 if [[ "$DEVICE_TYPE" == "npu" ]]; then
     export ASCEND_RT_VISIBLE_DEVICES=$DEVICES
     export PYTORCH_NPU_ALLOC_CONF=expandable_segments:False
-    # NPU 上使用 vLLM 时，通常需要显式指定 ascend 量化
-    if [[ "$BACKEND" == "vllm" && -z "$QUANT_METHOD" ]]; then
-        QUANT_METHOD="ascend"
-        echo "ℹ️  Auto-enabling 'quantization=ascend' for NPU vLLM"
-    fi
+    export HCCL_OP_EXPANSION_MODE=AIV
+    export TASK_QUEUE_ENABLE=1
 elif [[ "$DEVICE_TYPE" == "gpu" ]]; then
     export CUDA_VISIBLE_DEVICES=$DEVICES
 fi
@@ -162,17 +166,18 @@ python -c "import npuslim; import lm_eval" &> /dev/null || {
 
 echo "🚀 Launching lm_eval with NPUSlim plugin injection..."
 
-# 我们通过 python -c 启动，在进入 lm_eval 主程序前强制执行 npuslim 的注册逻辑
-python -c "
+PYTHONUNBUFFERED=1 python -u -c "
+import sys
 import npuslim.plugins as plugin
 try:
     plugin.register()
     print('✅ NPUSlim plugin registered successfully.')
 except Exception as e:
-    print(f'⚠️  Plugin registration failed: {e}')
+    print(f'⚠️ Plugin registration failed: {e}')
 
 from lm_eval.__main__ import cli_evaluate
-cli_evaluate()
+if __name__ == '__main__':
+    cli_evaluate()
 " \
     --model "$BACKEND" \
     --model_args "$MODEL_ARGS" \
@@ -183,4 +188,4 @@ cli_evaluate()
 
 echo ""
 echo "✅ Evaluation completed."
-echo "📄 Results saved to: ${OUTPUT_FILE}"
+echo "📄 Results saved in: $(dirname "${OUTPUT_FILE}")"

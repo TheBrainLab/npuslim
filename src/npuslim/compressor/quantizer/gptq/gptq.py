@@ -30,11 +30,6 @@ class GPTQConfig:
     group_size: int = 128
     sym: bool = True
 
-    # --- Pre-processing Parameters (Used during Observer find_params stage) ---
-    preproc_rescale: bool = False
-    preproc_proj: bool = False
-    preproc_proj_mode: int = 0  # Mode selection for projection
-
     # --- Algorithm Execution Parameters (Used during GPTQModule optimization) ---
     blocksize: int = 128
     actorder: bool = True

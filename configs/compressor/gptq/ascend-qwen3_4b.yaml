@@ -4,7 +4,7 @@ meta:
 
 model:
   type: Qwen3
-  model_path: /data1/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca
+  model_path: Qwen/Qwen3-4B
   model_hub: hf
   model_kwargs:
     trust_remote_code: true
@@ -34,7 +34,7 @@ pipeline:
     algo_config:
       w_bits: 4
 
-  - type: eval
+  # - type: eval
 
   - type: save
     algo_name: AscendSaver

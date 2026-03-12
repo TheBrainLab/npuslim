@@ -61,10 +61,13 @@ class GPTQModule(BaseHessianModule):
 
         H = self.H
         if self.actorder:
+            from npuslim.utils.backend import bh
             perm = torch.argsort(torch.diag(H), descending=True)
             W = W[:, perm]
             H = H[perm][:, perm]
-            invperm = torch.argsort(perm)
+            # NOTE: Ascend AiCore does not support argsort with int32/int64 dtypes.
+            # Cast to float32 to ensure high-performance execution on AiCore.
+            invperm = torch.argsort(perm.float()) if bh.name == "npu" else torch.argsort(perm)
         else:
             perm = torch.arange(self.columns, device=W.device)
             invperm = perm

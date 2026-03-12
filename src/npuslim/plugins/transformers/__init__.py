@@ -1,28 +1,27 @@
-"""
-HuggingFace transformers plugin for NPUSlim.
+"""NPUSlim Transformers Plugin.
 
-Provides automatic registration of NPUSlim quantization methods
-with HuggingFace's quantization system.
+Provides quantization extensions for HuggingFace Transformers.
 
-Usage:
-    # Import to trigger registration (via decorators in quip.py)
-    import npuslim.plugins.transformers
+Quantizers are registered via entry points in pyproject.toml:
+    [project.entry-points."transformers.quantizers"]
+    quip = "npuslim.plugins.transformers.quantizers.quantizer_quip:QuipHfQuantizer"
 
-    # Then load your model normally
-    from transformers import AutoModelForCausalLM
-    model = AutoModelForCausalLM.from_pretrained("path/to/quantized/model")
+Transformers loads these on-demand when a quantized model is requested.
 """
 
 
 def register():
+    """Register NPUSlim extensions with Transformers.
+
+    Note: Transformers quantizers are auto-registered via entry points
+    when the model is loaded with a quantization config. This function
+    is for any additional patches that need to be applied at startup.
     """
-    Triggers registration of NPUSlim quantizers.
-    Actually, the registration happens during module import via decorators,
-    but we provide this function for consistency with the plugin system.
-    """
+    # Currently no patches needed - quantizers use decorators
     pass
 
 
-from .quip import QuipConfig, QuipHfQuantizer
+# Import for direct access
+from .quantizers.quantizer_quip import QuipConfig, QuipHfQuantizer
 
 __all__ = ["QuipConfig", "QuipHfQuantizer"]

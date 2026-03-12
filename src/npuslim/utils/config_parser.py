@@ -133,11 +133,11 @@ class SlimConfigParser:
         config_dict = SlimConfigParser.merge_args_into_config(args, config_dict)
 
         meta = config_dict.get("meta", {})
-        work_dir = meta.get("work_dir")
-        SlimConfigParser.setup_logger(work_dir)
-        SlimConfigParser.dump_config(config_dict, work_dir)
+        # work_dir = meta.get("work_dir")
+        SlimConfigParser.setup_logger(config_dict)
+        SlimConfigParser.dump_config(config_dict)
         SlimConfigParser.print_config(config_dict, f"Configuration of {args.config}")
-
+        SlimConfigParser.show_npuslim_header()
         return config_dict
 
     @staticmethod
@@ -205,7 +205,9 @@ class SlimConfigParser:
         return config
 
     @staticmethod
-    def dump_config(config_dict, work_dir):
+    def dump_config(config_dict):
+        meta = config_dict.get("meta", {})
+        work_dir = meta.get("work_dir")
         try:
             if not work_dir:
                 return
@@ -236,7 +238,7 @@ class SlimConfigParser:
             )
 
     @staticmethod
-    def setup_logger(save_path):
+    def setup_logger(config_dict):
         import sys
 
         def format_filename(record):
@@ -260,14 +262,17 @@ class SlimConfigParser:
             sys.stderr,
             format=log_format,
             level="INFO",
+            filter=lambda record: "quiet" not in record["extra"] 
         )
 
-        if save_path:
-            save_path = Path(save_path)
-            save_path.mkdir(parents=True, exist_ok=True)
+        meta = config_dict.get("meta", {})
+        log_dir = meta.get("work_dir")
+        if log_dir:
+            log_dir = Path(log_dir)
+            log_dir.mkdir(parents=True, exist_ok=True)
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             log_filename = f"{timestamp}.log"
-            log_file = save_path / log_filename
+            log_file = log_dir / log_filename
 
             logger.add(
                 str(log_file),
@@ -277,15 +282,40 @@ class SlimConfigParser:
                 enqueue=True,
             )
 
-        logger.info("=" * 60)
-        logger.info("🚀 NPUSlim Quantization Framework Initialized")
-        logger.info(f"📂 Log Directory : {save_path}")
-        logger.info(f"📄 Current Log   : {log_filename}")
-        logger.info("=" * 60)
+        logger.opt(colors=True).info("<blue>╔══════════════════════════════════════════════════════════╗</blue>")
+        logger.opt(colors=True).info("<blue>║</blue>      🚀 NPUSlim Toolchain Initialized                    <blue>║</blue>")
+        logger.opt(colors=True).info("<blue>╚══════════════════════════════════════════════════════════╝</blue>")
+        if log_dir:
+            logger.info(f"📂 Log file saved to: {log_file}")
+    
+    @staticmethod
+    def show_npuslim_header():
+        try:
+            from npuslim import __version__
+        except ImportError:
+            __version__ = "0.0.0-dev"
+
+        logo_lines = [
+            "<blue>███╗  ██╗██████╗ ██╗   ██╗███████╗██╗     ██╗███╗   ███╗</blue>",
+            "<blue>████╗ ██║██╔══██╗██║   ██║██╔════╝██║     ██║████╗ ████║</blue>",
+            "<blue>██╔██╗██║██████╔╝██║   ██║███████╗██║     ██║██╔████╔██║</blue>",
+            "<blue>██║╚████║██╔═══╝ ██║   ██║╚════██║██║     ██║██║╚██╔╝██║</blue>",
+            "<blue>██║ ╚███║██║     ╚██████╔╝███████║███████╗██║██║ ╚═╝ ██║</blue>"
+        ]
+
+        description = "Unified Compression, Acceleration & Deployment Toolchain for Ascend NPU"
+        logger.opt(colors=True, raw=True).info("<blue>" + "━" * 80 + "</blue>\n")
+        logger.opt(colors=True, raw=True).info("\n")
+        for line in logo_lines:
+            logger.opt(colors=True, raw=True).info(f"{line}\n")
+        
+        logger.opt(colors=True, raw=True).info(f"\n<italic><blue>{description}</blue></italic>\n")
+        logger.opt(colors=True, raw=True).info(f"<white><bold>version</bold></white>  <bg white><black> {__version__} </black></bg white>\n")
+        logger.opt(colors=True, raw=True).info("<blue>" + "━" * 80 + "</blue>\n")
 
     @staticmethod
     def print_config(config: dict, title: str = "Configuration"):
-        console = Console()
+        console = Console(record=True, width=80)
         table = Table(
             show_header=False, show_lines=False, title=f"[bold blue]{title}[/bold blue]"
         )
@@ -332,6 +362,8 @@ class SlimConfigParser:
             table.add_section()
 
         console.print(table)
+        clean_table = console.export_text()
+        logger.bind(quiet=True).info(f"\n{clean_table}")
 
 
 class GlobalConfig:

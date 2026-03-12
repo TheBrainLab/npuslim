@@ -378,6 +378,7 @@ def round_ldlq(
 
         # allbal requires sorting by Hessian diagonal
         if config.ldlq_method == "allbal":
+            from npuslim.utils.backend import bh
             Hdiag = H.diag()
             p = Hdiag.sort(descending=True).indices
             Hp = H[:, p][p, :]
@@ -392,7 +393,10 @@ def round_ldlq(
             )
 
             # Re-invert order
-            ip = torch.argsort(p)
+            # NOTE: Ascend AiCore does not support argsort with int32/int64 dtypes,
+            # falling back to AiCpu with a performance warning. Cast to float32
+            # to ensure high-performance execution on AiCore.
+            ip = torch.argsort(p.float()) if bh.name == "npu" else torch.argsort(p) 
             return wp_hat[:, ip]
 
         # ldlq and ldlqRG
