@@ -33,7 +33,7 @@ pipeline:
     algo_config:
       w_bits: 4
   
-  # - type: eval
+  - type: eval
 
   - type: save
     algo_name: HuggingFaceSaver
