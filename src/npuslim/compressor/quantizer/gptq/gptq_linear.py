@@ -34,10 +34,16 @@ class GPTQQuantLinear(nn.Module):
             # Ascend NPU backend only supports 4-bit quantization
             assert bits == 4, f"Ascend backend only supports 4-bit, got {bits}"
 
-            # weight: [out//2, in] packed int4; scale/offset: [out, groups] bfloat16
+            # Ascend-specific pack factor: 8 int4 values per int32
+            pack_factor = 8
+            assert outfeatures % pack_factor == 0, (
+                f"Ascend backend requires outfeatures {outfeatures} divisible by {pack_factor}"
+            )
+
+            # weight: [out//8, in] packed int4 into int32; scale/offset: [out, groups] bfloat16
             self.register_buffer(
                 "weight",
-                torch.zeros((outfeatures // 2, infeatures), dtype=torch.int8),
+                torch.zeros((outfeatures // pack_factor, infeatures), dtype=torch.int32),
             )
             num_groups = math.ceil(infeatures / self.group_size)
             self.register_buffer(
@@ -111,16 +117,20 @@ class GPTQQuantLinear(nn.Module):
     # =========================================================================
 
     def _pack_ascend(self, linear, scales, zeros, g_idx=None):
-        """Pack weights in Ascend NPU format.
+        """Pack weights in Ascend NPU int32 format.
 
         vLLM-Ascend expects:
-          weight:       [outfeatures // 2, infeatures] as int8 (packed int4)
+          weight:       [outfeatures // 8, infeatures] as int32 (packed int4)
           weight_scale: [outfeatures, num_groups] as bfloat16
           weight_offset: [outfeatures, num_groups] as bfloat16
+
+        Packing pattern: 8 int4 values per int32, packed along output dimension.
+        int32[i] = int4[8*i] | (int4[8*i+1] << 4) | ... | (int4[8*i+7] << 28)
         """
         W = linear.weight.data.clone()
         outfeatures, infeatures = W.shape
         device = W.device
+        pack_factor = 8  # 8 int4 values per int32
 
         # Generate group indices if not provided
         if g_idx is None:
@@ -136,10 +146,19 @@ class GPTQQuantLinear(nn.Module):
         q = torch.round((W + current_scale_zeros) / current_scales) - signed_offset
         intweight_2d = q.clamp(-signed_offset, signed_offset - 1).to(torch.int8)
 
-        # Pack int4 weights: even rows in low nibble, odd rows in high nibble
-        even_weight = intweight_2d[0::2, :] & 0x0F
-        odd_weight = intweight_2d[1::2, :] & 0x0F
-        packed_weight = even_weight | (odd_weight << 4)
+        # Convert signed int4 [-8, 7] to unsigned [0, 15] for packing
+        intweight_unsigned = (intweight_2d + signed_offset).to(torch.uint8)
+
+        # Pack 8 int4 values into int32 along output dimension
+        # Shape: [outfeatures, infeatures] -> [outfeatures // 8, infeatures]
+        packed_out = outfeatures // pack_factor
+        packed_weight = torch.zeros((packed_out, infeatures), dtype=torch.int32, device=device)
+
+        for i in range(pack_factor):
+            # Each group of 8 consecutive rows packs into one int32
+            # Row 8*i+k goes to packed[i] at bits [4*k, 4*k+3]
+            row_indices = torch.arange(i, outfeatures, pack_factor, device=device)
+            packed_weight |= (intweight_unsigned[row_indices, :].to(torch.int32) << (self.bits * i))
 
         self.weight = packed_weight.contiguous()
         self.weight_scale = scales.to(torch.bfloat16)
@@ -151,35 +170,34 @@ class GPTQQuantLinear(nn.Module):
             self.bias = linear.bias.clone().to(dtype=linear.weight.dtype)
 
     def _forward_ascend(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass for Ascend NPU format.
+        """Forward pass for Ascend NPU int32 format.
 
-        Unpacks packed int4 weights and performs dequantized matmul.
+        Unpacks packed int4 weights from int32 and performs dequantized matmul.
         Used for calibration verification; vLLM-Ascend handles unpacking at runtime.
         """
         assert self.bits == 4, f"Ascend backend only supports 4-bit, got {self.bits}"
 
-        # Packed weight shape: (outfeatures // 2, infeatures) int8
+        # Packed weight shape: (outfeatures // 8, infeatures) int32
         # Scale/offset shape: (outfeatures, num_groups) bfloat16
         packed_weight = self.weight
-        out_half, in_feat = packed_weight.shape
-        out_full = out_half * 2
+        pack_factor = 8
+        packed_out, in_feat = packed_weight.shape
+        out_full = packed_out * pack_factor
 
-        # Unpack int4 weights: each int8 contains 2 int4 values
-        # Pattern: packed[i] = low_nibble | (high_nibble << 4)
-        low_nibble = (packed_weight & 0x0F).to(torch.int8)
-        high_nibble = ((packed_weight >> 4) & 0x0F).to(torch.int8)
+        # Unpack int4 weights from int32: each int32 contains 8 int4 values
+        # Pattern: packed[i] = int4[0] | (int4[1] << 4) | ... | (int4[7] << 28)
+        num_bits = self.bits  # 4
+        mask = (1 << num_bits) - 1  # 0xF
+        offset = pow(2, num_bits) // 2  # 8 for signed conversion
 
-        # Convert from unsigned nibble (0-15) to signed int8
-        # Values 8-15 represent -8 to -1 (offset by 16)
-        low_nibble = torch.where(low_nibble >= 8, low_nibble - 16, low_nibble)
-        high_nibble = torch.where(high_nibble >= 8, high_nibble - 16, high_nibble)
-
-        # Interleave to get [out_full, in_feat]
         unpacked_weight = torch.zeros(
             out_full, in_feat, dtype=torch.int8, device=packed_weight.device
         )
-        unpacked_weight[0::2, :] = low_nibble
-        unpacked_weight[1::2, :] = high_nibble
+        for i in range(pack_factor):
+            # Extract 4-bit value and convert from unsigned [0,15] to signed [-8,7]
+            unpacked_weight[i::pack_factor, :] = (
+                ((packed_weight >> (num_bits * i)) & mask).to(torch.int8) - offset
+            )
 
         # Dequantize using scale/offset: weight_fp = (int_weight + offset) * scale
         num_groups = self.weight_scale.shape[1]

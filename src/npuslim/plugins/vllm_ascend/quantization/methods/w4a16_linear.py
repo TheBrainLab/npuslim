@@ -12,16 +12,64 @@ from vllm_ascend.quantization.methods.registry import register_scheme
 from vllm_ascend.utils import maybe_trans_nz
 
 
+# Try to import upstream unpack_from_int32 utility
+try:
+    from vllm_ascend.quantization.methods.w4a16 import unpack_from_int32
+    HAS_UPSTREAM_UNPACK = True
+except ImportError:
+    HAS_UPSTREAM_UNPACK = False
+
+    def unpack_from_int32(
+        weight: torch.Tensor,
+        shape: torch.Size,
+        num_bits: int,
+        packed_dim: int = 1,
+    ) -> torch.Tensor:
+        """Fallback unpack implementation matching upstream signature.
+
+        Args:
+            weight: The packed int32 tensor containing quantized weights
+            shape: Original shape to restore
+            num_bits: The number of bits used for quantization (<= 8)
+            packed_dim: Dimension along which weights are packed (0 or 1)
+
+        Returns:
+            Unpacked tensor with int8 dtype after applying offset correction
+        """
+        pack_factor = 32 // num_bits
+        mask = (1 << num_bits) - 1
+        offset = pow(2, num_bits) // 2
+
+        if packed_dim == 1:
+            unpacked = torch.zeros(
+                (weight.shape[0], weight.shape[1] * pack_factor),
+                device=weight.device, dtype=torch.int32,
+            )
+            for i in range(pack_factor):
+                unpacked[:, i::pack_factor] = (weight >> (num_bits * i)) & mask
+            unpacked = unpacked[:, :shape[1]]
+        else:  # packed_dim == 0
+            unpacked = torch.zeros(
+                (weight.shape[0] * pack_factor, weight.shape[1]),
+                device=weight.device, dtype=torch.int32,
+            )
+            for i in range(pack_factor):
+                unpacked[i::pack_factor, :] = (weight >> (num_bits * i)) & mask
+            unpacked = unpacked[:shape[0], :]
+
+        return (unpacked - offset).to(torch.int8)
+
+
 @register_scheme("W4A16", "linear")
 class AscendW4A16LinearMethod(AscendLinearScheme):
     """Linear method for Ascend W4A16.
 
     This scheme uses 4-bit quantized weights with 16-bit activations.
-    Supports both per-channel and per-group quantization with int8 packed
-    weights (2 int4 per int8).
+    Supports both per-channel and per-group quantization with int32 packed
+    weights (8 int4 per int32), aligned with upstream vllm-ascend format.
 
-    msmodelslim format:
-    - Weight: [output_size // 2, input_size] (packed along output dim)
+    NPUSlim format:
+    - Weight: [output_size // 8, input_size] (packed int4 along output dim)
     - Scale: [output_size, num_groups] where num_groups = input_size // group_size
 
     After processing:
@@ -30,7 +78,7 @@ class AscendW4A16LinearMethod(AscendLinearScheme):
     """
 
     def __init__(self) -> None:
-        self.storage_pack_factor = 2  # 2 int4 per int8
+        self.pack_factor = 8  # 8 int4 per int32
         self.group_size = 128  # Default group size for per-group quantization
 
         # Try to get group_size from vllm config if available
@@ -50,25 +98,25 @@ class AscendW4A16LinearMethod(AscendLinearScheme):
     ) -> dict[str, Any]:
         """Create weight parameters.
 
-        For W4A16, weights are stored as int8 (packed int4).
-        msmodelslim format: [output_size // 2, input_size] (output packed)
+        For W4A16, weights are stored as int32 (packed int4).
+        Format: [output_size // 8, input_size] (output packed)
         """
-        assert output_size % self.storage_pack_factor == 0, (
+        assert output_size % self.pack_factor == 0, (
             f"Expecting `output_size` {output_size} "
-            f"can be divided by `storage_pack_factor` {self.storage_pack_factor}"
+            f"can be divided by `pack_factor` {self.pack_factor}"
         )
 
         params_dict: dict[str, Any] = {}
-        # Weight shape: [output_size // 2, input_size] as int8
-        # Each int8 contains 2 int4 values packed along output dimension
+        # Weight shape: [output_size // 8, input_size] as int32
+        # Each int32 contains 8 int4 values packed along output dimension
         params_dict["weight"] = torch.empty(
-            output_size // self.storage_pack_factor, input_size, dtype=torch.int8
+            output_size // self.pack_factor, input_size, dtype=torch.int32
         )
         # Tell vLLM's weight_loader about the packed dimension
         # packed_dim=0 means output dimension (dim 0) is packed
-        # packed_factor=2 means each element represents 2 packed values
+        # packed_factor=8 means each element represents 8 packed values
         params_dict["_packed_dim"] = 0
-        params_dict["_packed_factor"] = self.storage_pack_factor
+        params_dict["_packed_factor"] = self.pack_factor
         return params_dict
 
     def get_perchannel_param(
@@ -155,50 +203,38 @@ class AscendW4A16LinearMethod(AscendLinearScheme):
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         """Process weights after model loading.
 
-        msmodelslim format:
-        - Weight: [output_size // 2, input_size] (packed int8 along output dim)
+        NPUSlim int32 format:
+        - Weight: [output_size // 8, input_size] (packed int4 along output dim)
         - Scale: [output_size, num_groups]
 
         Processing:
-        - Unpack int4 weights (2 per int8) along output dimension
-        - Convert unsigned nibbles to signed int8
+        - Unpack int4 weights using unpack_from_int32() utility
         - Transpose weights from [N, K] to [K, N] for NPU API
         - Transpose scales from [N, num_groups] to [num_groups, N] for NPU API
         - Store group_size in layer for use in apply()
         """
-        # Determine if per-group quantization is used based on scale shape
+        # Determine quantization type from scale shape
         scale_shape = layer.weight_scale.data.shape
         is_per_group = len(scale_shape) == 2 and scale_shape[1] > 1
 
         if is_per_group:
-            # Per-group quantization
             layer.group_size = self.group_size
         else:
-            # Per-channel quantization
             layer.group_size = 0
 
-        # Unpack int4 weights: each int8 contains 2 int4 values
-        # Weight shape: [output_size // 2, input_size] -> [output_size, input_size]
-        packed_weight = layer.weight.data  # [N//2, K]
+        # Unpack int4 weights from int32 using utility
+        packed_weight = layer.weight.data  # [N//8, K]
+        output_size_packed, input_size = packed_weight.shape
+        output_size = output_size_packed * self.pack_factor
 
-        # Extract low and high nibbles (4-bit values as unsigned 0-15)
-        low_nibble = (packed_weight & 0x0F).to(torch.int8)
-        high_nibble = ((packed_weight >> 4) & 0x0F).to(torch.int8)
-
-        # Convert from unsigned nibble representation to signed int8
-        # The int4 values are stored with offset 8: 0-7 stay as-is, 8-15 map to -8 to -1
-        low_nibble = torch.where(low_nibble >= 8, low_nibble - 16, low_nibble)
-        high_nibble = torch.where(high_nibble >= 8, high_nibble - 16, high_nibble)
-
-        # Interleave along output dimension to get [N, K]
-        # Pattern: low, high, low, high, ... along dim 0
-        output_size_packed = packed_weight.shape[0]
-        input_size = packed_weight.shape[1]
-        unpacked_weight = torch.empty(
-            output_size_packed * 2, input_size, dtype=torch.int8, device=packed_weight.device
+        # Use unpack_from_int32 with packed_dim=0 (output dimension packed)
+        unpacked_weight = unpack_from_int32(
+            weight=packed_weight,
+            shape=torch.Size([output_size, input_size]),
+            num_bits=4,
+            packed_dim=0,
         )
-        unpacked_weight[0::2, :] = low_nibble
-        unpacked_weight[1::2, :] = high_nibble
+        # unpacked_weight is now int8, shape [output_size, input_size]
 
         # Transpose from [N, K] to [K, N] for NPU API
         layer.weight.data = unpacked_weight.transpose(0, 1).contiguous()
