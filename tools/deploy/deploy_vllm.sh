@@ -34,7 +34,7 @@ Options:
   -d, --devices DEVICES     Device IDs (default: 0,1)
   -t, --tensor-parallel     TP size (default: 2)
   -p, --pipeline-parallel   PP size (default: 1)
-  -g, --memory-util         Memory utilization (default: 0.8)
+  -g, --gpu-memory          Memory utilization (default: 0.8)
   --max-model-len           Max model length (default: 4096)
   -q, --quantization [M]    Quantization method
   --media-path PATH         Allowed local media path for VLM
@@ -66,7 +66,7 @@ while [[ $# -gt 0 ]]; do
         -t|--tensor-parallel) INFERENCE_TP_SIZE="$2"; shift 2 ;;
         -p|--pipeline-parallel-size) PIPELINE_PARALLEL_SIZE="$2"; shift 2 ;; # 补回了 PP 参数
         --port) PORT="$2"; shift 2 ;;
-        -g|--gpu-memory|--memory-util) MEMORY_UTILIZATION="$2"; shift 2 ;; # 兼容旧参数名
+        -g|--gpu-memory|--gpu-memory) MEMORY_UTILIZATION="$2"; shift 2 ;; # 兼容旧参数名
         --max-model-len) MAX_MODEL_LEN="$2"; shift 2 ;;
         -q|--quantization)
             if [[ -n "$2" && "$2" != -* ]]; then QUANT_METHOD="$2"; shift 2
