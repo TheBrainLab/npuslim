@@ -14,8 +14,8 @@ required by vLLM-Ascend for NPU deployment (Ascend format).
 - g_idx: int32 group indices [infeatures]
 - config.json contains quantization_config with bits, group_size, etc.
 
-### Output (NPU/Ascend Format):
-- weight: int8 packed weights [outfeatures // 2, infeatures] (2 int4 per byte)
+### Output (NPU/Ascend Format - Column-wise Packing):
+- weight: int32 packed weights [outfeatures, infeatures // 8] (8 int4 per int32, packed along input dim)
 - weight_scale: bfloat16 scales [outfeatures, num_groups]
 - weight_offset: bfloat16 offsets [outfeatures, num_groups]
 - quantization_config is REMOVED from config.json (to prevent HF/vLLM from loading as standard GPTQ)
@@ -40,7 +40,7 @@ With verbose logging:
 2. Loads the GPTQ model with transformers
 3. Unpacks int32 packed weights to individual 4-bit values
 4. Converts from unsigned [0,15] to signed [-8,7] representation
-5. Repacks into Ascend format (int8 with 2 int4 per byte along output dim)
+5. Repacks into Ascend format (int32 with 8 int4 per int32 along input dim, column-wise)
 6. Transforms scales/zeros to weight_scale/weight_offset format
 7. Removes quantization_config from config.json
 8. Adds ascend_quant_config and generates quant_model_description.json
@@ -68,6 +68,7 @@ from typing import Optional, Tuple, Dict, Any
 import torch
 import torch.nn as nn
 from loguru import logger
+from safetensors import safe_open
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM
 
@@ -192,7 +193,7 @@ def pack_ascend_weights(
     group_size: int,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Pack weights into Ascend NPU format.
+    Pack weights into Ascend NPU format (column-wise packing).
 
     Args:
         weight: [infeatures, outfeatures] int32 unpacked weights (unsigned 0-15)
@@ -203,14 +204,27 @@ def pack_ascend_weights(
         group_size: size of each quantization group
 
     Returns:
-        packed_weight: [outfeatures // 2, infeatures] int8 (2 int4 packed per byte)
+        packed_weight: [outfeatures, infeatures // 8] int32 (8 int4 packed per int32, column-wise)
         weight_scale: [outfeatures, num_groups] bfloat16
         weight_offset: [outfeatures, num_groups] bfloat16
+
+    vLLM-Ascend expects (column-wise packing):
+        weight:       [outfeatures, infeatures // 8] as int32 (packed int4 along input dim)
+        weight_scale: [outfeatures, num_groups] as bfloat16
+        weight_offset: [outfeatures, num_groups] as bfloat16
+
+    Packing pattern: 8 int4 values per int32, packed along input dimension (columns).
+        int32[i,j] = int4[i, 8*j] | (int4[i, 8*j+1] << 4) | ... | (int4[i, 8*j+7] << 28)
     """
     assert bits == 4, "Ascend only supports 4-bit quantization"
 
     infeatures, outfeatures = weight.shape
     num_groups = scales.shape[0]
+    pack_factor = 8  # 8 int4 values per int32
+
+    assert infeatures % pack_factor == 0, (
+        f"Ascend format requires infeatures {infeatures} divisible by {pack_factor}"
+    )
 
     # Transpose to [outfeatures, infeatures] for processing
     weight_t = weight.t().contiguous()
@@ -221,14 +235,21 @@ def pack_ascend_weights(
     weight_signed = weight_t.to(torch.int32) - signed_offset
     weight_signed = weight_signed.clamp(-signed_offset, signed_offset - 1)
 
-    # Pack int4 weights: even indices in low nibble, odd indices in high nibble
-    # Reshape to [outfeatures // 2, infeatures] int8
-    weight_2d = weight_signed.to(torch.int8)
-    even_weight = weight_2d[0::2, :] & 0x0F
-    odd_weight = weight_2d[1::2, :] & 0x0F
-    packed_weight = even_weight | (odd_weight << 4)
+    # Convert signed int4 [-8, 7] to unsigned [0, 15] for packing
+    weight_unsigned = (weight_signed + signed_offset).to(torch.uint8)
 
-    # Convert scales and zeros to NPU format
+    # Pack 8 int4 values into int32 along input dimension (columns)
+    # Shape: [outfeatures, infeatures] -> [outfeatures, infeatures // 8]
+    packed_in = infeatures // pack_factor
+    packed_weight = torch.zeros((outfeatures, packed_in), dtype=torch.int32)
+
+    for i in range(pack_factor):
+        # Each group of 8 consecutive columns packs into one int32
+        # Col j*8+k goes to packed[:, j] at bits [4*k, 4*k+3]
+        col_indices = torch.arange(i, infeatures, pack_factor)
+        packed_weight |= (weight_unsigned[:, col_indices].to(torch.int32) << (bits * i))
+
+    # Convert scales to NPU format
     # scales: [num_groups, outfeatures] -> [outfeatures, num_groups]
     weight_scale = scales.t().contiguous().to(torch.bfloat16)
 
@@ -377,11 +398,28 @@ def load_gptq_model(model_path: str, device: str = "cpu"):
 
     # Identify layers that have GPTQ weights (qweight)
     gptq_layer_names = set()
-    for key in weight_map.keys():
-        if ".qweight" in key:
-            # Extract layer name (e.g., "model.layers.0.mlp.experts.0.gate_proj")
-            layer_name = key.rsplit(".qweight", 1)[0]
-            gptq_layer_names.add(layer_name)
+
+    if weight_map:
+        # Use index file weight map
+        for key in weight_map.keys():
+            if ".qweight" in key:
+                # Extract layer name (e.g., "model.layers.0.mlp.experts.0.gate_proj")
+                layer_name = key.rsplit(".qweight", 1)[0]
+                gptq_layer_names.add(layer_name)
+    else:
+        # No index file - scan safetensors files directly
+        safetensors_files = sorted(Path(model_path).glob("model-*.safetensors"))
+        if not safetensors_files:
+            single_file = Path(model_path) / "model.safetensors"
+            if single_file.exists():
+                safetensors_files = [single_file]
+
+        for sf_file in safetensors_files:
+            with safe_open(sf_file, framework="pt") as f:
+                for key in f.keys():
+                    if ".qweight" in key:
+                        layer_name = key.rsplit(".qweight", 1)[0]
+                        gptq_layer_names.add(layer_name)
 
     logger.info(f"Found {len(gptq_layer_names)} GPTQ layers to replace")
 

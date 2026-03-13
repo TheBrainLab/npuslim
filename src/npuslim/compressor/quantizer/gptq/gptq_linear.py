@@ -36,14 +36,16 @@ class GPTQQuantLinear(nn.Module):
 
             # Ascend-specific pack factor: 8 int4 values per int32
             pack_factor = 8
-            assert outfeatures % pack_factor == 0, (
-                f"Ascend backend requires outfeatures {outfeatures} divisible by {pack_factor}"
+            assert infeatures % pack_factor == 0, (
+                f"Ascend backend requires infeatures {infeatures} divisible by {pack_factor}"
             )
 
-            # weight: [out//8, in] packed int4 into int32; scale/offset: [out, groups] bfloat16
+            # Column-wise packing: weight: [out, in//8] packed int4 into int32
+            # This aligns with vLLM-Ascend's expected format (packed_dim=1)
+            # scale/offset: [out, groups] bfloat16
             self.register_buffer(
                 "weight",
-                torch.zeros((outfeatures // pack_factor, infeatures), dtype=torch.int32),
+                torch.zeros((outfeatures, infeatures // pack_factor), dtype=torch.int32),
             )
             num_groups = math.ceil(infeatures / self.group_size)
             self.register_buffer(
@@ -117,15 +119,16 @@ class GPTQQuantLinear(nn.Module):
     # =========================================================================
 
     def _pack_ascend(self, linear, scales, zeros, g_idx=None):
-        """Pack weights in Ascend NPU int32 format.
+        """Pack weights in Ascend NPU int32 format (column-wise packing).
 
         vLLM-Ascend expects:
-          weight:       [outfeatures // 8, infeatures] as int32 (packed int4)
+          weight:       [outfeatures, infeatures // 8] as int32 (packed int4)
           weight_scale: [outfeatures, num_groups] as bfloat16
           weight_offset: [outfeatures, num_groups] as bfloat16
 
-        Packing pattern: 8 int4 values per int32, packed along output dimension.
-        int32[i] = int4[8*i] | (int4[8*i+1] << 4) | ... | (int4[8*i+7] << 28)
+        Packing pattern: 8 int4 values per int32, packed along input dimension.
+        int32[i,j] = int4[0] | (int4[1] << 4) | ... | (int4[7] << 28)
+        where int4[k] comes from column j*8+k of the original weight matrix.
         """
         W = linear.weight.data.clone()
         outfeatures, infeatures = W.shape
@@ -149,16 +152,16 @@ class GPTQQuantLinear(nn.Module):
         # Convert signed int4 [-8, 7] to unsigned [0, 15] for packing
         intweight_unsigned = (intweight_2d + signed_offset).to(torch.uint8)
 
-        # Pack 8 int4 values into int32 along output dimension
-        # Shape: [outfeatures, infeatures] -> [outfeatures // 8, infeatures]
-        packed_out = outfeatures // pack_factor
-        packed_weight = torch.zeros((packed_out, infeatures), dtype=torch.int32, device=device)
+        # Pack 8 int4 values into int32 along input dimension (columns)
+        # Shape: [outfeatures, infeatures] -> [outfeatures, infeatures // 8]
+        packed_in = infeatures // pack_factor
+        packed_weight = torch.zeros((outfeatures, packed_in), dtype=torch.int32, device=device)
 
         for i in range(pack_factor):
-            # Each group of 8 consecutive rows packs into one int32
-            # Row 8*i+k goes to packed[i] at bits [4*k, 4*k+3]
-            row_indices = torch.arange(i, outfeatures, pack_factor, device=device)
-            packed_weight |= (intweight_unsigned[row_indices, :].to(torch.int32) << (self.bits * i))
+            # Each group of 8 consecutive columns packs into one int32
+            # Col j*8+k goes to packed[:, j] at bits [4*k, 4*k+3]
+            col_indices = torch.arange(i, infeatures, pack_factor, device=device)
+            packed_weight |= (intweight_unsigned[:, col_indices].to(torch.int32) << (self.bits * i))
 
         self.weight = packed_weight.contiguous()
         self.weight_scale = scales.to(torch.bfloat16)
@@ -170,32 +173,33 @@ class GPTQQuantLinear(nn.Module):
             self.bias = linear.bias.clone().to(dtype=linear.weight.dtype)
 
     def _forward_ascend(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass for Ascend NPU int32 format.
+        """Forward pass for Ascend NPU int32 format (column-wise unpacking).
 
         Unpacks packed int4 weights from int32 and performs dequantized matmul.
         Used for calibration verification; vLLM-Ascend handles unpacking at runtime.
         """
         assert self.bits == 4, f"Ascend backend only supports 4-bit, got {self.bits}"
 
-        # Packed weight shape: (outfeatures // 8, infeatures) int32
+        # Packed weight shape: (outfeatures, infeatures // 8) int32
         # Scale/offset shape: (outfeatures, num_groups) bfloat16
         packed_weight = self.weight
         pack_factor = 8
-        packed_out, in_feat = packed_weight.shape
-        out_full = packed_out * pack_factor
+        out_feat, packed_in = packed_weight.shape
+        in_full = packed_in * pack_factor
 
         # Unpack int4 weights from int32: each int32 contains 8 int4 values
-        # Pattern: packed[i] = int4[0] | (int4[1] << 4) | ... | (int4[7] << 28)
+        # Pattern: packed[i,j] = int4[0] | (int4[1] << 4) | ... | (int4[7] << 28)
+        # where int4[k] came from column j*8+k of original weight
         num_bits = self.bits  # 4
         mask = (1 << num_bits) - 1  # 0xF
         offset = pow(2, num_bits) // 2  # 8 for signed conversion
 
         unpacked_weight = torch.zeros(
-            out_full, in_feat, dtype=torch.int8, device=packed_weight.device
+            out_feat, in_full, dtype=torch.int8, device=packed_weight.device
         )
         for i in range(pack_factor):
             # Extract 4-bit value and convert from unsigned [0,15] to signed [-8,7]
-            unpacked_weight[i::pack_factor, :] = (
+            unpacked_weight[:, i::pack_factor] = (
                 ((packed_weight >> (num_bits * i)) & mask).to(torch.int8) - offset
             )
 

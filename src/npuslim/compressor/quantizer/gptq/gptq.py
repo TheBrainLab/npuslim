@@ -164,7 +164,7 @@ class GPTQ(BaseCompressorAlgo):
             "checkpoint_format": "gptq",
             "true_sequential": True,
         }
-        logger.info("✅ GPTQ metadata updated in model config.")
+        logger.info("✅ [GPTQ] metadata updated in model config.")
 
     def _update_ascend_metadata(self):
         """
@@ -177,4 +177,4 @@ class GPTQ(BaseCompressorAlgo):
             "include_g_idx": True,
             "has_offset": True,
         }
-        logger.info("✅ GPTQ Ascend metadata updated in model config.")
+        logger.info("✅ [GPTQ] Ascend metadata updated in model config.")

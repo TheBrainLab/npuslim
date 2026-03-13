@@ -3,8 +3,8 @@ meta:
   work_dir: ./logs
 
 model:
-  type: Qwen3
-  model_path: Qwen/Qwen3-8B
+  type: OPT
+  model_path: facebook/opt-125m
   model_hub: hf
   model_kwargs:
     trust_remote_code: true
@@ -17,10 +17,10 @@ model:
 
 calib_dataset:
   dataset:
-    type: TextDataset
-    data_path: ./dataset/sharegpt_gpt4_qwen/sharegpt_gpt4-qwen3_a22B_output.jsonl
+    type: C4Dataset
     num_samples: 128
-    max_seq_length: 4096
+    max_seq_length: 2048
+    seed: 0
   dataloader:
     batch_size: 1
     shuffle: true
@@ -29,14 +29,13 @@ calib_dataset:
 pipeline:
   - type: ptq
     algo_name: GPTQ
-    # Resolves to layers 3-9 (via [3-9]) and layers 10+ (via \d{2,}). 
-    # This keeps layers 0, 1, and 2 quantized while skipping all subsequent down_proj layers.
-    ignore_layers:
-      - 're:model\.layers\.(\d{2,})\.mlp\.down_proj'
+    ignore_layers: 
+      - model.decoder.layers.11.*
+      - model.decoder.layers.12.*
     algo_config:
       w_bits: 4
 
-  # - type: eval
+  - type: eval
 
   - type: save
     algo_name: AscendSaver

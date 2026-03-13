@@ -13,10 +13,15 @@ def register():
     Call this once after installing npuslim, or it happens automatically
     via entry points.
     """
-    from .vllm_ascend import register as register_vllm
+    from .vllm import register as register_vllm_core
+    from .vllm_ascend import register as register_vllm_ascend
     from .transformers import register as register_hf
 
-    register_vllm()
+    # Register vLLM core patches first (model patches, etc.)
+    register_vllm_core()
+    # Then register vLLM-Ascend specific patches
+    register_vllm_ascend()
+    # Finally register HuggingFace transformers patches
     register_hf()
 
 

@@ -13,9 +13,8 @@ logger = init_logger(__name__)
 def register():
     """Register NPUSlim extensions with vLLM-Ascend.
 
-    This function:
-    1. Discovers all modules (patches and schemes self-register via decorators)
-    2. Applies all registered patches to vllm-ascend modules
+    This function discovers and applies patches to vLLM-Ascend modules.
+    For vLLM core patches (e.g., model patches), see npuslim.plugins.vllm.
 
     Schemes use vllm-ascend's @register_scheme decorator.
     Patches use our @register_patch decorator from npuslim.plugins.registry.
@@ -23,7 +22,7 @@ def register():
     try:
         from npuslim.plugins.registry import apply_all_patches, discover_modules
 
-        # Discover all modules under this plugin directory
+        # Discover vllm_ascend plugin modules
         # This triggers @register_patch and @register_scheme decorators
         plugin_dir = str(Path(__file__).parent)
         discover_modules("npuslim.plugins.vllm_ascend", plugin_dir)

@@ -4,7 +4,7 @@ meta:
 
 model:
   type: Qwen3
-  model_path: Qwen/Qwen3-4B
+  model_path: Qwen/Qwen3-30B-A3B
   model_hub: hf
   model_kwargs:
     trust_remote_code: true
@@ -29,8 +29,7 @@ calib_dataset:
 pipeline:
   - type: ptq
     algo_name: GPTQ
-    ignore_layers:
-      - model.layers.*.mlp.down_proj
+    ignore_layers: []
     algo_config:
       w_bits: 4
 

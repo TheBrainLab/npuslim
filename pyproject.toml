@@ -32,7 +32,7 @@ npuslim = "npuslim.cli.__main__:main"
 where = ["src"]
 
 [project.entry-points."vllm.general_plugins"]
-npuslim_ascend = "npuslim.plugins.vllm_ascend:register"
+npuslim = "npuslim.plugins:register"
 
 [project.entry-points."transformers.quantizers"]
 quip = "npuslim.plugins.transformers.quantizers.quantizer_quip:QuipHfQuantizer"

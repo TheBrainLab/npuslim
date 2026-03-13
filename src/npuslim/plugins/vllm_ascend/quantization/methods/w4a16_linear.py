@@ -1,6 +1,7 @@
 """W4A16 Linear quantization scheme for Ascend NPU.
 
 This scheme is registered with vllm-ascend via @register_scheme decorator.
+Aligned with NPUSlim's column-wise (input dimension) packing format.
 """
 
 import torch
@@ -68,9 +69,10 @@ class AscendW4A16LinearMethod(AscendLinearScheme):
     Supports both per-channel and per-group quantization with int32 packed
     weights (8 int4 per int32), aligned with upstream vllm-ascend format.
 
-    NPUSlim format:
-    - Weight: [output_size // 8, input_size] (packed int4 along output dim)
+    NPUSlim format (column-wise packing):
+    - Weight: [output_size, input_size // 8] (packed int4 along input dim)
     - Scale: [output_size, num_groups] where num_groups = input_size // group_size
+    - Offset: [output_size, num_groups]
 
     After processing:
     - Weight: [input_size, output_size] (transposed for NPU API)
@@ -99,23 +101,23 @@ class AscendW4A16LinearMethod(AscendLinearScheme):
         """Create weight parameters.
 
         For W4A16, weights are stored as int32 (packed int4).
-        Format: [output_size // 8, input_size] (output packed)
+        Format: [output_size, input_size // 8] (input packed, column-wise)
         """
-        assert output_size % self.pack_factor == 0, (
-            f"Expecting `output_size` {output_size} "
+        assert input_size % self.pack_factor == 0, (
+            f"Expecting `input_size` {input_size} "
             f"can be divided by `pack_factor` {self.pack_factor}"
         )
 
         params_dict: dict[str, Any] = {}
-        # Weight shape: [output_size // 8, input_size] as int32
-        # Each int32 contains 8 int4 values packed along output dimension
+        # Weight shape: [output_size, input_size // 8] as int32
+        # Each int32 contains 8 int4 values packed along input dimension
         params_dict["weight"] = torch.empty(
-            output_size // self.pack_factor, input_size, dtype=torch.int32
+            output_size, input_size // self.pack_factor, dtype=torch.int32
         )
         # Tell vLLM's weight_loader about the packed dimension
-        # packed_dim=0 means output dimension (dim 0) is packed
+        # packed_dim=1 means input dimension (dim 1) is packed
         # packed_factor=8 means each element represents 8 packed values
-        params_dict["_packed_dim"] = 0
+        params_dict["_packed_dim"] = 1
         params_dict["_packed_factor"] = self.pack_factor
         return params_dict
 
@@ -203,8 +205,8 @@ class AscendW4A16LinearMethod(AscendLinearScheme):
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         """Process weights after model loading.
 
-        NPUSlim int32 format:
-        - Weight: [output_size // 8, input_size] (packed int4 along output dim)
+        NPUSlim int32 format (column-wise packing):
+        - Weight: [output_size, input_size // 8] (packed int4 along input dim)
         - Scale: [output_size, num_groups]
 
         Processing:
@@ -223,16 +225,16 @@ class AscendW4A16LinearMethod(AscendLinearScheme):
             layer.group_size = 0
 
         # Unpack int4 weights from int32 using utility
-        packed_weight = layer.weight.data  # [N//8, K]
-        output_size_packed, input_size = packed_weight.shape
-        output_size = output_size_packed * self.pack_factor
+        packed_weight = layer.weight.data  # [N, K//8] for column-wise packing
+        output_size, packed_input = packed_weight.shape
+        input_size = packed_input * self.pack_factor
 
-        # Use unpack_from_int32 with packed_dim=0 (output dimension packed)
+        # Use unpack_from_int32 with packed_dim=1 (input dimension packed)
         unpacked_weight = unpack_from_int32(
             weight=packed_weight,
             shape=torch.Size([output_size, input_size]),
             num_bits=4,
-            packed_dim=0,
+            packed_dim=1,
         )
         # unpacked_weight is now int8, shape [output_size, input_size]
 
