@@ -201,14 +201,14 @@ while true; do
     fi
 
     # Check HTTP health
-    local http_code=$(curl -o /dev/null -s -w "%{http_code}" "http://localhost:${PORT}/health" 2>/dev/null || echo "000")
+    http_code=$(curl -o /dev/null -s -w "%{http_code}" "http://localhost:${PORT}/health" 2>/dev/null || echo "000")
 
     if [[ "$http_code" == "200" ]]; then
         log_success "Server is UP (HTTP 200)"
         break
     fi
 
-    local elapsed=$(elapsed_time)
+    elapsed=$(elapsed_time)
     echo -ne "   ⏳ Loading... (${elapsed}s) | [Ctrl+C] to abort \033[K\r"
     sleep 3
 done
