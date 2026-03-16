@@ -22,7 +22,9 @@ Requires CANN environment with `ASCEND_HOME_PATH` set.
 ### Quantization
 
 ```bash
-export HF_ENDPOINT="https://hf-mirror.com"  # if need
+# Use mirror if HuggingFace is inaccessible
+export HF_ENDPOINT="https://hf-mirror.com"
+
 python tools/run.py -c configs/compressor/int8_dyn/qwen3_0_6b.yaml
 ```
 
@@ -30,7 +32,7 @@ python tools/run.py -c configs/compressor/int8_dyn/qwen3_0_6b.yaml
 
 ```bash
 # Deploy vLLM server
-bash tools/serve/deploy_vllm.sh outputs/qwen3_int8_dyn -d 0,1 -t 2 --wait
+bash tools/serve/deploy_vllm.sh outputs/qwen3_int8_dyn -d 0,1 -t 2
 
 # Or run stress test pipeline (deploy + benchmark + cleanup)
 bash tools/eval/run_stress_test.sh outputs/qwen3_int8_dyn -d 0,1 -t 2
