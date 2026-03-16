@@ -1,0 +1,6 @@
+# QuIP debug scripts - not tracked
+*.pyc
+__pycache__/
+*.log
+*.json
+results/
