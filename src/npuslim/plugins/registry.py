@@ -20,6 +20,7 @@ logger = init_logger(__name__)
 # Global registry: target_module -> list of patch functions
 _PATCH_REGISTRY: dict[str, list[Callable]] = {}
 _DISCOVERED_MODULES: set[str] = set()
+_APPLIED_PATCHES: set[str] = set()
 
 
 def register_patch(target: str):
@@ -81,9 +82,16 @@ def discover_modules(base_package: str, base_dir: str):
 
 
 def apply_all_patches():
-    """Apply all registered patches to their target modules."""
+    """Apply all registered patches to their target modules.
+
+    This function is idempotent - patches are only applied once.
+    """
     applied = 0
     for target, patches in _PATCH_REGISTRY.items():
+        patch_key = target
+        if patch_key in _APPLIED_PATCHES:
+            continue
+
         try:
             import importlib
             module = importlib.import_module(target)
@@ -97,6 +105,7 @@ def apply_all_patches():
                     logger.warning(
                         f"Failed to apply patch {patch_func.__name__} to {target}: {e}"
                     )
+            _APPLIED_PATCHES.add(patch_key)
         except ImportError:
             logger.debug(f"Target module not found, skipping: {target}")
 

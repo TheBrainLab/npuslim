@@ -5,14 +5,20 @@ Provides automatic registration of NPUSlim quantization methods
 with various deployment backends (vLLM, HuggingFace, etc.).
 """
 
+_REGISTERED = False
+
 
 def register():
     """
     Register all NPUSlim plugins with their respective frameworks.
 
     Call this once after installing npuslim, or it happens automatically
-    via entry points.
+    via entry points. This function is idempotent - multiple calls are safe.
     """
+    global _REGISTERED
+    if _REGISTERED:
+        return
+
     from npuslim.utils.backend import bh
 
     from .transformers import register as register_hf
@@ -28,6 +34,8 @@ def register():
         from .vllm_ascend import register as register_vllm_ascend
 
         register_vllm_ascend()
+
+    _REGISTERED = True
 
 
 __all__ = ["register"]

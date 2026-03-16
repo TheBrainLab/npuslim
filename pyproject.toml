@@ -8,25 +8,25 @@ requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 
 dependencies = [
-    # "torch",
     "rich",
     "loguru",
     "easydict",
     "dacite",
     "threadpoolctl",
     "datasets",
-    # "accelerate",
     "transformers<5.0.0",
-    # "vllm", 
-    "lm-eval", 
+    "lm-eval",
     "evalscope",
     "optimum",
     "primefac"
-    # "gptqmodel"
 ]
 
 [project.scripts]
 npuslim = "npuslim.cli.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["sitecustomize"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

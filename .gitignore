@@ -149,7 +149,6 @@ runs
 outputs
 debug
 debugs/
-!debugs/quip/
 /runs_old
 /wandb
 /examples/runs
