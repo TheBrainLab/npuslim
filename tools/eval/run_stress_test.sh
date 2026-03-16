@@ -129,14 +129,24 @@ BENCHMARK_LOG="${OUTPUT_DIR}/${MODEL_NAME}_${TIMESTAMP}.log"
 # Cleanup Handler
 # ------------------------------------------------------------------------------
 SERVER_PID=""
+CLEANUP_NEEDED=true
 
 cleanup() {
+    # Skip cleanup if already completed successfully
+    if [[ "$CLEANUP_NEEDED" != "true" ]]; then
+        return
+    fi
+
     echo ""
-    log_warn "Interrupted! Cleaning up..."
+    if [[ "$1" == "interrupt" ]]; then
+        log_warn "Interrupted! Cleaning up..."
+    else
+        log_info "Cleaning up server process..."
+    fi
 
     if [[ -n "$SERVER_PID" ]]; then
         # Find child processes (vLLM Python process)
-        local child_pids=$(pgrep -P "$SERVER_PID" 2>/dev/null || true)
+        child_pids=$(pgrep -P "$SERVER_PID" 2>/dev/null || true)
 
         log_info "Killing" "Server wrapper (PID: $SERVER_PID)"
         kill "$SERVER_PID" 2>/dev/null || true
@@ -155,7 +165,13 @@ cleanup() {
 
     log_success "Cleanup complete"
 }
-trap cleanup EXIT INT TERM
+
+# Handle interrupts (Ctrl+C)
+handle_interrupt() {
+    cleanup "interrupt"
+    exit 1
+}
+trap handle_interrupt INT TERM
 
 # ------------------------------------------------------------------------------
 # Stage 1: Deploy Server
@@ -205,6 +221,7 @@ while true; do
     http_code="${http_code// /}"  # Trim any whitespace
 
     if [[ "$http_code" == "200" ]]; then
+        echo ""  # Clear the loading line
         log_success "Server is UP (HTTP 200)"
         break
     fi
@@ -254,4 +271,7 @@ else
     log_warn "Benchmark finished with errors (exit code: $EXIT_CODE)"
 fi
 
-# Cleanup will be triggered by trap on exit
+# Mark as completed - cleanup will be silent on normal exit
+CLEANUP_NEEDED=false
+cleanup "normal"
+exit $EXIT_CODE
