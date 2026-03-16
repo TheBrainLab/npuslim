@@ -200,8 +200,9 @@ while true; do
         exit 1
     fi
 
-    # Check HTTP health
-    http_code=$(curl -o /dev/null -s -w "%{http_code}" "http://localhost:${PORT}/health" 2>/dev/null || echo "000")
+    # Check HTTP health (with timeout to prevent hanging)
+    http_code=$(curl -o /dev/null -s -w "%{http_code}" --connect-timeout 5 -m 10 "http://localhost:${PORT}/health" 2>/dev/null || echo "000")
+    http_code="${http_code// /}"  # Trim any whitespace
 
     if [[ "$http_code" == "200" ]]; then
         log_success "Server is UP (HTTP 200)"
@@ -209,7 +210,7 @@ while true; do
     fi
 
     elapsed=$(elapsed_time)
-    echo -ne "   ⏳ Loading... (${elapsed}s) | [Ctrl+C] to abort \033[K\r"
+    echo -ne "   ⏳ Loading... (${elapsed}s) | This may take a few minutes. [Ctrl+C] to abort \033[K\r"
     sleep 3
 done
 
