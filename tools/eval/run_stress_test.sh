@@ -129,14 +129,8 @@ BENCHMARK_LOG="${OUTPUT_DIR}/${MODEL_NAME}_${TIMESTAMP}.log"
 # Cleanup Handler
 # ------------------------------------------------------------------------------
 SERVER_PID=""
-CLEANUP_NEEDED=true
 
 cleanup() {
-    # Skip cleanup if already completed successfully
-    if [[ "$CLEANUP_NEEDED" != "true" ]]; then
-        return
-    fi
-
     echo ""
     if [[ "$1" == "interrupt" ]]; then
         log_warn "Interrupted! Cleaning up..."
@@ -271,7 +265,6 @@ else
     log_warn "Benchmark finished with errors (exit code: $EXIT_CODE)"
 fi
 
-# Mark as completed - cleanup will be silent on normal exit
-CLEANUP_NEEDED=false
+# Cleanup after successful completion
 cleanup "normal"
 exit $EXIT_CODE
