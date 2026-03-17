@@ -25,23 +25,37 @@ Requires CANN environment with `ASCEND_HOME_PATH` set.
 # Use mirror if HuggingFace is inaccessible
 export HF_ENDPOINT="https://hf-mirror.com"
 
+# GPU
 python tools/run.py -c configs/compressor/int8_dyn/qwen3/qwen3_0_6b.yaml
+
+# NPU
+python tools/run.py -c configs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b.yaml
 ```
 
 ### Deployment (vLLM)
 
 ```bash
-bash tools/serve/deploy_vllm.sh outputs/int8_dyn/qwen3/qwen3_0_6b -d 0 -t 1 -q
+# GPU
+bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b -d 0 -t 1
+
+# NPU
+bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b -d 0 -t 1 -q
 ```
 
 ### Evaluation
 
 ```bash
-# LM-Eval (wikitext, ceval, etc.)
-bash tools/eval/run_lmeval.sh outputs/int8_dyn/qwen3/qwen3_0_6b --tasks wikitext -d 0 -t 1 -q
+# LM-Eval in GPU (wikitext, ceval, etc.)
+bash tools/eval/run_lmeval.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b --tasks wikitext -d 0 -t 1
 
-# Stress test with evalscope (requires running vLLM server first)
-bash tools/eval/run_stress_test.sh outputs/gptq/qwen3/qwen3_0_6b -d 0 -t 1 -q
+# NPU
+bash tools/eval/run_lmeval.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b --tasks wikitext -d 0 -t 1 -q
+
+# Stress test with evalscope in GPU (requires running vLLM server first)
+bash tools/eval/run_stress_test.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b -d 0 -t 1 -q
+
+# NPU
+bash tools/eval/run_stress_test.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b -d 0 -t 1
 ```
 
 ## Tool Scripts

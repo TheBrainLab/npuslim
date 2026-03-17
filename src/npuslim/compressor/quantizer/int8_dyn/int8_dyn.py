@@ -212,7 +212,7 @@ class INT8Dynamic(BaseCompressorAlgo):
         from .int8_dyn_module import INTDynQDQModule
 
         self.model.model.config.ascend_quant_config = {
-            "model_quant_type": "W8A8_dynamic",
+            "model_quant_type": "W8A8_DYNAMIC",
             "group_size": -1,  # Per-channel quantization
             "quant_layer_types": [INTDynQDQModule.__name__],
             "include_g_idx": False,

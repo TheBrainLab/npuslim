@@ -1,0 +1,33 @@
+meta:
+  type: llm
+  work_dir: ./logs
+
+model:
+  type: Qwen3
+  model_path: Qwen/Qwen3-0.6B
+  model_hub: hf
+  model_kwargs:
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    use_cache: false
+    torch_dtype: auto
+    device_map: auto
+  tokenizer_kwargs:
+    trust_remote_code: true
+
+pipeline:
+  - type: ptq
+    algo_name: INT8Dynamic
+    ignore_layers: []
+    algo_config:
+      w_bits: 8
+      weight: "per-channel"
+      activation: "per-token"
+
+  - type: eval
+
+  - type: save
+    algo_name: AscendSaver
+    save_dir: ./outputs
+    saver_args:
+      strip_quant_config: true
