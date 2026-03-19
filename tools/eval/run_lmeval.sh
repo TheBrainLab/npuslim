@@ -33,15 +33,23 @@ Options:
   Hardware Options:
   -d, --devices DEVICES       Device IDs (default: 0)
   -t, --tp SIZE               Tensor parallel size (default: 1)
+  --hccl-port HCCL_IF_BASE_PORT
+                              HCCL base port for NPU communication (default: 60000)
   --gpu-memory UTIL           GPU memory utilization (default: 0.8)
   --max-model-len LEN         Max model length (default: 4096)
   -q, --quantization [TYPE]   Quantization method (auto-set on NPU)
+  -ep, --enable-expert-parallel
+                              Enable expert parallelism for MoE models
+  --compilation-config CONFIG
+                              Compilation config (e.g., '{"cudagraph_mode": "FULL_DECODE_ONLY"}')
+  --enforce-eager             Use eager execution mode (disable graph capture)
 
   -h, --help                  Show this help message
 
 Examples:
   $0 outputs/qwen-int8 --tasks wikitext --fewshot 5 -d 0,1 -t 2
-  $0 outputs/model --tasks arc_easy,hellaswag -q
+  $0 outputs/model --tasks arc_challenge,arc_easy,boolq,headqa_en,hellaswag,openbookqa,piqa,winogrande -q
+  $0 outputs/moe-model --tasks wikitext -d 0,1 -t 2 -ep --hccl-port 65000
 EOF
 }
 
@@ -57,9 +65,13 @@ OUTPUT_DIR="outputs/lmeval"
 
 DEVICES="0"
 TP_SIZE=1
+HCCL_PORT=""
 MEM_UTIL=0.8
 MAX_MODEL_LEN=4096
 QUANT_METHOD=""
+COMPILATION_CONFIG=""
+ENABLE_EP=false
+ENFORCE_EAGER=false
 DEVICE_TYPE=""
 
 POSITIONAL_ARGS=()
@@ -77,6 +89,7 @@ while [[ $# -gt 0 ]]; do
         --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
         -d|--devices) DEVICES="$2"; shift 2 ;;
         -t|--tp) TP_SIZE="$2"; shift 2 ;;
+        --hccl-port) HCCL_PORT="$2"; shift 2 ;;
         --gpu-memory) MEM_UTIL="$2"; shift 2 ;;
         --max-model-len) MAX_MODEL_LEN="$2"; shift 2 ;;
         -q|--quantization)
@@ -85,6 +98,9 @@ while [[ $# -gt 0 ]]; do
             else
                 QUANT_METHOD="ascend"; shift 1
             fi ;;
+        -ep|--enable-expert-parallel) ENABLE_EP=true; shift 1 ;;
+        --compilation-config) COMPILATION_CONFIG="$2"; shift 2 ;;
+        --enforce-eager) ENFORCE_EAGER=true; shift 1 ;;
         -h|--help) usage; exit 0 ;;
         *) POSITIONAL_ARGS+=("$1"); shift ;;
     esac
@@ -108,7 +124,8 @@ fi
 # Environment Setup
 # ------------------------------------------------------------------------------
 [[ -z "$DEVICE_TYPE" ]] && DEVICE_TYPE=$(detect_device)
-setup_env "$DEVICE_TYPE" "$DEVICES"
+HCCL_PORT="${HCCL_PORT:-60000}"
+setup_env "$DEVICE_TYPE" "$DEVICES" "$TP_SIZE" "$HCCL_PORT"
 
 # ------------------------------------------------------------------------------
 # Build Output Path
@@ -131,6 +148,15 @@ if [[ "$BACKEND" == "vllm" ]]; then
     MODEL_ARGS+=",dtype=auto"
     if [[ -n "$QUANT_METHOD" ]]; then
         MODEL_ARGS+=",quantization=${QUANT_METHOD}"
+    fi
+    if [[ "$ENABLE_EP" == true ]]; then
+        MODEL_ARGS+=",enable_expert_parallel=True"
+    fi
+    if [[ -n "$COMPILATION_CONFIG" ]]; then
+        MODEL_ARGS+=",compilation_config=${COMPILATION_CONFIG}"
+    fi
+    if [[ "$ENFORCE_EAGER" == true ]]; then
+        MODEL_ARGS+=",enforce_eager=True"
     fi
 elif [[ "$BACKEND" == "hf" ]]; then
     if [[ "$TP_SIZE" -gt 1 ]]; then

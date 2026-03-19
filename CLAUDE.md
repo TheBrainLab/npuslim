@@ -4,26 +4,35 @@
 
 ### Quantization
 ```bash
-python tools/run.py -c configs/compressor/int8_dyn/qwen3_0_6b.yaml
-python tools/run.py -c configs/compressor/gptq/qwen3_0_6b.yaml
-python tools/run.py -c configs/compressor/quip/qwen3_0_6b-w4.yaml
-```
+# Use mirror if HuggingFace is inaccessible
+export HF_ENDPOINT="https://hf-mirror.com"
 
-### Evaluation
-```bash
-# LM-Eval (wikitext, ceval, etc.)
-bash tools/eval/run_lmeval.sh outputs/qwen_int8_dyn --tasks wikitext -d 0,1 -t 2 -q
+# GPU
+python tools/run.py -c configs/compressor/int8_dyn/qwen3/qwen3_0_6b.yaml
 
-# Stress Test with evalscope (requires running vLLM server)
-bash tools/eval/evalscope_perf.sh outputs/qwen_int8_dyn --parallel "1 16 32"
-
-# QuIP-specific perplexity evaluation
-python tools/eval_ppl_quip_style.py
+# NPU
+python tools/run.py -c configs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b.yaml
 ```
 
 ### Deployment (vLLM)
 ```bash
-bash deploy/run_vllm.sh --model-path outputs/qwen3_int8_dyn -d 4,5 -t 2 -q
+# GPU
+bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b -d 0 -t 1
+
+# NPU
+bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b -d 0 -t 1 -q
+```
+
+### Evaluation
+```bash
+# LM-Eval in GPU (wikitext, ceval, etc.)
+bash tools/eval/run_lmeval.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b --tasks wikitext -d 0 -t 1
+
+# NPU
+bash tools/eval/run_lmeval.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b --tasks wikitext -d 0 -t 1 -q
+
+# Stress test with evalscope (full pipeline: deploy → benchmark → cleanup)
+bash tools/eval/run_stress_test.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b -d 0 -t 1
 ```
 
 ## Architecture
@@ -38,37 +47,58 @@ bash deploy/run_vllm.sh --model-path outputs/qwen3_int8_dyn -d 4,5 -t 2 -q
 **Factory Pattern** (`src/npuslim/utils/factory.py`):
 - `ModelFactory.create(config=model_cfg)` - Creates Qwen3, OPT models
 - `DatasetFactory.create(config=dataset_cfg)` - Creates C4, WikiText2, MMLU datasets
-- `TaskFactory.create(task_key, raw_config, resources)` - Creates ptq, eval, save, speculative tasks
+- `TaskFactory.create(task_key, raw_config, resources)` - Creates ptq, eval, save tasks
 - `CompressorFactory.create(algo_name, ...)` - Creates quantization algorithms
-- `SaverFactory.create(format_name, ...)` - Creates HuggingFace savers
+- `SaverFactory.create(format_name, ...)` - Creates HuggingFace/Ascend savers
 
 **Base Classes**:
 - `BaseLLMModel`: Model wrapper with HF/ModelScope hub support via `get_hub_class()`
 - `BaseTask`: Abstract task with `ConfigClass` auto-parsing and `_resolve_layer_names()` for glob/regex patterns
 - `BaseCompressorAlgo`: Unified interface with `prepare()`, `calibrate()`, `convert()`, `compress()`, `apply_masks()`
 - `BaseObserver`: Activation/weight observers (AbsMaxActivation, AbsMaxWeight, PTQObserver)
+- `BaseSaver`: Model serialization base class
 
 ### Pipeline Task Types
 
 - `ptq`: Post-training quantization
 - `eval`: Model evaluation (perplexity, accuracy)
 - `save`: Export quantized model
-- `speculative`: Speculative decoding tasks
 
 ### Directory Structure
 
 ```
 src/npuslim/
-├── model/           # BaseLLMModel subclasses (qwen3/, opt/)
-├── dataset/         # Calibration datasets (c4_dataset.py, wikitext2_dataset.py, mmlu_dataset.py)
-├── tasks/           # BaseTask subclasses (compressor_task.py, eval_task.py, save_task.py)
+├── slim_engine.py          # Main orchestrator
+├── cli/                    # Command-line interface
+├── cann_ops/               # CANN-specific operators
+│   ├── quant/              # Quantization primitives (PTQ, QAT tools)
+│   ├── llm_ptq/            # LLM-specific PTQ utilities
+│   ├── sparse/             # Sparsity utilities
+│   ├── lowbit/             # Low-bit quantization
+│   └── multi_modal/        # Multi-modal support
 ├── compressor/
-│   ├── quantizer/    # BaseCompressorAlgo subclasses (int8_dyn/, gptq/, quip/, sparsegpt/)
-│   ├── observers/    # BaseObserver subclasses
-│   └── core/        # Quantization utilities, LayerWiseScheduler, quant_func
-├── saver/           # Model savers (huggingface.py)
-├── vllm_plugin/     # vLLM-ascend integration, updates ASCEND_QUANTIZATION_METHOD_MAP
-└── utils/           # config_parser, backend (bh for device-agnostic cache), factory
+│   ├── quantizer/          # Quantization algorithms
+│   │   ├── int8_dyn/       # INT8 dynamic quantization
+│   │   ├── gptq/           # GPTQ algorithm
+│   │   ├── quip/           # QuIP algorithm
+│   │   └── sparsegpt/      # SparseGPT pruning + quantization
+│   ├── observers/          # Activation/weight observers
+│   └── core/               # Quantization utilities, LayerWiseScheduler
+├── dataset/                # Calibration datasets (C4, WikiText2, MMLU)
+├── tasks/                  # Pipeline tasks (ptq, eval, save)
+├── saver/                  # Model savers (HuggingFace, Ascend)
+├── plugins/                # Integration plugins
+│   ├── vllm/               # vLLM model executor plugins
+│   └── vllm_ascend/        # vLLM-Ascend quantization methods
+└── utils/                  # Config parser, backend utilities, factory
+
+tools/
+├── run.py                  # Main entry point
+├── serve/deploy_vllm.sh    # vLLM server deployment
+├── eval/                   # Evaluation scripts
+│   ├── run_lmeval.sh       # LM-Eval harness
+│   └── run_stress_test.sh  # Stress test pipeline
+└── utils/common.sh         # Shared bash utilities
 ```
 
 ## Config Format
@@ -105,29 +135,79 @@ pipeline:
 
   - type: save
     save_dir: ./outputs
+    format: AscendSaver  # or HuggingFaceSaver
 ```
 
 ## Quantization Algorithms
 
-- **INT8Dynamic** (`src/npuslim/compressor/quantizer/int8_dyn/`): Per-channel weight, per-token activation
-- **GPTQ** (`src/npuslim/compressor/quantizer/gptq/`): Activation-aware weight quantization
-- **QuIP** (`src/npuslim/compressor/quantizer/quip/`): Quaternion-inspired with vector balancing
-- **SparseGPT** (`src/npuslim/compressor/quantizer/sparsegpt/`): Structured pruning + quantization
+| Algorithm | Directory | Description |
+|-----------|-----------|-------------|
+| INT8Dynamic | `int8_dyn/` | Per-channel weight, per-token activation |
+| GPTQ | `gptq/` | Activation-aware weight quantization |
+| QuIP | `quip/` | Quaternion-inspired with vector balancing |
+| SparseGPT | `sparsegpt/` | Structured pruning + quantization |
 
-## vLLM Integration
+## Plugin System
 
-Package registers via `pyproject.toml` entry point:
+Entry points defined in `pyproject.toml`:
 ```toml
 [project.entry-points."vllm.general_plugins"]
-register_npuslim = "npuslim.vllm_plugin:register"
+npuslim = "npuslim.plugins:register"
+
+[project.entry-points."transformers.quantizers"]
+quip = "npuslim.plugins.transformers.quantizers.quantizer_quip:QuipHfQuantizer"
 ```
 
-`vllm_plugin/__init__.py`: Updates `ASCEND_QUANTIZATION_METHOD_MAP` with NPUSLIM quantization methods.
+### Plugin Architecture
 
-## Critical Notes
+`npuslim.plugins:register()` is the main entry point that:
+1. Calls `plugins.vllm.register()` - Core vLLM patches
+2. Calls `plugins.transformers.register()` - HuggingFace quantizers
+3. Conditionally calls `plugins.vllm_ascend.register()` - NPU-specific patches
 
-- **CANN requirement**: Must set `ASCEND_HOME_PATH` env var before installation
-- **Python version**: >=3.11 required
-- **Factory lazy loading**: Use `_REGISTRY_MAP` in submodule `__init__.py` for lazy imports
-- **Layer patterns**: Tasks support `ignore_layers` with glob (e.g., `output.*`) and regex (prefix `re:`)
-- **Backend**: Use `npuslim.utils.backend.bh` for device-agnostic cache clearing (`empty_cache()`)
+### File Structure Convention
+
+**Plugin paths MUST mirror the target framework's structure:**
+```
+src/npuslim/plugins/
+├── vllm/                              # Patches vllm.* modules
+│   └── model_executor/models/
+│       └── qwen3_moe.py               # Patches vllm.model_executor.models.qwen3_moe
+├── vllm_ascend/                       # Patches vllm_ascend.* modules
+│   └── quantization/
+│       ├── method_adapters.py         # Patches vllm_ascend.quantization.method_adapters
+│       └── methods/w4a16_linear.py    # New quantization scheme for vLLM-Ascend
+└── transformers/                      # Patches transformers.* modules
+    └── quantizers/quantizer_quip.py   # Registers QuipHfQuantizer
+```
+
+### Patch Mechanism
+
+Use `@register_patch(target_module)` decorator from `npuslim.plugins.registry`:
+```python
+from npuslim.plugins.registry import register_patch
+
+@register_patch("vllm_ascend.quantization.method_adapters")
+def patch_process_weight(module):
+    original = module.AscendLinearMethod.process_weight
+    module.AscendLinearMethod.process_weight = patched_version
+```
+
+For vLLM-Ascend quantization schemes, use their `@register_scheme` decorator:
+```python
+from vllm_ascend.quantization.methods import register_scheme
+
+@register_scheme("W4A16", "linear")
+class MyW4A16LinearMethod(AscendLinearScheme):
+    ...
+```
+
+## Saver Modules
+
+- **HuggingFaceSaver**: Standard HF format export
+- **AscendSaver**: Generates `quant_model_description.json` for vLLM-Ascend
+
+## Requirements
+
+- **CANN**: Set `ASCEND_HOME_PATH` env var before installation
+- **Python**: >=3.11

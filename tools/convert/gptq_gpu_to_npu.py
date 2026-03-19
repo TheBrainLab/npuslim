@@ -565,8 +565,18 @@ def convert_model(
 
     logger.info("Layer conversion complete")
 
+    # Convert any remaining float16 tensors to bfloat16
+    # (some layers like embed_tokens, lm_head are not quantized and remain float16)
+    for name, param in model.named_parameters():
+        if param.dtype == torch.float16:
+            param.data = param.data.to(torch.bfloat16)
+
+    # Force dtype to bfloat16 since weight_scale/weight_offset are always bf16
+    # NPU requires config dtype to match actual tensor dtypes
+    model.config.dtype = torch.bfloat16
+
     # Update config for Ascend
-    config.ascend_quant_config = {
+    model.config.ascend_quant_config = {
         "model_quant_type": f"W{bits}A16",
         "group_size": group_size,
         "quant_layer_types": ["GPTQQuantLinear"],
@@ -575,8 +585,8 @@ def convert_model(
     }
 
     # Remove GPU-specific quantization_config if present
-    if hasattr(config, 'quantization_config'):
-        delattr(config, 'quantization_config')
+    if hasattr(model.config, 'quantization_config'):
+        delattr(model.config, 'quantization_config')
 
     # Save model
     logger.info(f"Saving converted model to {output_path}")

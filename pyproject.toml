@@ -18,7 +18,7 @@ dependencies = [
     "lm-eval",
     "evalscope",
     "optimum",
-    "primefac"
+    "primefac",
 ]
 
 [project.scripts]

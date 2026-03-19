@@ -33,8 +33,15 @@ Server Options:
   -d, --devices DEVICES       Device IDs (default: 0)
   -t, --tp SIZE               Tensor parallel size (default: 1)
   --port PORT                 Service port (default: 8080)
+  --hccl-port HCCL_IF_BASE_PORT
+                              HCCL base port for NPU communication (default: 60000)
   --gpu-memory UTIL           GPU memory utilization (default: 0.8)
   --max-model-len LEN         Max model length (default: 4096)
+  -ep, --enable-expert-parallel
+                              Enable expert parallelism for MoE models
+  --compilation-config CONFIG
+                              Compilation config (e.g., '{"cudagraph_mode": "FULL_DECODE_ONLY"}')
+  --enforce-eager             Use eager execution mode (disable graph capture)
 
 Benchmark Options:
   --parallel LIST             Concurrency levels (default: "1 10 50 100")
@@ -51,6 +58,7 @@ Output Options:
 Examples:
   $0 outputs/qwen-int8 -d 0,1 -t 2
   $0 outputs/qwen-int8 --parallel "1 16 32" --total-requests "20 100 200"
+  $0 outputs/moe-model -d 0,1 -t 2 -ep --hccl-port 65000
 EOF
 }
 
@@ -61,8 +69,12 @@ MODEL_PATH=""
 DEVICES="0"
 TP_SIZE=1
 PORT=8080
+HCCL_PORT=""
 MEM_UTIL=0.8
 MAX_MODEL_LEN=4096
+COMPILATION_CONFIG=""
+ENABLE_EP=false
+ENFORCE_EAGER=false
 
 PARALLEL_LIST="1 10 50 100"
 TOTAL_REQUESTS="10 50 100 200"
@@ -83,8 +95,12 @@ while [[ $# -gt 0 ]]; do
         -d|--devices) DEVICES="$2"; shift 2 ;;
         -t|--tp|--tensor-parallel) TP_SIZE="$2"; shift 2 ;;
         --port) PORT="$2"; shift 2 ;;
+        --hccl-port) HCCL_PORT="$2"; shift 2 ;;
         --gpu-memory) MEM_UTIL="$2"; shift 2 ;;
         --max-model-len) MAX_MODEL_LEN="$2"; shift 2 ;;
+        -ep|--enable-expert-parallel) ENABLE_EP=true; shift 1 ;;
+        --compilation-config) COMPILATION_CONFIG="$2"; shift 2 ;;
+        --enforce-eager) ENFORCE_EAGER=true; shift 1 ;;
         --parallel) PARALLEL_LIST="$2"; shift 2 ;;
         --number|--total-requests) TOTAL_REQUESTS="$2"; shift 2 ;;
         --prompt-length|--prompt-len) PROMPT_LENGTH="$2"; shift 2 ;;
@@ -122,7 +138,6 @@ require_command "evalscope" "'evalscope' not found. Install with: pip install ev
 ensure_dir "$OUTPUT_DIR"
 MODEL_NAME=$(basename "$MODEL_PATH")
 TIMESTAMP=$(get_timestamp)
-SERVER_LOG="${OUTPUT_DIR}/server_${TIMESTAMP}.log"
 BENCHMARK_LOG="${OUTPUT_DIR}/${MODEL_NAME}_${TIMESTAMP}.log"
 
 # ------------------------------------------------------------------------------
@@ -175,7 +190,13 @@ log_info "Model" "$MODEL_PATH"
 log_info "Port" "$PORT"
 log_info "Devices" "$DEVICES"
 log_info "TP" "$TP_SIZE"
-log_tip "Monitor logs: tail -f $SERVER_LOG"
+if [[ -n "$HCCL_PORT" ]]; then
+    log_info "HCCL Port" "$HCCL_PORT"
+fi
+if [[ "$ENABLE_EP" == true ]]; then
+    log_info "Expert Parallel" "enabled"
+fi
+log_tip "Server logs saved to: $OUTPUT_DIR"
 
 DEPLOY_SCRIPT="${PROJECT_ROOT}/tools/serve/deploy_vllm.sh"
 
@@ -183,14 +204,25 @@ if [[ ! -f "$DEPLOY_SCRIPT" ]]; then
     log_error "Deploy script not found: $DEPLOY_SCRIPT"
 fi
 
-bash "$DEPLOY_SCRIPT" \
-    "$MODEL_PATH" \
-    --port "$PORT" \
-    --devices "$DEVICES" \
-    --tp "$TP_SIZE" \
-    --gpu-memory "$MEM_UTIL" \
-    --max-model-len "$MAX_MODEL_LEN" \
-    > "$SERVER_LOG" 2>&1 &
+# Build deploy command with optional parameters
+DEPLOY_CMD=(
+    bash "$DEPLOY_SCRIPT"
+    "$MODEL_PATH"
+    --port "$PORT"
+    --devices "$DEVICES"
+    --tp "$TP_SIZE"
+    --gpu-memory "$MEM_UTIL"
+    --max-model-len "$MAX_MODEL_LEN"
+    --log-dir "$OUTPUT_DIR"
+)
+
+# Add optional parameters
+[[ -n "$HCCL_PORT" ]] && DEPLOY_CMD+=(--hccl-port "$HCCL_PORT")
+[[ "$ENABLE_EP" == true ]] && DEPLOY_CMD+=(--enable-expert-parallel)
+[[ -n "$COMPILATION_CONFIG" ]] && DEPLOY_CMD+=(--compilation-config "$COMPILATION_CONFIG")
+[[ "$ENFORCE_EAGER" == true ]] && DEPLOY_CMD+=(--enforce-eager)
+
+"${DEPLOY_CMD[@]}" &
 
 SERVER_PID=$!
 log_info "Launched" "Server PID: $SERVER_PID"
@@ -204,9 +236,13 @@ START_TIME=$(date +%s)
 while true; do
     # Check if process is alive
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-        log_error "Server process died! Check logs: $SERVER_LOG"
-        echo "----------------- Log Snippet -----------------"
-        tail -n 20 "$SERVER_LOG"
+        # Find the latest server log file
+        LATEST_LOG=$(ls -t "${OUTPUT_DIR}/${MODEL_NAME}"*.log 2>/dev/null | head -1)
+        log_error "Server process died! Check logs in: $OUTPUT_DIR"
+        if [[ -n "$LATEST_LOG" && -f "$LATEST_LOG" ]]; then
+            echo "----------------- Log Snippet ($LATEST_LOG) -----------------"
+            tail -n 20 "$LATEST_LOG"
+        fi
         exit 1
     fi
 
