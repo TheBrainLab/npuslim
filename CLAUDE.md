@@ -25,14 +25,14 @@ bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0
 
 ### Evaluation
 ```bash
-# LM-Eval in GPU (wikitext, ceval, etc.)
-bash tools/eval/run_lmeval.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b --tasks wikitext -d 0 -t 1
+# Step 1: Deploy vLLM server (required before evaluation)
+bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b -d 0 -t 1
 
-# NPU
-bash tools/eval/run_lmeval.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b --tasks wikitext -d 0 -t 1 -q
+# Step 2: Run evaluation (server must be running)
+bash tools/eval/run_lmeval.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b --tasks wikitext
 
-# Stress test with evalscope (full pipeline: deploy → benchmark → cleanup)
-bash tools/eval/run_stress_test.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b -d 0 -t 1
+# Stress test with evalscope
+bash tools/eval/run_stress_test.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b
 ```
 
 ## Architecture

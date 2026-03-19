@@ -45,17 +45,14 @@ bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0
 ### Evaluation
 
 ```bash
-# LM-Eval in GPU (wikitext, ceval, etc.)
-bash tools/eval/run_lmeval.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b --tasks wikitext -d 0 -t 1
+# Step 1: Deploy vLLM server (required before evaluation)
+bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b -d 0 -t 1
 
-# NPU
-bash tools/eval/run_lmeval.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b --tasks wikitext -d 0 -t 1 -q
+# Step 2: Run evaluation (server must be running)
+bash tools/eval/run_lmeval.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b --tasks wikitext
 
-# Stress test with evalscope in GPU (requires running vLLM server first)
-bash tools/eval/run_stress_test.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b -d 0 -t 1 -q
-
-# NPU
-bash tools/eval/run_stress_test.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b -d 0 -t 1
+# Stress test with evalscope (requires running server)
+bash tools/eval/run_stress_test.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b
 ```
 
 ## Tool Scripts
@@ -63,16 +60,16 @@ bash tools/eval/run_stress_test.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen
 | Script | Description |
 |-------|-------------|
 | `tools/serve/deploy_vllm.sh` | Deploy vLLM inference server |
-| `tools/eval/run_lmeval.sh` | Run lm-evaluation-harness benchmarks |
-| `tools/eval/run_stress_test.sh` | Full pipeline: deploy → stress test → cleanup |
+| `tools/eval/run_lmeval.sh` | Run lm-evaluation-harness via API (requires running server) |
+| `tools/eval/run_stress_test.sh` | Run stress test via API (requires running server) |
 
 ### Common Options
 
-All scripts support:
+Server and stress test scripts support:
 - `-d, --devices` - Device IDs (e.g., `0,1` or `4,5`)
 - `-t, --tp` - Tensor parallel size
 - `--gpu-memory` - GPU memory utilization (default: 0.8)
-    `--max-model-len` - Max model length (default: 4096)
+- `--max-model-len` - Max model length (default: 4096)
 - `-q, --quantization` - Quantization method (auto-detected on NPU)
 
 Use `--help` to see all options for each script.

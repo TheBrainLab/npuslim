@@ -18,38 +18,50 @@ usage() {
     cat << EOF
 Usage: $0 [MODEL_PATH] [OPTIONS]
 
-Run lm-evaluation-harness benchmarks on NPU or GPU.
+Run lm-evaluation-harness benchmarks via OpenAI-compatible API.
+Requires a running vLLM server (use tools/serve/deploy_vllm.sh first).
 
 Arguments:
-  MODEL_PATH               Path to model (required, can be positional)
+  MODEL_PATH               Path or name of model for reference (required)
 
 Options:
-  --backend TYPE              Backend: 'vllm' or 'hf' (default: vllm)
-  --tasks LIST                Comma-separated tasks (default: wikitext)
-  --fewshot N                 Number of few-shot examples (default: 0)
-  --batch-size SIZE           Batch size or 'auto' (default: auto)
-  --output-dir DIR            Output directory (default: outputs/lmeval)
+  --model-name NAME          Model name sent to API (default: derived from MODEL_PATH)
+  --url URL                  API endpoint URL (default: http://127.0.0.1:\$PORT/v1/completions)
+  --port PORT                Server port for auto URL (default: 8080)
+  --tasks LIST               Comma-separated tasks (default: wikitext)
+  --fewshot N                Number of few-shot examples (default: 0)
+  --batch-size SIZE          Batch size or 'auto' (default: auto)
+  --output-dir DIR           Output directory (default: outputs/benchmark/lmeval)
 
-  Hardware Options:
-  -d, --devices DEVICES       Device IDs (default: 0)
-  -t, --tp SIZE               Tensor parallel size (default: 1)
-  --hccl-port HCCL_IF_BASE_PORT
-                              HCCL base port for NPU communication (default: 60000)
-  --gpu-memory UTIL           GPU memory utilization (default: 0.8)
-  --max-model-len LEN         Max model length (default: 4096)
-  -q, --quantization [TYPE]   Quantization method (auto-set on NPU)
-  -ep, --enable-expert-parallel
-                              Enable expert parallelism for MoE models
-  --compilation-config CONFIG
-                              Compilation config (e.g., '{"cudagraph_mode": "FULL_DECODE_ONLY"}')
-  --enforce-eager             Use eager execution mode (disable graph capture)
+  -h, --help                 Show this help message
 
-  -h, --help                  Show this help message
+Authentication (for remote APIs):
+  Set OPENAI_API_KEY environment variable before running:
+    export OPENAI_API_KEY=sk-xxx
+
+Prerequisites:
+  1. Deploy vLLM server first:
+     bash tools/serve/deploy_vllm.sh <model_path> -d 0 -t 1
+
+  2. Wait for server ready, then run evaluation:
+     bash tools/eval/run_lmeval.sh <model_path> --tasks wikitext
 
 Examples:
-  $0 outputs/qwen-int8 --tasks wikitext --fewshot 5 -d 0,1 -t 2
-  $0 outputs/model --tasks arc_challenge,arc_easy,boolq,headqa_en,hellaswag,openbookqa,piqa,winogrande -q
-  $0 outputs/moe-model --tasks wikitext -d 0,1 -t 2 -ep --hccl-port 65000
+  # Basic usage (server already running on port 8080)
+  $0 outputs/qwen-int8 --tasks wikitext
+
+  # Multiple tasks
+  $0 outputs/model --tasks arc_challenge,hellaswag,gsm8k
+
+  # Custom server URL
+  $0 Qwen/Qwen2.5-0.5B --url http://192.168.1.100:8000/v1/completions
+
+  # Remote API (e.g., DeepSeek) - set API key first
+  export OPENAI_API_KEY=sk-xxx
+  $0 deepseek-chat --url https://api.deepseek.com/v1/completions --model-name deepseek-chat
+
+  # Specify model name explicitly
+  $0 ./local-model --model-name Qwen/Qwen2.5-0.5B --tasks wikitext
 EOF
 }
 
@@ -57,22 +69,13 @@ EOF
 # Default Configuration
 # ------------------------------------------------------------------------------
 MODEL_PATH=""
-BACKEND="vllm"
+MODEL_NAME=""
+URL=""
+PORT=8080
 TASKS="wikitext"
 FEWSHOT=0
 BATCH_SIZE="auto"
-OUTPUT_DIR="outputs/lmeval"
-
-DEVICES="0"
-TP_SIZE=1
-HCCL_PORT=""
-MEM_UTIL=0.8
-MAX_MODEL_LEN=4096
-QUANT_METHOD=""
-COMPILATION_CONFIG=""
-ENABLE_EP=false
-ENFORCE_EAGER=false
-DEVICE_TYPE=""
+OUTPUT_DIR="outputs/benchmark/lmeval"
 
 POSITIONAL_ARGS=()
 
@@ -82,25 +85,13 @@ POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
         --model-path) MODEL_PATH="$2"; shift 2 ;;
-        --backend) BACKEND="$2"; shift 2 ;;
+        --model-name) MODEL_NAME="$2"; shift 2 ;;
+        --url) URL="$2"; shift 2 ;;
+        --port) PORT="$2"; shift 2 ;;
         --tasks) TASKS="$2"; shift 2 ;;
         --fewshot|--num-fewshot) FEWSHOT="$2"; shift 2 ;;
         --batch-size) BATCH_SIZE="$2"; shift 2 ;;
         --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
-        -d|--devices) DEVICES="$2"; shift 2 ;;
-        -t|--tp) TP_SIZE="$2"; shift 2 ;;
-        --hccl-port) HCCL_PORT="$2"; shift 2 ;;
-        --gpu-memory) MEM_UTIL="$2"; shift 2 ;;
-        --max-model-len) MAX_MODEL_LEN="$2"; shift 2 ;;
-        -q|--quantization)
-            if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
-                QUANT_METHOD="$2"; shift 2
-            else
-                QUANT_METHOD="ascend"; shift 1
-            fi ;;
-        -ep|--enable-expert-parallel) ENABLE_EP=true; shift 1 ;;
-        --compilation-config) COMPILATION_CONFIG="$2"; shift 2 ;;
-        --enforce-eager) ENFORCE_EAGER=true; shift 1 ;;
         -h|--help) usage; exit 0 ;;
         *) POSITIONAL_ARGS+=("$1"); shift ;;
     esac
@@ -120,75 +111,70 @@ if [[ -z "$MODEL_PATH" ]]; then
     exit 1
 fi
 
-# ------------------------------------------------------------------------------
-# Environment Setup
-# ------------------------------------------------------------------------------
-[[ -z "$DEVICE_TYPE" ]] && DEVICE_TYPE=$(detect_device)
-HCCL_PORT="${HCCL_PORT:-60000}"
-setup_env "$DEVICE_TYPE" "$DEVICES" "$TP_SIZE" "$HCCL_PORT"
+# Derive model name if not provided
+if [[ -z "$MODEL_NAME" ]]; then
+    MODEL_NAME="$MODEL_PATH"
+fi
+
+# Build URL if not provided
+if [[ -z "$URL" ]]; then
+    URL="http://127.0.0.1:${PORT}/v1/completions"
+fi
 
 # ------------------------------------------------------------------------------
 # Build Output Path
 # ------------------------------------------------------------------------------
-MODEL_NAME=$(basename "$MODEL_PATH")
+MODEL_DIRNAME=$(basename "$MODEL_PATH")
 TIMESTAMP=$(get_timestamp)
-SAVE_DIR="${OUTPUT_DIR}/${MODEL_NAME}"
+SAVE_DIR="${OUTPUT_DIR}/${MODEL_DIRNAME}"
 ensure_dir "$SAVE_DIR"
 OUTPUT_FILE="${SAVE_DIR}/${TASKS//,/_}_${TIMESTAMP}"
 
 # ------------------------------------------------------------------------------
-# Build Model Args
+# Build Model Args for local-completions
 # ------------------------------------------------------------------------------
-MODEL_ARGS="pretrained=${MODEL_PATH},trust_remote_code=True"
-
-if [[ "$BACKEND" == "vllm" ]]; then
-    MODEL_ARGS+=",tensor_parallel_size=${TP_SIZE}"
-    MODEL_ARGS+=",gpu_memory_utilization=${MEM_UTIL}"
-    MODEL_ARGS+=",max_model_len=${MAX_MODEL_LEN}"
-    MODEL_ARGS+=",dtype=auto"
-    if [[ -n "$QUANT_METHOD" ]]; then
-        MODEL_ARGS+=",quantization=${QUANT_METHOD}"
-    fi
-    if [[ "$ENABLE_EP" == true ]]; then
-        MODEL_ARGS+=",enable_expert_parallel=True"
-    fi
-    if [[ -n "$COMPILATION_CONFIG" ]]; then
-        MODEL_ARGS+=",compilation_config=${COMPILATION_CONFIG}"
-    fi
-    if [[ "$ENFORCE_EAGER" == true ]]; then
-        MODEL_ARGS+=",enforce_eager=True"
-    fi
-elif [[ "$BACKEND" == "hf" ]]; then
-    if [[ "$TP_SIZE" -gt 1 ]]; then
-        MODEL_ARGS+=",parallelize=True"
-    fi
-fi
+MODEL_ARGS="model=${MODEL_NAME}"
+MODEL_ARGS+=",base_url=${URL}"
+MODEL_ARGS+=",tokenized_requests=False"
+MODEL_ARGS+=",trust_remote_code=True"
 
 # ------------------------------------------------------------------------------
 # Display Configuration
 # ------------------------------------------------------------------------------
-log_header "LM-Evaluation-Harness"
-log_info "Model" "$MODEL_PATH"
-log_info "Backend" "$BACKEND"
-log_info "Device" "${DEVICE_TYPE^^} ($DEVICES)"
+log_header "LM-Evaluation-Harness (API Mode)"
+log_info "Model" "$MODEL_NAME"
+log_info "API URL" "$URL"
 log_info "Tasks" "$TASKS"
 log_info "Fewshot" "$FEWSHOT"
 log_info "Output" "$OUTPUT_FILE"
 
 # ------------------------------------------------------------------------------
+# Verify Server Connectivity
+# ------------------------------------------------------------------------------
+log_info "Checking" "Server connectivity..."
+# Extract base URL for health check (remove /v1/completions suffix)
+HEALTH_URL=$(echo "$URL" | sed 's|/v1/.*$||')/health
+if ! curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null | grep -q "200"; then
+    log_error "Server health check failed. Is vLLM server running?"
+    log_tip "Deploy server first: bash tools/serve/deploy_vllm.sh <model> -d 0 -t 1"
+    exit 1
+fi
+
+# ------------------------------------------------------------------------------
 # Verify Dependencies
 # ------------------------------------------------------------------------------
-python -c "import npuslim; import lm_eval" 2>/dev/null || {
-    log_error "'npuslim' or 'lm-evaluation-harness' not found in Python environment"
+python -c "import lm_eval" 2>/dev/null || {
+    log_error "'lm-evaluation-harness' not found. Install with: pip install lm-eval"
+    exit 1
 }
 
 # ------------------------------------------------------------------------------
 # Execute Evaluation
 # ------------------------------------------------------------------------------
-log_info "Launching lm_eval with NPUSlim plugin..."
+log_info "Launching" "lm_eval with local-completions backend..."
 
 PYTHONUNBUFFERED=1 lm_eval \
-    --model "$BACKEND" \
+    --model local-completions \
     --model_args "$MODEL_ARGS" \
     --tasks "$TASKS" \
     --batch_size "$BATCH_SIZE" \
