@@ -133,16 +133,23 @@ OUTPUT_FILE="${SAVE_DIR}/${TASKS//,/_}_${TIMESTAMP}"
 # ------------------------------------------------------------------------------
 # Build Model Args for local-completions
 # ------------------------------------------------------------------------------
-MODEL_ARGS="model=${MODEL_NAME}"
+# For local-completions: 'model' is used for tokenizer path AND API model name
+# Use MODEL_PATH for tokenizer (local path), MODEL_NAME for API requests
+MODEL_ARGS="model=${MODEL_PATH}"
 MODEL_ARGS+=",base_url=${URL}"
 MODEL_ARGS+=",tokenized_requests=False"
 MODEL_ARGS+=",trust_remote_code=True"
+
+# Log the distinction for debugging
+log_debug "Tokenizer path: ${MODEL_PATH}"
+log_debug "API model name: ${MODEL_NAME}"
 
 # ------------------------------------------------------------------------------
 # Display Configuration
 # ------------------------------------------------------------------------------
 log_header "LM-Evaluation-Harness (API Mode)"
-log_info "Model" "$MODEL_NAME"
+log_info "Tokenizer" "$MODEL_PATH"
+log_info "API Model" "$MODEL_NAME"
 log_info "API URL" "$URL"
 log_info "Tasks" "$TASKS"
 log_info "Fewshot" "$FEWSHOT"
@@ -172,6 +179,9 @@ python -c "import lm_eval" 2>/dev/null || {
 # Execute Evaluation
 # ------------------------------------------------------------------------------
 log_info "Launching" "lm_eval with local-completions backend..."
+
+# Disable torch extension autoload to avoid torch_npu errors on systems with NPU
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 
 PYTHONUNBUFFERED=1 lm_eval \
     --model local-completions \
