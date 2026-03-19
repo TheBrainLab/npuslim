@@ -38,11 +38,13 @@ detect_device() {
 # ------------------------------------------------------------------------------
 
 # Setup environment variables for device type
-# Usage: setup_env <device_type> <devices>
-# Example: setup_env "npu" "0,1"
+# Usage: setup_env <device_type> <devices> [tp_size] [hccl_port]
+# Example: setup_env "npu" "0,1" 2 60000
 setup_env() {
     local device_type="${1:-npu}"
     local devices="${2:-0}"
+    local tp_size="${3:-1}"
+    local hccl_port="${4:-60000}"
 
     # Register NPUSlim plugin
     export NPUSLIM_PLUGIN_ENABLE=1
@@ -50,8 +52,18 @@ setup_env() {
     if [[ "$device_type" == "npu" ]]; then
         export ASCEND_RT_VISIBLE_DEVICES="$devices"
         export PYTORCH_NPU_ALLOC_CONF="expandable_segments:False"
+        export HCCL_INTRA_PCIE_ENABLE=1
+        export HCCL_INTRA_ROCE_ENABLE=0
+        export HCCL_BUFFSIZE=512
         export HCCL_OP_EXPANSION_MODE="AIV"
+        export HCCL_IF_BASE_PORT="$hccl_port"
         export TASK_QUEUE_ENABLE=1
+
+        # Enable FlashComm1 only for multi-card (TP > 1)
+        if [[ "$tp_size" -gt 1 ]]; then
+            export VLLM_ASCEND_ENABLE_FLASHCOMM1=1
+        fi
+
     elif [[ "$device_type" == "gpu" ]]; then
         export CUDA_VISIBLE_DEVICES="$devices"
     fi
