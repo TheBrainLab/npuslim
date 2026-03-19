@@ -9,7 +9,6 @@
 # Resolve paths independent of working directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../utils/common.sh"
-PROJECT_ROOT=$(get_project_root)
 
 # ------------------------------------------------------------------------------
 # Help
