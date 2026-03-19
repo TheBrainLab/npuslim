@@ -50,7 +50,7 @@ Examples:
   $0 outputs/qwen-int8 --tasks wikitext
 
   # Multiple tasks
-  $0 outputs/model --tasks arc_challenge,hellaswag,gsm8k
+  $0 outputs/model --tasks arc_challenge,arc_easy,boolq,headqa_en,hellaswag,openbookqa,piqa,winogrande
 
   # Custom server URL
   $0 Qwen/Qwen2.5-0.5B --url http://192.168.1.100:8000/v1/completions
@@ -125,9 +125,8 @@ fi
 # ------------------------------------------------------------------------------
 MODEL_DIRNAME=$(basename "$MODEL_PATH")
 TIMESTAMP=$(get_timestamp)
-SAVE_DIR="${OUTPUT_DIR}/${MODEL_DIRNAME}"
-ensure_dir "$SAVE_DIR"
-OUTPUT_FILE="${SAVE_DIR}/${TASKS//,/_}_${TIMESTAMP}"
+ensure_dir "$OUTPUT_DIR"
+OUTPUT_FILE="${OUTPUT_DIR}/${TASKS//,/_}_${TIMESTAMP}"
 
 # ------------------------------------------------------------------------------
 # Build Model Args for local-completions
@@ -155,6 +154,11 @@ log_info "Fewshot" "$FEWSHOT"
 log_info "Output" "$OUTPUT_FILE"
 
 # ------------------------------------------------------------------------------
+# Verify Dependencies
+# ------------------------------------------------------------------------------
+require_command "lm_eval" "'lm-evaluation-harness' not found. Install with: pip install lm-eval[api]"
+
+# ------------------------------------------------------------------------------
 # Verify Server Connectivity
 # ------------------------------------------------------------------------------
 log_info "Checking" "Server connectivity..."
@@ -165,19 +169,13 @@ if ! curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null | grep -q 
     log_tip "Deploy server first: bash tools/serve/deploy_vllm.sh <model> -d 0 -t 1"
     exit 1
 fi
-
-# ------------------------------------------------------------------------------
-# Verify Dependencies
-# ------------------------------------------------------------------------------
-python -c "import lm_eval" 2>/dev/null || {
-    log_error "'lm-evaluation-harness' not found. Install with: pip install lm-eval"
-    exit 1
-}
+log_success "Server is UP (HTTP 200)"
 
 # ------------------------------------------------------------------------------
 # Execute Evaluation
 # ------------------------------------------------------------------------------
-log_info "Launching" "lm_eval with local-completions backend..."
+log_header "Launching lm_eval..."
+echo ""
 
 # Disable torch extension autoload to avoid torch_npu errors on systems with NPU
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0

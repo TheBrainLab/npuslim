@@ -125,7 +125,7 @@ if [[ -z "$MODEL_NAME" ]]; then
 fi
 
 # Check dependencies
-require_command "evalscope" "'evalscope' not found. Install with: pip install evalscope"
+require_command "evalscope" "'evalscope' not found. Install with: pip install evalscope[perf]"
 
 # Set default URL if not provided
 [[ -z "$URL" ]] && URL="http://127.0.0.1:${PORT}/v1/chat/completions"
@@ -164,7 +164,7 @@ log_success "Server is UP (HTTP 200)"
 # ------------------------------------------------------------------------------
 # Run Benchmark
 # ------------------------------------------------------------------------------
-log_header "Running Stress Test"
+log_header "Running Stress Test..."
 echo ""
 
 evalscope perf \

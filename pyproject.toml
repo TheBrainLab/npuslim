@@ -15,8 +15,8 @@ dependencies = [
     "threadpoolctl",
     "datasets",
     "transformers<5.0.0",
-    "lm-eval",
-    "evalscope",
+    "lm-eval[api]",
+    "evalscope[perf]",
     "optimum",
     "primefac",
 ]

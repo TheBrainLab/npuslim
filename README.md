@@ -45,14 +45,14 @@ bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0
 ### Evaluation
 
 ```bash
-# Step 1: Deploy vLLM server (required before evaluation)
-bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b -d 0 -t 1
+# Use mirror if HuggingFace is inaccessible
+export HF_ENDPOINT="https://hf-mirror.com"
 
-# Step 2: Run evaluation (server must be running)
-bash tools/eval/run_lmeval.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b --tasks wikitext
+# Run evaluation (vllm server must be running)
+bash tools/eval/run_lmeval.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b --tasks wikitext
 
-# Stress test with evalscope (requires running server)
-bash tools/eval/run_stress_test.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b
+# Stress test with evalscope (requires running vllm server)
+bash tools/eval/run_stress_test.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b
 ```
 
 ## Tool Scripts
