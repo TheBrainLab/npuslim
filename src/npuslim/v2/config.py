@@ -41,6 +41,5 @@ class V2Config:
         """Validate configuration compatibility."""
         if self.execution_mode == ExecutionMode.CHUNK_WISE and not self.chunk:
             raise ValueError("chunk config required for CHUNK_WISE mode")
-        if self.execution_mode == ExecutionMode.LAYER_WISE and not self.streaming:
-            # Warning only, not an error
-            pass
+        if self.execution_mode == ExecutionMode.STREAMING and not self.streaming:
+            raise ValueError("streaming config required for STREAMING mode")
