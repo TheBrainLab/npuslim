@@ -91,7 +91,6 @@ class HookDispatcher:
                 result = hook_info.func(context, **kwargs)
                 results.append(result)
             except Exception as e:
-                # Log error but continue
-                import traceback
-                traceback.print_exc()
+                from loguru import logger
+                logger.exception(f"Hook '{hook_info.name}' failed")
         return results
