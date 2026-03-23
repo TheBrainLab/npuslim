@@ -2,9 +2,12 @@
 """Base algorithm class with @step decorator."""
 from abc import ABC
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, List, Optional, TYPE_CHECKING
 
 from npuslim.v2.config import V2Config, ExecutionMode
+
+if TYPE_CHECKING:
+    from npuslim.v2.context import AlgorithmContext
 
 
 @dataclass
@@ -64,18 +67,18 @@ class BaseAlgorithm(ABC):
         return self._steps
 
     # Lifecycle hooks (subclasses can override)
-    def on_start(self, context) -> None:
+    def on_start(self, context: "AlgorithmContext") -> None:
         """Called when algorithm starts."""
         pass
 
-    def on_chunk_enter(self, context) -> None:
+    def on_chunk_enter(self, context: "AlgorithmContext") -> None:
         """Called when entering a new chunk."""
         pass
 
-    def on_chunk_exit(self, context) -> None:
+    def on_chunk_exit(self, context: "AlgorithmContext") -> None:
         """Called when exiting a chunk."""
         pass
 
-    def on_finish(self, context) -> None:
+    def on_finish(self, context: "AlgorithmContext") -> None:
         """Called when algorithm finishes."""
         pass

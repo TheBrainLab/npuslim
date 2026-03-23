@@ -1,8 +1,12 @@
 # tests/v2/test_algorithm.py
 """Tests for BaseAlgorithm and @step decorator."""
 import pytest
+from unittest.mock import MagicMock
+
 from npuslim.v2.algorithm import BaseAlgorithm, step, StepInfo
 from npuslim.v2.config import V2Config, ExecutionMode
+from npuslim.v2.context import AlgorithmContext
+from npuslim.v2.step_executor import StepExecutor
 
 
 class MockAlgorithm(BaseAlgorithm):
@@ -49,3 +53,40 @@ def test_algorithm_lifecycle_hooks():
     algo.on_chunk_enter(None)
     algo.on_chunk_exit(None)
     algo.on_finish(None)
+
+
+def test_step_executor_gathers_inputs_and_executes():
+    """Test StepExecutor gathers inputs and executes steps in order."""
+    # Setup mock context
+    mock_model = MagicMock()
+    mock_model.get_layers.return_value = []
+    config = V2Config()
+    context = AlgorithmContext(config=config, model=mock_model)
+
+    # Track execution order
+    execution_order = []
+
+    # Create steps as standalone functions (StepExecutor calls method directly)
+    @step(order=1, produces=["result_a"])
+    def step_a(ctx) -> dict:
+        execution_order.append("a")
+        return {"result_a": "value_a"}
+
+    @step(order=2, requires=["result_a"], produces=["result_b"])
+    def step_b(ctx, result_a: str) -> dict:
+        execution_order.append("b")
+        # Verify intermediate was passed
+        assert result_a == "value_a"
+        return {"result_b": "value_b"}
+
+    # Get steps directly from decorated functions
+    steps = [step_a._step_info, step_b._step_info]
+
+    executor = StepExecutor(context, steps)
+    result = executor.execute()
+
+    # Verify steps executed in order
+    assert execution_order == ["a", "b"]
+    # Verify intermediates were stored
+    assert "result_a" in executor.intermediates
+    assert executor.intermediates["result_a"] == "value_a"
