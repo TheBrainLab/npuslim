@@ -9,6 +9,7 @@ from npuslim.v2.config import V2Config, ExecutionMode, ChunkConfig
 if TYPE_CHECKING:
     from npuslim.v2.hooks import HookDispatcher, HookType
     from npuslim.v2.streaming import StreamLoader, StreamSaver
+    from npuslim.v2.distributed import DistributedManager
 
 
 class AlgorithmContext:
@@ -33,6 +34,9 @@ class AlgorithmContext:
         self._stream_loader: Optional["StreamLoader"] = None
         self._stream_saver: Optional["StreamSaver"] = None
 
+        # Distributed infrastructure (set by executor)
+        self._distributed: Optional["DistributedManager"] = None
+
         # State management
         self._intermediates: Dict[str, Any] = {}
         self._current_chunk: Optional[Dict[str, Any]] = None
@@ -49,6 +53,18 @@ class AlgorithmContext:
     def is_streaming(self) -> bool:
         """Check if streaming mode is enabled."""
         return self.config.streaming is not None and self.config.streaming.enabled
+
+    @property
+    def is_distributed(self) -> bool:
+        """Check if distributed mode is enabled."""
+        return self._distributed is not None and self._distributed.is_distributed
+
+    @property
+    def is_main_process(self) -> bool:
+        """Check if this is the main process in distributed execution."""
+        if self._distributed is None:
+            return True
+        return self._distributed.is_main_process
 
     @property
     def chunk_config(self) -> Optional[ChunkConfig]:

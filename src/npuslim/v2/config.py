@@ -30,12 +30,41 @@ class StreamingConfig:
     output_dir: Optional[str] = None
 
 
+class DistributedBackend(Enum):
+    """Backend for distributed execution."""
+    NONE = "none"
+    ACCELERATE = "accelate"
+    TORCH_DISTRIBUTED = "torch_distributed"
+    DEEPSPEED = "deepspeed"
+
+
+@dataclass
+class DistributedConfig:
+    """Configuration for distributed execution."""
+    backend: DistributedBackend = DistributedBackend.NONE
+    world_size: int = 1
+    rank: int = 0
+    local_rank: int = 0
+
+    # Model parallelism
+    tensor_parallel_size: int = 1
+    pipeline_parallel_size: int = 1
+
+    # Mixed precision (for accelerate)
+    mixed_precision: str = "no"  # "no", "fp16", "bf16"
+    gradient_accumulation_steps: int = 1
+
+    # Communication
+    backend_init_method: str = "nccl"  # "nccl", "gloo"
+
+
 @dataclass
 class V2Config:
     """Main V2 configuration."""
     execution_mode: ExecutionMode = ExecutionMode.FULL
     chunk: Optional[ChunkConfig] = None
     streaming: Optional[StreamingConfig] = None
+    distributed: Optional[DistributedConfig] = None
 
     def __post_init__(self):
         """Validate configuration compatibility."""
