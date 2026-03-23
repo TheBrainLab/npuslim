@@ -4,8 +4,8 @@ meta:
 
 model:
   type: Qwen3
-  model_path: Qwen/Qwen3-32B
-  model_hub: hf
+  model_path: Qwen/Qwen3-235B-A22B-Instruct-2507
+  model_hub: ms
   model_kwargs:
     trust_remote_code: true
     low_cpu_mem_usage: true
@@ -19,7 +19,7 @@ calib_dataset:
   dataset:
     type: TextDataset
     data_path: ./dataset/sharegpt_gpt4_qwen/sharegpt_gpt4-qwen3_a22B_output.jsonl
-    num_samples: 512
+    num_samples: 128
     max_seq_length: 4096
   dataloader:
     batch_size: 1
@@ -29,8 +29,7 @@ calib_dataset:
 pipeline:
   - type: ptq
     algo_name: GPTQ
-    ignore_layers:
-      - model.layers.*.mlp.down_proj
+    ignore_layers: []
     algo_config:
       w_bits: 4
 

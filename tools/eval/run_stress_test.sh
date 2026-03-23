@@ -150,16 +150,11 @@ log_info "Prompt" "$PROMPT_LENGTH tokens"
 log_info "Max Gen" "$MAX_TOKENS tokens"
 log_info "Log" "$BENCHMARK_LOG"
 
-log_info "Checking" "Server connectivity..."
-HEALTH_URL="http://127.0.0.1:${PORT}/health"
-http_code=$(curl -o /dev/null -s -w "%{http_code}" --connect-timeout 5 -m 10 "$HEALTH_URL" 2>/dev/null || echo "000")
-
-if [[ "$http_code" != "200" ]]; then
-    log_error "Server not responding (HTTP $http_code). Is vLLM server running on port $PORT?"
-    log_tip "Deploy server first: bash tools/serve/deploy_vllm.sh <model> -d 0 -t 1"
+log_info "Checking" "Server connectivity and model identity..."
+check_vllm_server --port "$PORT" --model "$MODEL_PATH"
+if [[ $? -ne 0 ]]; then
     exit 1
 fi
-log_success "Server is UP (HTTP 200)"
 
 # ------------------------------------------------------------------------------
 # Run Benchmark

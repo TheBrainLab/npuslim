@@ -5,10 +5,16 @@
 # ==============================================================================
 # Usage: bash run_lmeval.sh [MODEL_PATH] [OPTIONS]
 # ==============================================================================
+# Backends:
+#   - vllm: Direct vLLM loading (fastest, requires GPU/NPU)
+#   - hf:   HuggingFace backend (for comparison)
+#   - api:  OpenAI-compatible API (flexible, supports remote servers)
+# ==============================================================================
 
 # Resolve paths independent of working directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../utils/common.sh"
+PROJECT_ROOT=$(get_project_root)
 
 # ------------------------------------------------------------------------------
 # Help
@@ -17,50 +23,68 @@ usage() {
     cat << EOF
 Usage: $0 [MODEL_PATH] [OPTIONS]
 
-Run lm-evaluation-harness benchmarks via OpenAI-compatible API.
-Requires a running vLLM server (use tools/serve/deploy_vllm.sh first).
+Run lm-evaluation-harness benchmarks with multiple backend options.
 
 Arguments:
-  MODEL_PATH               Path or name of model for reference (required)
+  MODEL_PATH               Path or name of model (required, can be positional)
 
-Options:
-  --model-name NAME          Model name sent to API (default: derived from MODEL_PATH)
-  --url URL                  API endpoint URL (default: http://127.0.0.1:\$PORT/v1/completions)
-  --port PORT                Server port for auto URL (default: 8080)
-  --tasks LIST               Comma-separated tasks (default: wikitext)
-  --fewshot N                Number of few-shot examples (default: 0)
-  --batch-size SIZE          Batch size or 'auto' (default: auto)
-  --output-dir DIR           Output directory (default: outputs/benchmark/lmeval)
+Backend Options:
+  --backend TYPE              Backend type: 'vllm', 'hf', or 'api' (default: vllm)
+                              - vllm: Direct vLLM loading (fastest)
+                              - hf:   HuggingFace backend
+                              - api:  OpenAI-compatible API (requires running server)
 
-  -h, --help                 Show this help message
+Evaluation Options:
+  --tasks LIST                Comma-separated tasks (default: wikitext)
+  --fewshot N                 Number of few-shot examples (default: 0)
+  --batch-size SIZE           Batch size or 'auto' (default: auto)
+  --output-dir DIR            Output directory (default: outputs/benchmark/lmeval)
+  --limit N                   Limit number of samples per task (default: all)
+  --log-samples               Save model outputs for debugging
+
+vLLM Backend Options:
+  -d, --devices DEVICES       Device IDs (default: 0)
+  -t, --tp SIZE               Tensor parallel size (default: 1)
+  --hccl-port PORT            HCCL base port for NPU (default: 60000)
+  --gpu-memory UTIL           GPU memory utilization (default: 0.8)
+  --max-model-len LEN         Max model length (default: 4096)
+  -q, --quantization [TYPE]   Quantization method (auto-set on NPU)
+  -ep, --enable-expert-parallel
+                              Enable expert parallelism for MoE models
+  --compilation-config CONFIG
+                              Compilation config (e.g., '{"cudagraph_mode": "FULL_DECODE_ONLY"}')
+  --enforce-eager             Use eager execution mode (disable graph capture)
+
+HuggingFace Backend Options:
+  -d, --devices DEVICES       Device IDs (default: 0)
+  -t, --tp SIZE               Tensor parallel size (default: 1)
+
+API Backend Options:
+  --url URL                   API endpoint URL (default: http://127.0.0.1:\$PORT/v1/completions)
+  --port PORT                 Server port (default: 8080)
+  --model-name NAME           Model name sent to API (default: MODEL_PATH)
 
 Authentication (for remote APIs):
   Set OPENAI_API_KEY environment variable before running:
     export OPENAI_API_KEY=sk-xxx
 
-Prerequisites:
-  1. Deploy vLLM server first:
-     bash tools/serve/deploy_vllm.sh <model_path> -d 0 -t 1
-
-  2. Wait for server ready, then run evaluation:
-     bash tools/eval/run_lmeval.sh <model_path> --tasks wikitext
+  -h, --help                  Show this help message
 
 Examples:
-  # Basic usage (server already running on port 8080)
-  $0 outputs/qwen-int8 --tasks wikitext
+  # vLLM backend (fastest, direct loading)
+  $0 outputs/qwen-int8 --backend vllm --tasks wikitext -d 0
+  $0 outputs/model --backend vllm --tasks arc_challenge,arc_easy,boolq,headqa_en,hellaswag,openbookqa,piqa,winogrande -d 0,1 -t 2
 
-  # Multiple tasks
-  $0 outputs/model --tasks arc_challenge,arc_easy,boolq,headqa_en,hellaswag,openbookqa,piqa,winogrande
+  # HuggingFace backend
+  $0 outputs/qwen-int8 --backend hf --tasks wikitext -d 0
 
-  # Custom server URL
-  $0 Qwen/Qwen2.5-0.5B --url http://192.168.1.100:8000/v1/completions
+  # API backend (requires running server)
+  bash tools/serve/deploy_vllm.sh outputs/qwen-int8 -d 0 -t 1
+  $0 outputs/qwen-int8 --backend api --tasks wikitext
 
-  # Remote API (e.g., DeepSeek) - set API key first
+  # Remote API (e.g., DeepSeek)
   export OPENAI_API_KEY=sk-xxx
-  $0 deepseek-chat --url https://api.deepseek.com/v1/completions --model-name deepseek-chat
-
-  # Specify model name explicitly
-  $0 ./local-model --model-name Qwen/Qwen2.5-0.5B --tasks wikitext
+  $0 deepseek-chat --backend api --url https://api.deepseek.com/v1/completions
 EOF
 }
 
@@ -68,13 +92,30 @@ EOF
 # Default Configuration
 # ------------------------------------------------------------------------------
 MODEL_PATH=""
-MODEL_NAME=""
-URL=""
-PORT=8080
+BACKEND="vllm"
 TASKS="wikitext"
 FEWSHOT=0
 BATCH_SIZE="auto"
 OUTPUT_DIR="outputs/benchmark/lmeval"
+LIMIT=""
+LOG_SAMPLES=false
+
+# Hardware options (vllm/hf backends)
+DEVICES="0"
+TP_SIZE=1
+HCCL_PORT=""
+MEM_UTIL=0.8
+MAX_MODEL_LEN=4096
+QUANT_METHOD=""
+COMPILATION_CONFIG=""
+ENABLE_EP=false
+ENFORCE_EAGER=false
+DEVICE_TYPE=""
+
+# API options (api backend)
+API_URL=""
+API_PORT=8080
+MODEL_NAME=""
 
 POSITIONAL_ARGS=()
 
@@ -84,13 +125,32 @@ POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
         --model-path) MODEL_PATH="$2"; shift 2 ;;
-        --model-name) MODEL_NAME="$2"; shift 2 ;;
-        --url) URL="$2"; shift 2 ;;
-        --port) PORT="$2"; shift 2 ;;
+        --backend) BACKEND="$2"; shift 2 ;;
         --tasks) TASKS="$2"; shift 2 ;;
         --fewshot|--num-fewshot) FEWSHOT="$2"; shift 2 ;;
         --batch-size) BATCH_SIZE="$2"; shift 2 ;;
         --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
+        --limit) LIMIT="$2"; shift 2 ;;
+        --log-samples) LOG_SAMPLES=true; shift 1 ;;
+        # Hardware options
+        -d|--devices) DEVICES="$2"; shift 2 ;;
+        -t|--tp) TP_SIZE="$2"; shift 2 ;;
+        --hccl-port) HCCL_PORT="$2"; shift 2 ;;
+        --gpu-memory) MEM_UTIL="$2"; shift 2 ;;
+        --max-model-len) MAX_MODEL_LEN="$2"; shift 2 ;;
+        -q|--quantization)
+            if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+                QUANT_METHOD="$2"; shift 2
+            else
+                QUANT_METHOD="ascend"; shift 1
+            fi ;;
+        -ep|--enable-expert-parallel) ENABLE_EP=true; shift 1 ;;
+        --compilation-config) COMPILATION_CONFIG="$2"; shift 2 ;;
+        --enforce-eager) ENFORCE_EAGER=true; shift 1 ;;
+        # API options
+        --url) API_URL="$2"; shift 2 ;;
+        --port) API_PORT="$2"; shift 2 ;;
+        --model-name) MODEL_NAME="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) POSITIONAL_ARGS+=("$1"); shift ;;
     esac
@@ -110,48 +170,115 @@ if [[ -z "$MODEL_PATH" ]]; then
     exit 1
 fi
 
-# Derive model name if not provided
+# Validate backend
+case "$BACKEND" in
+    vllm|hf|api) ;;
+    *) log_error "Invalid backend '$BACKEND'. Must be: vllm, hf, or api" ;;
+esac
+
+# Derive model name if not provided (for api backend)
 if [[ -z "$MODEL_NAME" ]]; then
     MODEL_NAME="$MODEL_PATH"
 fi
 
-# Build URL if not provided
-if [[ -z "$URL" ]]; then
-    URL="http://127.0.0.1:${PORT}/v1/completions"
+# ------------------------------------------------------------------------------
+# Environment Setup (vllm/hf backends only)
+# ------------------------------------------------------------------------------
+if [[ "$BACKEND" != "api" ]]; then
+    [[ -z "$DEVICE_TYPE" ]] && DEVICE_TYPE=$(detect_device)
+    HCCL_PORT="${HCCL_PORT:-60000}"
+    setup_env "$DEVICE_TYPE" "$DEVICES" "$TP_SIZE" "$HCCL_PORT"
+
+    # Avoid OpenMP thread pool conflicts in multi-process vLLM environment
+    export OMP_NUM_THREADS=1
+    export MKL_NUM_THREADS=1
+    export OPENBLAS_NUM_THREADS=1
 fi
 
 # ------------------------------------------------------------------------------
 # Build Output Path
 # ------------------------------------------------------------------------------
-MODEL_DIRNAME=$(basename "$MODEL_PATH")
 TIMESTAMP=$(get_timestamp)
 ensure_dir "$OUTPUT_DIR"
 OUTPUT_FILE="${OUTPUT_DIR}/${TASKS//,/_}_${TIMESTAMP}"
 
 # ------------------------------------------------------------------------------
-# Build Model Args for local-completions
+# Build Model Args (Unified key=value format)
 # ------------------------------------------------------------------------------
-# For local-completions: 'model' is used for tokenizer path AND API model name
-# Use MODEL_PATH for tokenizer (local path), MODEL_NAME for API requests
-MODEL_ARGS="model=${MODEL_PATH}"
-MODEL_ARGS+=",base_url=${URL}"
-MODEL_ARGS+=",tokenized_requests=False"
-MODEL_ARGS+=",trust_remote_code=True"
+# Common args for all backends
+MODEL_ARGS="pretrained=${MODEL_PATH}"
 
-# Log the distinction for debugging
-log_debug "Tokenizer path: ${MODEL_PATH}"
-log_debug "API model name: ${MODEL_NAME}"
+if [[ "$BACKEND" == "api" ]]; then
+    # ---------------------------
+    # API Backend
+    # ---------------------------
+    # Build URL if not provided
+    if [[ -z "$API_URL" ]]; then
+        API_URL="http://127.0.0.1:${API_PORT}/v1/completions"
+    fi
+
+    MODEL_ARGS+=",base_url=${API_URL}"
+    MODEL_ARGS+=",tokenized_requests=False"
+    MODEL_ARGS+=",trust_remote_code=True"
+    LM_EVAL_MODEL="local-completions"
+
+elif [[ "$BACKEND" == "vllm" ]]; then
+    # ---------------------------
+    # vLLM Backend
+    # ---------------------------
+    MODEL_ARGS+=",trust_remote_code=True"
+    MODEL_ARGS+=",tensor_parallel_size=${TP_SIZE}"
+    MODEL_ARGS+=",gpu_memory_utilization=${MEM_UTIL}"
+    MODEL_ARGS+=",max_model_len=${MAX_MODEL_LEN}"
+    MODEL_ARGS+=",dtype=auto"
+
+    if [[ -n "$QUANT_METHOD" ]]; then
+        MODEL_ARGS+=",quantization=${QUANT_METHOD}"
+    fi
+    if [[ "$ENABLE_EP" == true ]]; then
+        MODEL_ARGS+=",enable_expert_parallel=True"
+    fi
+    if [[ -n "$COMPILATION_CONFIG" ]]; then
+        MODEL_ARGS+=",compilation_config=${COMPILATION_CONFIG}"
+    fi
+    if [[ "$ENFORCE_EAGER" == true ]]; then
+        MODEL_ARGS+=",enforce_eager=True"
+    fi
+    LM_EVAL_MODEL="vllm"
+
+elif [[ "$BACKEND" == "hf" ]]; then
+    # ---------------------------
+    # HuggingFace Backend
+    # ---------------------------
+    MODEL_ARGS+=",trust_remote_code=True"
+
+    if [[ "$TP_SIZE" -gt 1 ]]; then
+        MODEL_ARGS+=",parallelize=True"
+    fi
+    LM_EVAL_MODEL="hf"
+fi
 
 # ------------------------------------------------------------------------------
 # Display Configuration
 # ------------------------------------------------------------------------------
-log_header "LM-Evaluation-Harness (API Mode)"
-log_info "Tokenizer" "$MODEL_PATH"
-log_info "API Model" "$MODEL_NAME"
-log_info "API URL" "$URL"
+log_header "LM-Evaluation-Harness"
+log_info "Model" "$MODEL_PATH"
+log_info "Backend" "$BACKEND"
+
+if [[ "$BACKEND" == "vllm" ]]; then
+    log_info "Device" "${DEVICE_TYPE^^} ($DEVICES)"
+    log_info "TP Size" "$TP_SIZE"
+    [[ -n "$QUANT_METHOD" ]] && log_info "Quant" "$QUANT_METHOD"
+elif [[ "$BACKEND" == "hf" ]]; then
+    log_info "Device" "${DEVICE_TYPE^^} ($DEVICES)"
+elif [[ "$BACKEND" == "api" ]]; then
+    log_info "API URL" "$API_URL"
+fi
 log_info "Tasks" "$TASKS"
 log_info "Fewshot" "$FEWSHOT"
 log_info "Output" "$OUTPUT_FILE"
+[[ -n "$LIMIT" ]] && log_info "Limit" "$LIMIT samples per task"
+[[ "$LOG_SAMPLES" == true ]] && log_info "Log Samples" "enabled"
 
 # ------------------------------------------------------------------------------
 # Verify Dependencies
@@ -159,17 +286,15 @@ log_info "Output" "$OUTPUT_FILE"
 require_command "lm_eval" "'lm-evaluation-harness' not found. Install with: pip install lm-eval[api]"
 
 # ------------------------------------------------------------------------------
-# Verify Server Connectivity
+# Server Health Check (api backend only)
 # ------------------------------------------------------------------------------
-log_info "Checking" "Server connectivity..."
-# Extract base URL for health check (remove /v1/completions suffix)
-HEALTH_URL=$(echo "$URL" | sed 's|/v1/.*$||')/health
-if ! curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null | grep -q "200"; then
-    log_error "Server health check failed. Is vLLM server running?"
-    log_tip "Deploy server first: bash tools/serve/deploy_vllm.sh <model> -d 0 -t 1"
-    exit 1
+if [[ "$BACKEND" == "api" ]]; then
+    log_info "Checking" "Server connectivity and model identity..."
+    check_vllm_server --port "$API_PORT" --model "$MODEL_PATH"
+    if [[ $? -ne 0 ]]; then
+        exit 1
+    fi
 fi
-log_success "Server is UP (HTTP 200)"
 
 # ------------------------------------------------------------------------------
 # Execute Evaluation
@@ -177,16 +302,25 @@ log_success "Server is UP (HTTP 200)"
 log_header "Launching lm_eval..."
 echo ""
 
-# Disable torch extension autoload to avoid torch_npu errors on systems with NPU
-export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+# Disable torch extension autoload in API mode to avoid torch_npu errors
+# In vllm/hf modes, we need the plugin system to work
+if [[ "$BACKEND" == "api" ]]; then
+    export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+fi
+
+# Build optional arguments (avoid set -e issues with conditional command substitution)
+OPTIONAL_ARGS=()
+[[ -n "$LIMIT" ]] && OPTIONAL_ARGS+=(--limit "$LIMIT")
+[[ "$LOG_SAMPLES" == true ]] && OPTIONAL_ARGS+=(--log_samples)
 
 PYTHONUNBUFFERED=1 lm_eval \
-    --model local-completions \
+    --model "$LM_EVAL_MODEL" \
     --model_args "$MODEL_ARGS" \
     --tasks "$TASKS" \
     --batch_size "$BATCH_SIZE" \
     --num_fewshot "$FEWSHOT" \
-    --output_path "$OUTPUT_FILE"
+    --output_path "$OUTPUT_FILE" \
+    "${OPTIONAL_ARGS[@]}"
 
 log_success "Evaluation completed"
 log_info "Results" "$(dirname "$OUTPUT_FILE")"
