@@ -24,15 +24,27 @@ bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0
 ```
 
 ### Evaluation
+
+**LM-Eval Harness** (supports 3 backends: `vllm`, `hf`, `api`):
 ```bash
-# Step 1: Deploy vLLM server (required before evaluation)
-bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b -d 0 -t 1
+# vLLM backend (fastest, direct loading - no server needed)
+bash tools/eval/run_lmeval.sh outputs/model --backend vllm --tasks wikitext -d 0
 
-# Step 2: Run evaluation (server must be running)
-bash tools/eval/run_lmeval.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b --tasks wikitext
+# HuggingFace backend
+bash tools/eval/run_lmeval.sh outputs/model --backend hf --tasks wikitext -d 0
 
-# Stress test with evalscope
-bash tools/eval/run_stress_test.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b
+# API backend (requires running server)
+bash tools/serve/deploy_vllm.sh outputs/model -d 0 -t 1
+bash tools/eval/run_lmeval.sh outputs/model --backend api --tasks wikitext
+```
+
+**Stress Test** (requires running vLLM server):
+```bash
+# Step 1: Deploy vLLM server first
+bash tools/serve/deploy_vllm.sh outputs/model -d 0 -t 1
+
+# Step 2: Run stress test against running server
+bash tools/eval/run_stress_test.sh outputs/model
 ```
 
 ## Architecture

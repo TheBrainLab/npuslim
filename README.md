@@ -44,15 +44,28 @@ bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0
 
 ### Evaluation
 
+**LM-Eval Harness** (supports 3 backends: `vllm`, `hf`, `api`):
+
 ```bash
-# Use mirror if HuggingFace is inaccessible
-export HF_ENDPOINT="https://hf-mirror.com"
+# vLLM backend (fastest, direct loading - no server needed)
+bash tools/eval/run_lmeval.sh outputs/model --backend vllm --tasks wikitext -d 0
 
-# Run evaluation (vllm server must be running)
-bash tools/eval/run_lmeval.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b --tasks wikitext
+# HuggingFace backend
+bash tools/eval/run_lmeval.sh outputs/model --backend hf --tasks wikitext -d 0
 
-# Stress test with evalscope (requires running vllm server)
-bash tools/eval/run_stress_test.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b
+# API backend (requires running server)
+bash tools/serve/deploy_vllm.sh outputs/model -d 0 -t 1
+bash tools/eval/run_lmeval.sh outputs/model --backend api --tasks wikitext
+```
+
+**Stress Test** (requires running vLLM server):
+
+```bash
+# Step 1: Deploy vLLM server first
+bash tools/serve/deploy_vllm.sh outputs/model -d 0 -t 1
+
+# Step 2: Run stress test against running server
+bash tools/eval/run_stress_test.sh outputs/model
 ```
 
 ## Tool Scripts
@@ -60,17 +73,23 @@ bash tools/eval/run_stress_test.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen
 | Script | Description |
 |-------|-------------|
 | `tools/serve/deploy_vllm.sh` | Deploy vLLM inference server |
-| `tools/eval/run_lmeval.sh` | Run lm-evaluation-harness via API (requires running server) |
+| `tools/eval/run_lmeval.sh` | Run lm-evaluation-harness (backends: vllm, hf, api) |
 | `tools/eval/run_stress_test.sh` | Run stress test via API (requires running server) |
 
 ### Common Options
 
-Server and stress test scripts support:
+Server deployment options:
 - `-d, --devices` - Device IDs (e.g., `0,1` or `4,5`)
 - `-t, --tp` - Tensor parallel size
 - `--gpu-memory` - GPU memory utilization (default: 0.8)
 - `--max-model-len` - Max model length (default: 4096)
 - `-q, --quantization` - Quantization method (auto-detected on NPU)
+
+LM-Eval options:
+- `--backend` - Backend type: `vllm`, `hf`, or `api` (default: vllm)
+- `--tasks` - Comma-separated benchmark tasks (default: wikitext)
+- `--limit` - Limit number of samples per task
+- `--log-samples` - Save model outputs for debugging
 
 Use `--help` to see all options for each script.
 
