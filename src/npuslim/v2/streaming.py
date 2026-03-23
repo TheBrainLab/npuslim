@@ -2,7 +2,6 @@
 """Streaming utilities for NPUSlim v2."""
 import json
 import shutil
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import torch
@@ -53,7 +52,7 @@ class StreamSaver:
         size_threshold: int = 4 * 1024 * 1024 * 1024,  # 4 GiB
     ):
         self.output_dir = Path(output_dir)
-        self.shard_size = shard_size
+        self.shard_size = shard_size  # TODO: Use for user-friendly size parsing (e.g., "5GB")
         self.size_threshold = size_threshold
 
         self.buffer: Dict[str, torch.Tensor] = {}

@@ -6,7 +6,6 @@ from unittest.mock import Mock, MagicMock
 import torch
 
 from npuslim.v2.streaming import StreamSaver
-from npuslim.v2.config import ChunkConfig
 
 
 def test_stream_saver_add_tensor():
