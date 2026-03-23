@@ -1,12 +1,11 @@
 # src/npuslim/v2/executor.py
 """Pipeline executor for NPUSlim v2."""
-from typing import Any, Dict, List, Optional
-from loguru import logger
+from typing import Any, List, Optional
 
+from npuslim.v2.config import ExecutionMode
 from npuslim.v2.context import AlgorithmContext
 from npuslim.v2.algorithm import BaseAlgorithm
 from npuslim.v2.step_executor import StepExecutor
-from npuslim.v2.hooks import HookDispatcher, HookType
 
 
 class PipelineExecutor:
@@ -51,7 +50,7 @@ class PipelineExecutor:
 
     def _get_chunk_count(self) -> int:
         """Get number of chunks based on execution mode."""
-        if self.algorithm.execution_mode.name == "FULL":
+        if self.algorithm.execution_mode == ExecutionMode.FULL:
             return 1
 
         # For chunk-wise mode, calculate based on layer count

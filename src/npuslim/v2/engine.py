@@ -42,8 +42,12 @@ class SlimEngineV2:
     def _build_pipeline(self) -> None:
         """Build pipeline from config."""
         for task_config in self.config.pipeline:
-            task = self._create_task(task_config)
-            self.pipeline.append(task)
+            try:
+                task = self._create_task(task_config)
+                self.pipeline.append(task)
+            except NotImplementedError:
+                # Task factory not yet implemented - skip for now
+                logger.warning(f"Task factory not implemented, skipping task: {task_config}")
 
     def _create_task(self, config: Dict[str, Any]) -> Any:
         """Create a task from config."""

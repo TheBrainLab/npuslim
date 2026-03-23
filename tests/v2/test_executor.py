@@ -1,9 +1,9 @@
 # tests/v2/test_executor.py
 """Tests for SlimEngineV2 and PipelineExecutor."""
 import pytest
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 
-from npuslim.v2.engine import SlimEngineV2, EngineConfig
+from npuslim.v2.engine import EngineConfig
 from npuslim.v2.executor import PipelineExecutor
 from npuslim.v2.config import V2Config, ExecutionMode
 from npuslim.v2.algorithm import BaseAlgorithm, step
