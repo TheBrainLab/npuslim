@@ -135,6 +135,7 @@ dmypy.json
 # Claude
 .claude
 **/plans/**
+.worktrees/
 
 # TF code
 tensorflow_code
