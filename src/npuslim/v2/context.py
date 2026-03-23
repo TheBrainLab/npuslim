@@ -1,10 +1,8 @@
 # src/npuslim/v2/context.py
 """Algorithm context for NPUSlim v2."""
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import torch
 from torch.utils.data import DataLoader
-from loguru import logger
 
 from npuslim.v2.config import V2Config, ExecutionMode, ChunkConfig
 
