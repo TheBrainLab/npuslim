@@ -1,6 +1,8 @@
+# src/npuslim/__init__.py
+"""NPUSlim - Streaming-first quantization framework."""
+
 import importlib.metadata
 from pathlib import Path
-
 
 try:
     __version__ = importlib.metadata.version("npuslim")
@@ -17,10 +19,95 @@ except importlib.metadata.PackageNotFoundError:
     except Exception:
         __version__ = "0.0.0-dev"
 
-def __getattr__(name):
-    if name == "SlimEngine":
-        from .slim_engine import SlimEngine
-        return SlimEngine
-    raise AttributeError(f"module {__name__} has no attribute {name}")
+# Config schema
+from npuslim.config import (
+    Config,
+    ExecutionMode,
+    ChunkConfig,
+    StreamingConfig,
+    DistributedConfig,
+    DistributedBackend,
+    EngineConfig,
+    parse_config,
+    validate_config,
+    ValidationError,
+)
 
-__all__ = ["SlimEngine", "__version__"]
+# Core runtime
+from npuslim.core import (
+    SlimEngine,
+    PipelineExecutor,
+    AlgorithmContext,
+    StepExecutor,
+)
+
+# Algorithms
+from npuslim.algorithms import BaseAlgorithm, step, StepInfo
+from npuslim.algorithms.registry import AlgorithmRegistry, register_algorithm
+
+# Hooks
+from npuslim.hooks import (
+    HookType,
+    HookInfo,
+    HookRegistry,
+    HookDispatcher,
+    register_hook,
+)
+
+# Streaming
+from npuslim.streaming import StreamLoader, StreamSaver
+
+# Distributed
+from npuslim.distributed import DistributedManager
+
+# Registry
+from npuslim.registry import (
+    Registry,
+    ModelRegistry,
+    DatasetRegistry,
+    TaskRegistry,
+    SaverRegistry,
+)
+
+__all__ = [
+    "__version__",
+    # Config
+    "Config",
+    "ExecutionMode",
+    "ChunkConfig",
+    "StreamingConfig",
+    "DistributedConfig",
+    "DistributedBackend",
+    "EngineConfig",
+    "parse_config",
+    "validate_config",
+    "ValidationError",
+    # Core
+    "SlimEngine",
+    "PipelineExecutor",
+    "AlgorithmContext",
+    "StepExecutor",
+    # Algorithms
+    "BaseAlgorithm",
+    "step",
+    "StepInfo",
+    "AlgorithmRegistry",
+    "register_algorithm",
+    # Hooks
+    "HookType",
+    "HookInfo",
+    "HookRegistry",
+    "HookDispatcher",
+    "register_hook",
+    # Streaming
+    "StreamLoader",
+    "StreamSaver",
+    # Distributed
+    "DistributedManager",
+    # Registry
+    "Registry",
+    "ModelRegistry",
+    "DatasetRegistry",
+    "TaskRegistry",
+    "SaverRegistry",
+]

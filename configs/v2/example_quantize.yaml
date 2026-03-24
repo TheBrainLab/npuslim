@@ -1,0 +1,30 @@
+# config.yaml
+
+metadata: 
+  name: "Qwen3_Quantization_Recipe"
+  description: "A recipe for quantizing Qwen3 models using GPTQ and SparseGPTQ algorithms, followed by speculative fusion."
+
+resources:
+  - id: qwen3
+    type: Qwen3Model
+    path: Qwen/Qwen3-0.6B
+    device_map: "cpu"
+
+  - id: calib_data
+    type: C4Dataset
+    num_samples: 128
+    max_seq_length: 2048
+
+recipe: 
+  - name: "INT8_Quantization"
+    type: compressor
+    model: "@qwen3"
+    data: "@calib_data"
+    algorithm:
+      type: INT8Dynamic
+      wbits: 8
+    saver:
+      type: HuggingFaceSaver
+      save_dir: "./outputs/sparse_qwen3"
+    
+      
