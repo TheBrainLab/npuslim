@@ -2,7 +2,7 @@
 from typing import List, Set
 from loguru import logger
 
-from npuslim.config.parser import EngineConfig
+from npuslim.config.schema import EngineConfig
 
 
 class ValidationError(Exception):

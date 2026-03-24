@@ -10,7 +10,9 @@ from npuslim.registry import DatasetRegistry
 class C4Dataset(BaseDataset):
     """C4 dataset for calibration, matching original QuIP/GPTQ behavior."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, num_samples: int = 256, seed: int = 0, **kwargs):
+        self.num_samples = num_samples
+        self.seed = seed
         super().__init__(*args, **kwargs)
         self._load_data()
 
@@ -18,8 +20,8 @@ class C4Dataset(BaseDataset):
         from datasets import load_dataset
         from loguru import logger
 
-        num_samples = self.config.num_samples
-        seed = getattr(self.config, "seed", 0)
+        num_samples = self.num_samples
+        seed = self.seed
         seqlen = self.max_length
 
         # Try loading C4 dataset with 'en' config (most common)

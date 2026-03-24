@@ -27,7 +27,9 @@ class StepExecutor:
             inputs = self._gather_inputs(step_info.requires)
 
             # Execute step
-            logger.debug(f"Executing step {step_info.method.__name__}")
+            logger.debug(
+                f"Executing step {step_info.order}: {step_info.method.__name__}"
+            )
             result = step_info.method(self.context, **inputs)
 
             if result is None:

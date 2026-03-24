@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from loguru import logger
 
 from npuslim.config.schema import DistributedConfig, DistributedBackend
+from npuslim.core.backend import bh
 
 
 class DistributedManager:
@@ -61,7 +62,6 @@ class DistributedManager:
 
     def _setup_torch_distributed(self) -> None:
         """Initialize native torch.distributed backend."""
-        import torch
         import torch.distributed as dist
         import os
 
@@ -78,12 +78,11 @@ class DistributedManager:
             )
 
             # Set device for this process
-            if torch.cuda.is_available():
-                torch.cuda.set_device(local_rank)
+            bh.set_device(local_rank)
 
             logger.info(
                 f"torch.distributed initialized: "
-                f"rank={rank}, world_size={world_size}, local_rank={local_rank}"
+                f"rank={rank}, world_size={world_size}, local_rank={local_rank}, device={bh.device_for_rank(local_rank)}"
             )
 
     def _setup_deepspeed(self) -> None:
@@ -206,18 +205,20 @@ class DistributedManager:
         lr_scheduler: Optional[Any],
     ) -> tuple:
         """Prepare model with torch.nn.parallel.DistributedDataParallel."""
-        import torch
         import torch.nn.parallel as parallel
 
+        rank_device = bh.device_for_rank(self.local_rank)
+
         # Move model to correct device
-        if torch.cuda.is_available():
-            model = model.to(f"cuda:{self.local_rank}")
+        if rank_device != "cpu":
+            model = model.to(rank_device)
 
         # Wrap with DDP
+        use_device_ids = bh.name in {"cuda", "npu"}
         model = parallel.DistributedDataParallel(
             model,
-            device_ids=[self.local_rank] if torch.cuda.is_available() else None,
-            output_device=self.local_rank if torch.cuda.is_available() else None,
+            device_ids=[self.local_rank] if use_device_ids else None,
+            output_device=self.local_rank if use_device_ids else None,
         )
 
         return model, optimizer, dataloader, lr_scheduler

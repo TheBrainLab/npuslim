@@ -2,7 +2,7 @@
 from rich.console import Console
 from rich.table import Table
 
-from npuslim.config.parser import EngineConfig
+from npuslim.config.schema import EngineConfig
 
 
 def print_config(config: EngineConfig, console: Console = None) -> None:

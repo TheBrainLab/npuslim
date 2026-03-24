@@ -7,10 +7,12 @@ class OPTSlimModel(BaseLLMModel):
     """OPT model support for quantization."""
 
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # OPT uses decoder architecture
-        self.block_name = "model.decoder.layers"
-        self._layers_path = "model.decoder.layers"
+        super().__init__(
+            *args,
+            block_name="model.decoder.layers",
+            layers_path="model.decoder.layers",
+            **kwargs,
+        )
         # OPT has both embed_tokens and embed_positions
         self.pre_transformer_module_names = [
             "model.decoder.embed_tokens",

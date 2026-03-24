@@ -1,5 +1,5 @@
 import importlib
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, Iterable, List, Optional, Type
 
 ROOT_PACKAGE = "npuslim"
 
@@ -25,7 +25,14 @@ class Registry:
             pass
         self._submodule_loaded = True
 
-    def register(self, name, aliases: Optional[List[str]] = None):
+    def _normalize_aliases(self, aliases: Optional[Iterable[str] | str]) -> List[str]:
+        if aliases is None:
+            return []
+        if isinstance(aliases, str):
+            return [aliases]
+        return list(aliases)
+
+    def register(self, name, aliases: Optional[Iterable[str] | str] = None):
         """
         Decorator: @DatasetRegistry.register() or @DatasetRegistry.register("c4", aliases=["C4"])
         """
@@ -34,16 +41,15 @@ class Registry:
             return cls
         return decorator
 
-    def _do_register(self, name: str, cls: Type, aliases: Optional[List[str]] = None):
+    def _do_register(self, name: str, cls: Type, aliases: Optional[Iterable[str] | str] = None):
         name = name.lower()
         if name in self._registry:
             return
         self._registry[name] = cls
-        if aliases:
-            for alias in aliases:
-                self._aliases[alias.lower()] = name
+        for alias in self._normalize_aliases(aliases):
+            self._aliases[alias.lower()] = name
 
-    def register_lazy(self, name: str, module_path: str, aliases: Optional[List[str]] = None):
+    def register_lazy(self, name: str, module_path: str, aliases: Optional[Iterable[str] | str] = None):
         """Register module path for lazy loading. Supports relative paths like ".c4_dataset"."""
         name = name.lower()
         # Convert relative path: ".c4_dataset" -> "npuslim.datasets.c4_dataset"
@@ -53,9 +59,8 @@ class Registry:
             else:
                 raise ValueError(f"Registry '{self.name}' has no submodule, cannot use relative path")
         self._lazy_map[name] = module_path
-        if aliases:
-            for alias in aliases:
-                self._aliases[alias.lower()] = name
+        for alias in self._normalize_aliases(aliases):
+            self._aliases[alias.lower()] = name
 
     def get(self, name: str) -> Type:
         """Get class by name (with lazy loading)."""
@@ -69,6 +74,13 @@ class Registry:
         # Ensure submodule loaded (triggers register_lazy calls in __init__.py)
         self._ensure_submodule_loaded()
 
+        # Aliases may be populated by register_lazy during submodule import.
+        resolved = self._aliases.get(key, resolved)
+
+        # Check eager registry again after alias refresh.
+        if resolved in self._registry:
+            return self._registry[resolved]
+
         # Lazy loading
         if resolved in self._lazy_map:
             importlib.import_module(self._lazy_map[resolved])
@@ -78,9 +90,9 @@ class Registry:
         available = sorted(set(self._registry.keys()) | set(self._lazy_map.keys()))
         raise KeyError(f"{self.name} '{name}' not found. Available: {available}")
 
-    def create(self, name: str, *args, **kwargs) -> Any:
+    def create(self, type_name: str, *args, **kwargs) -> Any:
         """Create instance by name."""
-        return self.get(name)(*args, **kwargs)
+        return self.get(type_name)(*args, **kwargs)
 
     def list(self) -> List[str]:
         """List all registered names (including lazy)."""
@@ -96,6 +108,7 @@ class Registry:
 
 
 # === Global singletons ===
+AlgorithmRegistry = Registry("Algorithm", "algorithms")
 ModelRegistry = Registry("Model", "models")
 DatasetRegistry = Registry("Dataset", "datasets")
 TaskRegistry = Registry("Task", "tasks")

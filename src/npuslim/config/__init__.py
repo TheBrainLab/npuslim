@@ -1,21 +1,18 @@
 """NPUSlim Config Module."""
 from npuslim.config.parser import (
     parse_config,
-    EngineConfig,
-    SlimConfig,
-    MetadataConfig,
-    ResourceConfig,
-    AlgorithmConfig,
-    RecipeTaskConfig,
-    TaskExecutionConfig,
 )
 from npuslim.config.validator import validate_config, ValidationError
 from npuslim.config.printer import print_config
 from npuslim.config.schema import (
-    Config,
+    AlgorithmConfig,
+    EngineConfig,
     ExecutionMode,
-    ChunkConfig,
-    StreamingConfig,
+    MetadataConfig,
+    RecipeTaskConfig,
+    ResourceConfig,
+    SlimConfig,
+    TaskExecutionConfig,
     DistributedConfig,
     DistributedBackend,
 )
@@ -36,10 +33,14 @@ __all__ = [
     # Printer
     "print_config",
     # Schema
-    "Config",
+    "MetadataConfig",
+    "ResourceConfig",
+    "AlgorithmConfig",
+    "RecipeTaskConfig",
+    "TaskExecutionConfig",
+    "EngineConfig",
+    "SlimConfig",
     "ExecutionMode",
-    "ChunkConfig",
-    "StreamingConfig",
     "DistributedConfig",
     "DistributedBackend",
 ]

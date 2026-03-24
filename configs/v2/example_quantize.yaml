@@ -7,8 +7,9 @@ metadata:
 resources:
   - id: qwen3
     type: Qwen3Model
-    path: Qwen/Qwen3-0.6B
-    device_map: "cpu"
+    path: Qwen/Qwen3-32B
+    model_hub: hf
+    device_map: cuda
 
   - id: calib_data
     type: C4Dataset
@@ -23,6 +24,9 @@ recipe:
     algorithm:
       type: INT8Dynamic
       wbits: 8
+    execution:
+      mode: streaming
+      chunk_size: 8
     saver:
       type: HuggingFaceSaver
       save_dir: "./outputs/sparse_qwen3"

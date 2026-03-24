@@ -8,9 +8,12 @@ from npuslim.registry import ModelRegistry
 @ModelRegistry.register("Qwen3", aliases=["Qwen3Model"])
 class Qwen3SlimModel(BaseLLMModel):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.block_name = "model.layers"
-        self._layers_path = "model.layers"
+        super().__init__(
+            *args,
+            block_name="model.layers",
+            layers_path="model.layers",
+            **kwargs,
+        )
         # for moe model
         self.skip_layer_names.append("model.layers.*.mlp.gate")
 

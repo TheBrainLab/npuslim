@@ -21,29 +21,32 @@ except importlib.metadata.PackageNotFoundError:
 
 # Config schema
 from npuslim.config import (
-    Config,
-    ExecutionMode,
-    ChunkConfig,
-    StreamingConfig,
-    DistributedConfig,
+    AlgorithmConfig,
     DistributedBackend,
+    DistributedConfig,
     EngineConfig,
+    ExecutionMode,
+    MetadataConfig,
+    RecipeTaskConfig,
+    ResourceConfig,
+    SlimConfig,
+    TaskExecutionConfig,
+    ValidationError,
     parse_config,
     validate_config,
-    ValidationError,
 )
 
 # Core runtime
 from npuslim.core import (
     SlimEngine,
-    PipelineExecutor,
     AlgorithmContext,
     StepExecutor,
+    ResourceManager,
 )
 
 # Algorithms
 from npuslim.algorithms import BaseAlgorithm, step, StepInfo
-from npuslim.algorithms.registry import AlgorithmRegistry, register_algorithm
+from npuslim.registry import AlgorithmRegistry, register_algorithm
 
 # Hooks
 from npuslim.hooks import (
@@ -72,21 +75,24 @@ from npuslim.registry import (
 __all__ = [
     "__version__",
     # Config
-    "Config",
+    "MetadataConfig",
+    "ResourceConfig",
+    "AlgorithmConfig",
+    "RecipeTaskConfig",
+    "TaskExecutionConfig",
+    "EngineConfig",
+    "SlimConfig",
     "ExecutionMode",
-    "ChunkConfig",
-    "StreamingConfig",
     "DistributedConfig",
     "DistributedBackend",
-    "EngineConfig",
-    "parse_config",
     "validate_config",
     "ValidationError",
+    "parse_config",
     # Core
     "SlimEngine",
-    "PipelineExecutor",
     "AlgorithmContext",
     "StepExecutor",
+    "ResourceManager",
     # Algorithms
     "BaseAlgorithm",
     "step",

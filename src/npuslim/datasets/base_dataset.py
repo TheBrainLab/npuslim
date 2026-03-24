@@ -25,12 +25,17 @@ class BaseDataset(Dataset):
     """Base class for all datasets"""
 
     def __init__(
-        self, *args, processor: "ProcessorMixin", config, **kwargs
+        self,
+        *args,
+        processor: "ProcessorMixin",
+        device: str = "cpu",
+        max_seq_length: int = 2048,
+        **kwargs,
     ):
+        _ = args, kwargs
         self.processor = processor
-        self.config = config
-        self.device = config.device
-        self.max_length = config.max_seq_length
+        self.device = device
+        self.max_length = max_seq_length
         self.data = []
 
     def __len__(self) -> int:
