@@ -6,17 +6,17 @@ import yaml
 
 from npuslim.config.schema import (
     AlgorithmConfig,
+    CompressorTaskConfig,
     EngineConfig,
+    ExecutionConfig,
     MetadataConfig,
     RecipeTaskConfig,
     ResourceConfig,
-    SlimConfig,
-    TaskExecutionConfig,
 )
 
 
 def _normalize_execution_mode(mode: str) -> str:
-    normalized = (mode or "full").lower()
+    normalized = (mode or "streaming").lower()
     if normalized == "stream":
         return "streaming"
     return normalized
@@ -40,6 +40,66 @@ def parse_config(source: Union[str, Path, Dict]) -> EngineConfig:
     return _parse_dict(data)
 
 
+def _parse_algorithm(a: Any) -> AlgorithmConfig:
+    """Parse algorithm config."""
+    if isinstance(a, str):
+        return AlgorithmConfig(type=a)
+    a_copy = a.copy()
+    return AlgorithmConfig(type=a_copy.pop("type"), extra=a_copy)
+
+
+def _parse_execution(execution: Any) -> ExecutionConfig:
+    """Parse execution config for compressor tasks."""
+    if isinstance(execution, str):
+        return ExecutionConfig(mode=_normalize_execution_mode(execution))
+    return ExecutionConfig(
+        mode=_normalize_execution_mode(execution.get("mode", "streaming")),
+        chunk_size=execution.get("chunk_size", 1),
+    )
+
+
+def _parse_task(t: Dict) -> RecipeTaskConfig:
+    """Parse a single task config, returning appropriate task-specific config."""
+    t_copy = t.copy()
+    task_type = t_copy.pop("type", "")
+    name = t_copy.pop("name", "")
+
+    # Parse common fields
+    model = t_copy.pop("model", None)
+    data = t_copy.pop("data", None)
+    algorithm = _parse_algorithm(t_copy.pop("algorithm")) if "algorithm" in t_copy else None
+    saver = t_copy.pop("saver", None)
+
+    # Create task-specific config based on type
+    if task_type in ("compressor", "CompressorTask", "QuantizeTask"):
+        # Compressor-specific fields
+        ignore_layers = t_copy.pop("ignore_layers", [])
+        execution = _parse_execution(t_copy.pop("execution", {})) if "execution" in t_copy else ExecutionConfig()
+
+        return CompressorTaskConfig(
+            name=name,
+            type=task_type,
+            model=model,
+            data=data,
+            algorithm=algorithm,
+            saver=saver,
+            ignore_layers=ignore_layers,
+            execution=execution,
+            extra=t_copy,  # remaining fields go to extra
+        )
+    else:
+        # Default task config for unknown types
+        return RecipeTaskConfig(
+            name=name,
+            type=task_type,
+            model=model,
+            data=data,
+            algorithm=algorithm,
+            saver=saver,
+            extra=t_copy,
+        )
+
+
 def _parse_dict(data: Dict) -> EngineConfig:
     """Parse dictionary into EngineConfig."""
     meta_data = data.get("metadata", {})
@@ -57,40 +117,6 @@ def _parse_dict(data: Dict) -> EngineConfig:
             extra=r_copy
         ))
 
-    recipe = []
-    for t in data.get("recipe", []):
-        t_copy = t.copy()
-        algo = None
-        if "algorithm" in t_copy:
-            a = t_copy.pop("algorithm")
-            if isinstance(a, str):
-                algo = AlgorithmConfig(type=a)
-            else:
-                a_copy = a.copy()
-                algo = AlgorithmConfig(type=a_copy.pop("type"), extra=a_copy)
-
-        exec_cfg = TaskExecutionConfig()
-        if "execution" in t_copy:
-            execution = t_copy.pop("execution")
-            if isinstance(execution, str):
-                exec_cfg = TaskExecutionConfig(mode=_normalize_execution_mode(execution))
-            elif isinstance(execution, dict):
-                exec_cfg = TaskExecutionConfig(
-                    mode=_normalize_execution_mode(execution.get("mode", "full")),
-                    chunk_size=execution.get("chunk_size", 1),
-                )
-
-        recipe.append(RecipeTaskConfig(
-            name=t_copy.pop("name"),
-            type=t_copy.pop("type"),
-            model=t_copy.pop("model", None),
-            data=t_copy.pop("data", None),
-            main_model=t_copy.pop("main_model", None),
-            draft_model=t_copy.pop("draft_model", None),
-            algorithm=algo,
-            execution=exec_cfg,
-            saver=t_copy.pop("saver", None),
-            extra=t_copy
-        ))
+    recipe = [_parse_task(t) for t in data.get("recipe", [])]
 
     return EngineConfig(metadata=metadata, resources=resources, recipe=recipe)

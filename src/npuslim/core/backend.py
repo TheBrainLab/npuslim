@@ -1,4 +1,10 @@
-"""Backend utility helpers for device selection and cache cleanup."""
+"""Backend abstraction for CPU/CUDA/NPU utilities.
+
+Responsibilities:
+1. Detect active backend and expose normalized device helpers.
+2. Resolve config device-map values to concrete runtime device strings.
+3. Provide backend-safe sync/cache-cleanup operations used across modules.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +15,7 @@ import torch
 
 
 class BackendHandler:
-    """Centralized backend utility for CPU/CUDA/NPU environments."""
+    """Unified backend helper shared by runtime, streaming, and distributed code."""
 
     def __init__(self):
         if hasattr(torch, "npu") and torch.npu.is_available():

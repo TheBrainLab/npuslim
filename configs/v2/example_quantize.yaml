@@ -7,28 +7,29 @@ metadata:
 resources:
   - id: qwen3
     type: Qwen3Model
-    path: Qwen/Qwen3-32B
+    path: Qwen/Qwen3-0.6B
     model_hub: hf
     device_map: cuda
 
-  - id: calib_data
-    type: C4Dataset
-    num_samples: 128
-    max_seq_length: 2048
+  # - id: calib_data
+  #   type: C4Dataset
+  #   num_samples: 128
+  #   max_seq_length: 2048
 
 recipe: 
   - name: "INT8_Quantization"
     type: compressor
     model: "@qwen3"
-    data: "@calib_data"
+    # data: "@calib_data"
     algorithm:
       type: INT8Dynamic
       wbits: 8
+    ignore_layers: ["lm_head"]
     execution:
       mode: streaming
-      chunk_size: 8
+      chunk_size: 4
     saver:
       type: HuggingFaceSaver
-      save_dir: "./outputs/sparse_qwen3"
+      save_dir: "./outputs/qwen3_int8"
     
       

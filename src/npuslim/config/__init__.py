@@ -6,41 +6,32 @@ from npuslim.config.validator import validate_config, ValidationError
 from npuslim.config.printer import print_config
 from npuslim.config.schema import (
     AlgorithmConfig,
+    CompressorTaskConfig,
+    DistributedBackend,
+    DistributedConfig,
     EngineConfig,
-    ExecutionMode,
+    ExecutionConfig,
     MetadataConfig,
     RecipeTaskConfig,
     ResourceConfig,
-    SlimConfig,
-    TaskExecutionConfig,
-    DistributedConfig,
-    DistributedBackend,
 )
 
 __all__ = [
     # Parser
     "parse_config",
-    "EngineConfig",
-    "SlimConfig",
-    "MetadataConfig",
-    "ResourceConfig",
-    "AlgorithmConfig",
-    "RecipeTaskConfig",
-    "TaskExecutionConfig",
-    # Validator
-    "validate_config",
-    "ValidationError",
-    # Printer
-    "print_config",
     # Schema
     "MetadataConfig",
     "ResourceConfig",
     "AlgorithmConfig",
     "RecipeTaskConfig",
-    "TaskExecutionConfig",
+    "CompressorTaskConfig",
+    "ExecutionConfig",
     "EngineConfig",
-    "SlimConfig",
-    "ExecutionMode",
     "DistributedConfig",
     "DistributedBackend",
+    # Validator
+    "validate_config",
+    "ValidationError",
+    # Printer
+    "print_config",
 ]

@@ -25,12 +25,11 @@ from npuslim.config import (
     DistributedBackend,
     DistributedConfig,
     EngineConfig,
-    ExecutionMode,
+    ExecutionConfig,
     MetadataConfig,
     RecipeTaskConfig,
+    CompressorTaskConfig,
     ResourceConfig,
-    SlimConfig,
-    TaskExecutionConfig,
     ValidationError,
     parse_config,
     validate_config,
@@ -39,13 +38,11 @@ from npuslim.config import (
 # Core runtime
 from npuslim.core import (
     SlimEngine,
-    AlgorithmContext,
-    StepExecutor,
     ResourceManager,
 )
 
 # Algorithms
-from npuslim.algorithms import BaseAlgorithm, step, StepInfo
+from npuslim.algorithms import BaseAlgorithm
 from npuslim.registry import AlgorithmRegistry, register_algorithm
 
 # Hooks
@@ -79,10 +76,9 @@ __all__ = [
     "ResourceConfig",
     "AlgorithmConfig",
     "RecipeTaskConfig",
-    "TaskExecutionConfig",
+    "CompressorTaskConfig",
+    "ExecutionConfig",
     "EngineConfig",
-    "SlimConfig",
-    "ExecutionMode",
     "DistributedConfig",
     "DistributedBackend",
     "validate_config",
@@ -90,13 +86,9 @@ __all__ = [
     "parse_config",
     # Core
     "SlimEngine",
-    "AlgorithmContext",
-    "StepExecutor",
     "ResourceManager",
     # Algorithms
     "BaseAlgorithm",
-    "step",
-    "StepInfo",
     "AlgorithmRegistry",
     "register_algorithm",
     # Hooks

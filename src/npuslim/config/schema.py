@@ -66,27 +66,32 @@ class AlgorithmConfig:
 
 
 @dataclass
-class TaskExecutionConfig:
-    """Task-level execution options."""
+class ExecutionConfig:
+    """Compressor-specific execution options."""
 
-    mode: str = "full"
+    mode: str = "streaming"
     chunk_size: int = 1
 
 
 @dataclass
 class RecipeTaskConfig:
-    """One recipe task configuration."""
+    """Base recipe task configuration - common fields for all task types."""
 
     name: str
     type: str
     model: Optional[str] = None
     data: Optional[str] = None
-    main_model: Optional[str] = None
-    draft_model: Optional[str] = None
     algorithm: Optional[AlgorithmConfig] = None
-    execution: TaskExecutionConfig = field(default_factory=TaskExecutionConfig)
     saver: Optional[Dict[str, Any]] = None
     extra: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class CompressorTaskConfig(RecipeTaskConfig):
+    """Compressor/quantize task configuration with task-specific options."""
+
+    ignore_layers: List[str] = field(default_factory=list)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
 
 
 @dataclass
@@ -106,6 +111,3 @@ class EngineConfig:
 
     def get_resources_by_type(self, type_suffix: str) -> List[ResourceConfig]:
         return [resource for resource in self.resources if resource.type.endswith(type_suffix)]
-
-
-SlimConfig = EngineConfig

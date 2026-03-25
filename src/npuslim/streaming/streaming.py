@@ -164,6 +164,8 @@ class SafeTensorStreamLoader(StreamLoader):
     def refresh_index(self, total_layers_hint: Optional[int] = None) -> None:
         index_path = self.resolve_file("model.safetensors.index.json")
         if index_path is None or not index_path.exists():
+            if self._load_single_safetensor_fallback(total_layers_hint=total_layers_hint):
+                return
             self._safetensor_index = {}
             self._weight_map = {}
             self._layer_tensor_map = {}
@@ -184,6 +186,41 @@ class SafeTensorStreamLoader(StreamLoader):
 
         if self._total_layers is None and total_layers_hint is not None:
             self._total_layers = int(total_layers_hint)
+
+    def _load_single_safetensor_fallback(self, total_layers_hint: Optional[int] = None) -> bool:
+        """
+        Fallback for repos that only provide `model.safetensors` (no index json).
+        """
+        shard_path = self.resolve_file("model.safetensors")
+        if shard_path is None or not shard_path.exists():
+            return False
+
+        try:
+            with safe_open(shard_path, framework="pt", device="cpu") as handle:
+                tensor_names = list(handle.keys())
+        except Exception as exc:
+            logger.warning(f"[StreamLoader] Failed to read single safetensors shard '{shard_path}': {exc}")
+            return False
+
+        shard_name = shard_path.name
+        weight_map = {name: shard_name for name in tensor_names}
+        self._resolved_model_dir = shard_path.parent
+        self._safetensor_index = {
+            "metadata": {"total_size": int(shard_path.stat().st_size)},
+            "weight_map": weight_map,
+        }
+        self._weight_map = weight_map
+        self._tensor_reader = ShardTensorReader(
+            self._resolved_model_dir, device=self.tensor_device
+        )
+        self._build_layer_tensor_map()
+        if self._total_layers is None and total_layers_hint is not None:
+            self._total_layers = int(total_layers_hint)
+        logger.info(
+            f"[StreamLoader] No index json found; fallback to single shard '{shard_name}' "
+            f"(tensors={len(tensor_names)})"
+        )
+        return True
 
     def resolve_file(self, filename: str) -> Optional[Path]:
         """Resolve file from local model directory or remote hub cache."""
@@ -266,6 +303,7 @@ class SafeTensorStreamLoader(StreamLoader):
 
     def _build_layer_tensor_map(self) -> None:
         self._layer_tensor_map = {}
+        self._total_layers = None
         max_idx = -1
         pattern = re.compile(rf"^{re.escape(self.block_name)}\.(\d+)\.")
         for tensor_name in self._weight_map:

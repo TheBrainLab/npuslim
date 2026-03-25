@@ -7,14 +7,51 @@ Responsibilities:
 3. Execute tasks in order, passing resource_manager via kwargs.
 """
 
+from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
 from loguru import logger
 
 from npuslim.config import parse_config
+from npuslim.config.schema import AlgorithmConfig, ExecutionConfig
 from npuslim.core.resource_manager import ResourceManager
 from npuslim.registry import TaskRegistry
+
+
+def _flatten_value(value: Any) -> Any:
+    """Flatten nested config dataclasses, merging 'extra' into parent."""
+    if isinstance(value, AlgorithmConfig):
+        # Flatten AlgorithmConfig: {type, extra} -> {type, **extra}
+        result = {"type": value.type}
+        if value.extra:
+            result.update(value.extra)
+        return result
+    elif isinstance(value, ExecutionConfig):
+        # Convert to dict
+        return asdict(value)
+    elif isinstance(value, dict):
+        return {k: _flatten_value(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [_flatten_value(item) for item in value]
+    return value
+
+
+def _task_config_to_kwargs(config: Any) -> Dict[str, Any]:
+    """Convert task config dataclass to kwargs dict."""
+    result = {}
+    for f in fields(config):
+        if f.name in ("name", "type"):
+            continue
+        value = getattr(config, f.name)
+        if value is not None:
+            result[f.name] = _flatten_value(value)
+
+    # Merge extra fields at the end (they can override)
+    if config.extra:
+        result.update(config.extra)
+
+    return result
 
 
 class SlimEngine:
@@ -40,8 +77,10 @@ class SlimEngine:
         """Build pipeline from config recipe."""
         for task_config in self.config.recipe:
             try:
-                # Merge task_config.extra with resource_manager
-                task_kwargs = dict(task_config.extra)
+                # Convert task config to kwargs
+                task_kwargs = _task_config_to_kwargs(task_config)
+
+                # Add resource_manager
                 task_kwargs["resource_manager"] = self.rm
 
                 task = TaskRegistry.create(
