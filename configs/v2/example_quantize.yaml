@@ -1,6 +1,6 @@
 # config.yaml
 
-metadata: 
+metadata:
   name: "Qwen3_Quantization_Recipe"
   description: "A recipe for quantizing Qwen3 models using GPTQ and SparseGPTQ algorithms, followed by speculative fusion."
 
@@ -16,7 +16,7 @@ resources:
   #   num_samples: 128
   #   max_seq_length: 2048
 
-recipe: 
+recipe:
   - name: "INT8_Quantization"
     type: compressor
     model: "@qwen3"
@@ -24,12 +24,11 @@ recipe:
     algorithm:
       type: INT8Dynamic
       wbits: 8
-    ignore_layers: ["lm_head"]
+    ignore_layers: 
+      - "model.layers.*.mlp.down_proj"
     execution:
       mode: streaming
-      chunk_size: 4
+      chunk_size: 8
     saver:
       type: HuggingFaceSaver
-      save_dir: "./outputs/qwen3_int8"
-    
-      
+      save_dir: "./outputs/Qwen3-0.6B-INT8"

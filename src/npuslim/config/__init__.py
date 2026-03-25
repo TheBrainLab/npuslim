@@ -1,32 +1,26 @@
 # src/npuslim/config/__init__.py
-"""NPUSlim Config Module - re-exports from co-located modules."""
+"""NPUSlim Config Module."""
 
-# Parser
 from npuslim.config.parser import parse_config
-
-# Engine configs
-from npuslim.core.engine import EngineConfig
-from npuslim.core.resource_config import MetadataConfig, ResourceConfig
-
-# Task configs
-from npuslim.tasks.base_task import RecipeTaskConfig, register_task_config
-from npuslim.tasks.compressor.task import CompressorTaskConfig, ExecutionConfig
-
-# Algorithm config
-from npuslim.algorithms.base_algo import AlgorithmConfig
+from npuslim.config.schema import (
+    DistributedBackend,
+    DistributedConfig,
+    EngineConfig,
+    MetadataConfig,
+    RecipeTaskConfig,
+    ResourceConfig,
+)
 
 __all__ = [
     # Parser
     "parse_config",
-    # Engine configs
-    "EngineConfig",
+    # Core configs
     "MetadataConfig",
     "ResourceConfig",
+    "EngineConfig",
     # Task configs
     "RecipeTaskConfig",
-    "CompressorTaskConfig",
-    "ExecutionConfig",
-    "register_task_config",
-    # Algorithm config
-    "AlgorithmConfig",
+    # Distributed
+    "DistributedConfig",
+    "DistributedBackend",
 ]

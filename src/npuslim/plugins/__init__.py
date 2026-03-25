@@ -19,7 +19,7 @@ def register():
     if _REGISTERED:
         return
 
-    from npuslim.utils.backend import bh
+    from npuslim.core.backend import bh
 
     from .transformers import register as register_hf
     from .vllm import register as register_vllm_core

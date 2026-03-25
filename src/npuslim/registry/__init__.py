@@ -16,13 +16,6 @@ def register_algorithm(name: str, aliases: Optional[Iterable[str] | str] = None)
     return AlgorithmRegistry.register(name, aliases=aliases)
 
 
-# Lazy registration for savers
-SaverRegistry.register_lazy(
-    "HuggingFaceSaver",
-    "npuslim.savers.hf_saver",
-    aliases=["hf", "HF"],
-)
-
 __all__ = [
     "Registry",
     "AlgorithmRegistry",

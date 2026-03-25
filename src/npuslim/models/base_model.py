@@ -58,9 +58,6 @@ class BaseLLMModel(ABC):
         model_hub: str = "hf",
         model_kwargs: Optional[Dict[str, Any]] = None,
         tokenizer_kwargs: Optional[Dict[str, Any]] = None,
-        auto_memory_budget_bytes: Optional[int] = None,
-        block_name: str = "model.layers",
-        layers_path: str = "model.layers",
         **kwargs,
     ):
         passthrough_model_keys = {
@@ -93,13 +90,12 @@ class BaseLLMModel(ABC):
 
         self.model_kwargs: Dict[str, Any] = merged_model_kwargs
         self.tokenizer_kwargs: Dict[str, Any] = merged_tokenizer_kwargs
-        self.auto_memory_budget_bytes = auto_memory_budget_bytes
 
         self.skip_layer_names = ["lm_head"]
+        self.block_name = "model.layers"
         self.pre_transformer_module_names = ["model.embed_tokens"]
-        self.observer_layer_classes = [torch.nn.Linear]
-        self.block_name = block_name
-        self._layers_path = layers_path
+        self.post_transformer_module_names = ["lm_head"]
+        # self.observer_layer_classes = [torch.nn.Linear]
 
         self.model = None
         self.tokenizer = None
@@ -107,10 +103,6 @@ class BaseLLMModel(ABC):
         self.quantized = False
         self.model_type = "LLM"
 
-        self.prepare(*args, **kwargs)
-
-    def prepare(self, *args, **kwargs):
-        _ = args, kwargs
         self.prepare_metadata()
 
     def _resolve_pretrained_source(self) -> str:
@@ -182,71 +174,7 @@ class BaseLLMModel(ABC):
         self.model = None
         bh.empty_cache()
 
-    def get_total_layers_from_config(self) -> Optional[int]:
-        if self.config is not None and hasattr(self.config, "num_hidden_layers"):
-            return int(self.config.num_hidden_layers)
-        return None
-
     def forward(self, *args, **kwargs):
         if self.model is None:
             raise RuntimeError("Forward requires full model runtime. Call prepare_full_model().")
         return self.model(*args, **kwargs)
-
-    def get_quant_convert_module(self):
-        """
-        Returns the module that will be converted to quantized.
-        This is typically the main transformer module of the model.
-        """
-        return self.model
-
-    def get_layers(self):
-        if self.model is None:
-            raise RuntimeError("Model is not loaded. Full mode is required for get_layers().")
-        current = self.model
-        for part in self._layers_path.split("."):
-            current = getattr(current, part)
-        return current
-
-    def get_observer_layers(self, ignore_layers: list = []):
-        """
-        Default implementation: Returns all Linear layers except those in ignore_layers.
-        Subclasses can override this for complex architectures (e.g., MoE).
-        """
-        if self.model is None:
-            return {}
-
-        all_modules = dict(self.model.named_modules())
-        target_layers = {}
-        for name, module in all_modules.items():
-            if isinstance(module, torch.nn.Linear):
-                if ignore_layers and any(ignored in name for ignored in ignore_layers):
-                    continue
-                target_layers[name] = module
-
-        return target_layers
-
-    def get_pre_transformer_modules(self):
-        pre_transformer_modules_dict = {}
-        if self.model is None:
-            return pre_transformer_modules_dict
-
-        for full_name in self.pre_transformer_module_names:
-            current_module = self.model
-            parts = full_name.split(".")
-            for part in parts:
-                if not hasattr(current_module, part):
-                    current_module = None
-                    break
-                current_module = getattr(current_module, part)
-            if current_module is not None:
-                pre_transformer_modules_dict[full_name] = current_module
-        return pre_transformer_modules_dict
-
-    def get_kvcache_observer_layers_names(self, observe_names):
-        names = ["self_attn.k_proj", "self_attn.v_proj"]
-        return [
-            k
-            for k in observe_names
-            if k.startswith(self.block_name)
-            and k.split(".")[-2] + "." + k.split(".")[-1] in names
-        ]

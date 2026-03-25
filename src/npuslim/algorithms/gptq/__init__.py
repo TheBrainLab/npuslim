@@ -1,4 +1,4 @@
-"""GPTQ-style stepwise algorithm package."""
+"""GPTQ-style stepwise algorithm package. A bug version"""
 
 from .gptq_algo import GPTQStepwiseAlgorithm
 

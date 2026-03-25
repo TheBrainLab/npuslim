@@ -1,10 +1,7 @@
 # src/npuslim/savers/__init__.py
 """Model savers for NPUSlim."""
 
-from npuslim.savers.base_saver import BaseSaver
-from npuslim.savers.hf_saver import HuggingFaceSaver
+from npuslim.registry import SaverRegistry
 
-__all__ = [
-    "BaseSaver",
-    "HuggingFaceSaver",
-]
+# Lazy registration for savers
+SaverRegistry.register_lazy("HuggingFaceSaver",".hf_saver", aliases=["HF"])

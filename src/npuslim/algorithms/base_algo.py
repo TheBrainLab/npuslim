@@ -11,13 +11,6 @@ if TYPE_CHECKING:
     from npuslim.tasks.compressor.context import ChunkContext
 
 
-@dataclass
-class AlgorithmConfig:
-    """Algorithm configuration - co-located with BaseAlgorithm."""
-
-    type: str
-    extra: Dict[str, Any] = field(default_factory=dict)
-
 
 class BaseAlgorithm(ABC):
     """
