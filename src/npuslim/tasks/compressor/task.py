@@ -3,15 +3,20 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from loguru import logger
 
 from npuslim.algorithms import BaseAlgorithm
 from npuslim.core.backend import bh
 from npuslim.registry import AlgorithmRegistry, SaverRegistry, TaskRegistry
-from npuslim.tasks.base_task import BaseTask
+from npuslim.tasks.base_task import (
+    BaseTask,
+    RecipeTaskConfig,
+    register_task_config,
+)
 from npuslim.tasks.compressor.context import ChunkContext
 from npuslim.tasks.compressor.loader import ChunkLoader
 
@@ -19,6 +24,31 @@ if TYPE_CHECKING:
     from npuslim.core.resource_manager import ResourceManager
     from npuslim.savers.base_saver import BaseSaver
 
+
+# =============================================================================
+# Compressor-specific Configs (co-located with task)
+# =============================================================================
+
+@dataclass
+class ExecutionConfig:
+    """Compressor-specific execution options."""
+
+    mode: str = "streaming"
+    chunk_size: int = 1
+
+
+@register_task_config("compressor", aliases=["CompressorTask", "QuantizeTask"])
+@dataclass
+class CompressorTaskConfig(RecipeTaskConfig):
+    """Compressor/quantize task configuration with task-specific options."""
+
+    ignore_layers: List[str] = field(default_factory=list)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+
+
+# =============================================================================
+# Compressor Task Implementation
+# =============================================================================
 
 @TaskRegistry.register("compressor", aliases=["CompressorTask", "QuantizeTask"])
 class CompressorTask(BaseTask):
@@ -176,3 +206,4 @@ class CompressorTask(BaseTask):
             return self.run()
         finally:
             self.on_finish()
+

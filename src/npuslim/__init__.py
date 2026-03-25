@@ -22,17 +22,13 @@ except importlib.metadata.PackageNotFoundError:
 # Config schema
 from npuslim.config import (
     AlgorithmConfig,
-    DistributedBackend,
-    DistributedConfig,
     EngineConfig,
-    ExecutionConfig,
     MetadataConfig,
     RecipeTaskConfig,
     CompressorTaskConfig,
+    ExecutionConfig,
     ResourceConfig,
-    ValidationError,
     parse_config,
-    validate_config,
 )
 
 # Core runtime
@@ -79,10 +75,6 @@ __all__ = [
     "CompressorTaskConfig",
     "ExecutionConfig",
     "EngineConfig",
-    "DistributedConfig",
-    "DistributedBackend",
-    "validate_config",
-    "ValidationError",
     "parse_config",
     # Core
     "SlimEngine",

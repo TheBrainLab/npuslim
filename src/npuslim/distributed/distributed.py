@@ -3,12 +3,39 @@
 This module provides distributed training/quantization support using
 various backends (accelerate, torch.distributed, deepspeed).
 """
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any, List, Optional
 from contextlib import contextmanager
 from loguru import logger
 
-from npuslim.config.schema import DistributedConfig, DistributedBackend
 from npuslim.core.backend import bh
+
+
+class DistributedBackend(Enum):
+    """Backend for distributed execution."""
+
+    NONE = "none"
+    ACCELERATE = "accelerate"
+    TORCH_DISTRIBUTED = "torch_distributed"
+    DEEPSPEED = "deepspeed"
+
+
+@dataclass
+class DistributedConfig:
+    """Configuration for distributed execution."""
+
+    backend: DistributedBackend = DistributedBackend.NONE
+    world_size: int = 1
+    rank: int = 0
+    local_rank: int = 0
+    tensor_parallel_size: int = 1
+    pipeline_parallel_size: int = 1
+    mixed_precision: str = "no"
+    gradient_accumulation_steps: int = 1
+    backend_init_method: str = "nccl"
 
 
 class DistributedManager:

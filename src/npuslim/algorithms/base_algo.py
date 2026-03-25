@@ -1,13 +1,22 @@
 # src/npuslim/algorithms/base_algo.py
-"""Base algorithm class with simplified interface."""
+"""Base algorithm class and config."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import Any, Dict, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from npuslim.tasks.compressor.context import ChunkContext
+
+
+@dataclass
+class AlgorithmConfig:
+    """Algorithm configuration - co-located with BaseAlgorithm."""
+
+    type: str
+    extra: Dict[str, Any] = field(default_factory=dict)
 
 
 class BaseAlgorithm(ABC):

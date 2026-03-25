@@ -7,17 +7,47 @@ Responsibilities:
 3. Execute tasks in order, passing resource_manager via kwargs.
 """
 
-from dataclasses import asdict, fields
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 from loguru import logger
 
-from npuslim.config import parse_config
-from npuslim.config.schema import AlgorithmConfig, ExecutionConfig
+from npuslim.algorithms.base_algo import AlgorithmConfig
+from npuslim.core.resource_config import MetadataConfig, ResourceConfig
 from npuslim.core.resource_manager import ResourceManager
 from npuslim.registry import TaskRegistry
+from npuslim.tasks.base_task import RecipeTaskConfig
 
+
+# =============================================================================
+# Engine Configs (co-located with SlimEngine)
+# =============================================================================
+
+@dataclass
+class EngineConfig:
+    """Full NPUSlim YAML config."""
+
+    metadata: MetadataConfig
+    resources: List[ResourceConfig]
+    recipe: List[RecipeTaskConfig]
+
+    def get_resource_by_id(self, resource_id: str) -> Optional[ResourceConfig]:
+        clean_id = resource_id.lstrip("@")
+        for resource in self.resources:
+            if resource.id == clean_id:
+                return resource
+        return None
+
+    def get_resources_by_type(self, type_suffix: str) -> List[ResourceConfig]:
+        return [resource for resource in self.resources if resource.type.endswith(type_suffix)]
+
+
+# =============================================================================
+# Config Flattening Helpers
+# =============================================================================
 
 def _flatten_value(value: Any) -> Any:
     """Flatten nested config dataclasses, merging 'extra' into parent."""
@@ -27,8 +57,8 @@ def _flatten_value(value: Any) -> Any:
         if value.extra:
             result.update(value.extra)
         return result
-    elif isinstance(value, ExecutionConfig):
-        # Convert to dict
+    elif hasattr(value, "__dataclass_fields__"):
+        # Generic dataclass -> dict
         return asdict(value)
     elif isinstance(value, dict):
         return {k: _flatten_value(v) for k, v in value.items()}
@@ -37,7 +67,7 @@ def _flatten_value(value: Any) -> Any:
     return value
 
 
-def _task_config_to_kwargs(config: Any) -> Dict[str, Any]:
+def _task_config_to_kwargs(config: RecipeTaskConfig) -> Dict[str, Any]:
     """Convert task config dataclass to kwargs dict."""
     result = {}
     for f in fields(config):
@@ -54,6 +84,10 @@ def _task_config_to_kwargs(config: Any) -> Dict[str, Any]:
     return result
 
 
+# =============================================================================
+# SlimEngine
+# =============================================================================
+
 class SlimEngine:
     """
     Simple task runner - loads config, creates tasks, executes them.
@@ -62,15 +96,22 @@ class SlimEngine:
     to acquire themselves. This keeps the engine minimal and tasks flexible.
     """
 
-    def __init__(self, cfg_path: Union[str, Path]):
-        self.cfg_path = Path(cfg_path)
-        self.config = parse_config(self.cfg_path)
+    def __init__(self, config: Union[str, Path, EngineConfig]):
+        if isinstance(config, (str, Path)):
+            from npuslim.config.parser import parse_config
+            self.config = parse_config(config)
+            self.cfg_path = Path(config)
+        else:
+            self.config = config
+            self.cfg_path = None
+
         self.pipeline: List[Any] = []
 
         # Create resource manager from config resources
-        self.rm = ResourceManager(resources=getattr(self.config, "resources", []))
+        self.rm = ResourceManager(resources=self.config.resources)
 
-        logger.info(f"Loaded config from: {self.cfg_path}")
+        if self.cfg_path:
+            logger.info(f"Loaded config from: {self.cfg_path}")
         self._build_pipeline()
 
     def _build_pipeline(self) -> None:
