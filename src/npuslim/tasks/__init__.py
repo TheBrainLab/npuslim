@@ -1,3 +1,16 @@
+"""Tasks for NPUSlim."""
+
+from npuslim.tasks.base_task import BaseTask
 from npuslim.registry import TaskRegistry
 
-TaskRegistry.register_lazy("compressor", ".quantize_task", aliases=["QuantizeTask", "CompressorTask"])
+# Lazy registration for compressor task
+TaskRegistry.register_lazy(
+    "compressor",
+    ".compressor.task",
+    aliases=["CompressorTask", "QuantizeTask"],
+)
+
+__all__ = [
+    "BaseTask",
+    "TaskRegistry",
+]
