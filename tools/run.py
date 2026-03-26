@@ -18,7 +18,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    cfg_path = Path(args.config)
+    cfg_path = Path(args.config.strip())
     if not cfg_path.exists():
         raise FileNotFoundError(f"Config file not found: {cfg_path}")
 
