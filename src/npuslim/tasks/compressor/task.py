@@ -32,7 +32,6 @@ class CompressorTask(BaseTask):
         self.mode = self.execution_config.get("mode", "full")
         self.chunk_size = max(int(self.execution_config.get("chunk_size", 1)), 1)
         self.device = self.execution_config.get("device", bh.default_device_str())
-        self.strict_assignment = bool(self.execution_config.get("strict_assignment", True))
 
     def _create_loader(self) -> ChunkLoader:
         """Create chunk loader using model object."""
@@ -56,7 +55,6 @@ class CompressorTask(BaseTask):
             block_name=block_name,
             pre_module_names=pre_module_names,
             post_module_names=post_module_names,
-            strict_assignment=self.strict_assignment,
         )
 
     @staticmethod
@@ -171,6 +169,13 @@ class CompressorTask(BaseTask):
         all_original_keys = set(loader.get_all_tensor_names())
         touched_original_keys: set[str] = set()
         has_any_tensors = loader.get_total_tensors() > 0
+        if not has_any_tensors:
+            raise ValueError(
+                "[CompressorTask] Loader found 0 tensors. "
+                "Model checkpoint is unsupported or missing. "
+                "Expected one of: model.safetensors(.index.json), "
+                "pytorch_model.bin(.index.json)."
+            )
         if self.mode == "full":
             chunk_count = 1 if has_any_tensors else 0
         else:

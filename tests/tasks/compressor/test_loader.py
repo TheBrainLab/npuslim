@@ -134,3 +134,58 @@ def test_chunk_loader_preserves_pre_post_module_order(tmp_path, monkeypatch):
         "model.norm",
         "lm_head",
     ]
+
+
+def test_chunk_loader_reads_pytorch_bin_index(tmp_path, monkeypatch):
+    index_path = tmp_path / "pytorch_model.bin.index.json"
+    index_path.write_text(
+        """
+{
+  "metadata": {},
+  "weight_map": {
+    "model.decoder.embed_tokens.weight": "pytorch_model-00001-of-00002.bin",
+    "model.decoder.layers.0.self_attn.q_proj.weight": "pytorch_model-00001-of-00002.bin",
+    "model.decoder.layers.1.self_attn.q_proj.weight": "pytorch_model-00002-of-00002.bin",
+    "lm_head.weight": "pytorch_model-00002-of-00002.bin"
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    (tmp_path / "pytorch_model-00001-of-00002.bin").write_bytes(b"stub")
+    (tmp_path / "pytorch_model-00002-of-00002.bin").write_bytes(b"stub")
+
+    loader = ChunkLoader(
+        model_path=tmp_path,
+        block_name="model.decoder.layers",
+        chunk_size=2,
+        pre_module_names=["model.decoder.embed_tokens"],
+        post_module_names=["lm_head"],
+    )
+
+    shard_data = {
+        str(tmp_path / "pytorch_model-00001-of-00002.bin"): {
+            "model.decoder.embed_tokens.weight": torch.ones(2, 2),
+            "model.decoder.layers.0.self_attn.q_proj.weight": torch.ones(2, 2),
+        },
+        str(tmp_path / "pytorch_model-00002-of-00002.bin"): {
+            "model.decoder.layers.1.self_attn.q_proj.weight": torch.ones(2, 2),
+            "lm_head.weight": torch.ones(2, 2),
+        },
+    }
+
+    def _fake_torch_load(path, map_location="cpu", weights_only=True):
+        return shard_data[str(path)]
+
+    monkeypatch.setattr(torch, "load", _fake_torch_load)
+
+    loader.refresh_index()
+    assert loader.get_total_tensors() == 4
+    assert loader.get_total_layers() == 2
+
+    chunk = loader.load_chunk(0)
+    assert chunk.layer_indices == [0, 1]
+    assert "model.decoder.embed_tokens.weight" in chunk.all_tensors()
+    assert "model.decoder.layers.0.self_attn.q_proj.weight" in chunk.all_tensors()
+    assert "model.decoder.layers.1.self_attn.q_proj.weight" in chunk.all_tensors()
+    assert "lm_head.weight" in chunk.all_tensors()

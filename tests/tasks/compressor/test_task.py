@@ -9,7 +9,7 @@ def test_compressor_task_init():
         model="@qwen3",
         algorithm={"type": "INT8Dynamic", "wbits": 8},
         execution={"mode": "streaming", "chunk_size": 2},
-        saver={"type": "HuggingFaceSaver", "output_dir": "/tmp/out"},
+        saver={"type": "StreamingHuggingFaceSaver", "output_dir": "/tmp/out"},
         resource_manager=MagicMock(),
     )
 

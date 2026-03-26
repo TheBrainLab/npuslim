@@ -4,4 +4,8 @@
 from npuslim.registry import SaverRegistry
 
 # Lazy registration for savers
-SaverRegistry.register_lazy("HuggingFaceSaver",".hf_saver", aliases=["HF"])
+SaverRegistry.register_lazy(
+    "StreamingHuggingFaceSaver",
+    ".hf_saver",
+    aliases=["streaming_hf", "StreamingHFSaver", "streaming_hf_saver"],
+)

@@ -1,14 +1,13 @@
 # config.yaml
 
 metadata:
-  name: "Qwen3_Quantization_Recipe"
-  description: "A recipe for quantizing Qwen3 models using GPTQ and SparseGPTQ algorithms, followed by speculative fusion."
+  name: "OPT_Quantization_Recipe"
+  description: "A recipe for quantizing OPT models using GPTQ and SparseGPTQ algorithms, followed by speculative fusion."
 
 resources:
-  - id: qwen3
-    type: Qwen3Model
-    path: Qwen/Qwen3-0.6B
-    model_hub: hf
+  - id: opt
+    type: OPTModel
+    path: facebook/opt-125m
     device_map: cuda
 
   # - id: calib_data
@@ -19,7 +18,7 @@ resources:
 recipe:
   - name: "INT8_Quantization"
     type: compressor
-    model: "@qwen3"
+    model: "@opt"
     # data: "@calib_data"
     algorithm:
       type: INT8Dynamic
@@ -30,4 +29,4 @@ recipe:
       chunk_size: 8
     saver:
       type: StreamingHuggingFaceSaver
-      save_dir: "./outputs/Qwen3-0.6B-INT8"
+      save_dir: "./outputs/OPT-125M-INT8"

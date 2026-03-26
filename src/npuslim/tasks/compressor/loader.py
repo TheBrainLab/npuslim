@@ -38,7 +38,6 @@ class ChunkLoader:
         block_name: str = "model.layers",
         pre_module_names: Optional[List[str]] = None,
         post_module_names: Optional[List[str]] = None,
-        strict_assignment: bool = True,
     ):
         self.model_path = Path(model_path)
         self.path_str = str(model_path)
@@ -49,7 +48,6 @@ class ChunkLoader:
         self.block_name = block_name
         self.pre_module_names = [name for name in (pre_module_names or []) if name]
         self.post_module_names = [name for name in (post_module_names or []) if name]
-        self.strict_assignment = bool(strict_assignment)
 
         # Resolved state
         self._resolved_dir: Optional[Path] = None
@@ -63,45 +61,67 @@ class ChunkLoader:
         self._pre_module_tensor_map: Dict[str, List[str]] = {}
         self._post_module_tensor_map: Dict[str, List[str]] = {}
         self._unassigned_tensor_names: List[str] = []
+        self._checkpoint_format: str = "unknown"  # safetensors | torch_bin
 
         # Opened shard cache
         self._opened_shards: Dict[str, Any] = {}
 
     def refresh_index(self) -> None:
-        """Refresh safetensors index from local or remote source."""
-        index_path = self._resolve_file("model.safetensors.index.json")
+        """Refresh checkpoint index from local or remote source."""
+        # 1) Safetensors sharded index
+        st_index = self._resolve_file("model.safetensors.index.json")
+        if st_index and st_index.exists():
+            self._load_index_file(st_index, checkpoint_format="safetensors")
+            return
 
-        if index_path and index_path.exists():
-            self._load_index_file(index_path)
-        else:
-            # Fallback to single safetensors file
-            shard_path = self._resolve_file("model.safetensors")
-            if shard_path and shard_path.exists():
-                self._load_single_shard(shard_path)
-            else:
-                self._weight_map = {}
-                self._tensor_names = []
-                self._layer_tensor_map = {}
-                self._layer_indices = []
-                self._pre_module_tensor_map = {}
-                self._post_module_tensor_map = {}
-                self._unassigned_tensor_names = []
-                logger.warning(f"[ChunkLoader] No safetensors found for {self.path_str}")
+        # 2) Safetensors single shard
+        st_single = self._resolve_file("model.safetensors")
+        if st_single and st_single.exists():
+            self._load_single_safetensors_shard(st_single)
+            return
 
-    def _load_index_file(self, index_path: Path) -> None:
-        """Load model.safetensors.index.json."""
+        # 3) PyTorch bin sharded index
+        pt_index = self._resolve_file("pytorch_model.bin.index.json")
+        if pt_index and pt_index.exists():
+            self._load_index_file(pt_index, checkpoint_format="torch_bin")
+            return
+
+        # 4) PyTorch single shard
+        pt_single = self._resolve_file("pytorch_model.bin")
+        if pt_single and pt_single.exists():
+            self._load_single_torch_bin_shard(pt_single)
+            return
+
+        self._weight_map = {}
+        self._tensor_names = []
+        self._layer_tensor_map = {}
+        self._layer_indices = []
+        self._pre_module_tensor_map = {}
+        self._post_module_tensor_map = {}
+        self._unassigned_tensor_names = []
+        self._checkpoint_format = "unknown"
+        logger.warning(
+            f"[ChunkLoader] No supported checkpoint found for {self.path_str}. "
+            "Tried: model.safetensors(.index.json), pytorch_model.bin(.index.json)"
+        )
+
+    def _load_index_file(self, index_path: Path, checkpoint_format: str) -> None:
+        """Load sharded checkpoint index json (safetensors or pytorch bin)."""
         with open(index_path) as f:
             data = json.load(f)
 
         self._resolved_dir = index_path.parent
         self._weight_map = data.get("weight_map", {})
+        self._checkpoint_format = checkpoint_format
         self._tensor_names = list(self._weight_map.keys())
         self._build_layer_tensor_map()
         self._build_aux_tensor_lists()
         self._validate_tensor_assignment()
-        logger.info(f"[ChunkLoader] Loaded index: {len(self._tensor_names)} tensors")
+        logger.info(
+            f"[ChunkLoader] Loaded {checkpoint_format} index: {len(self._tensor_names)} tensors"
+        )
 
-    def _load_single_shard(self, shard_path: Path) -> None:
+    def _load_single_safetensors_shard(self, shard_path: Path) -> None:
         """Fallback: load from single model.safetensors."""
         try:
             with safe_open(shard_path, framework="pt", device="cpu") as handle:
@@ -110,13 +130,54 @@ class ChunkLoader:
             shard_name = shard_path.name
             self._resolved_dir = shard_path.parent
             self._weight_map = {name: shard_name for name in tensor_names}
+            self._checkpoint_format = "safetensors"
             self._tensor_names = list(tensor_names)
             self._build_layer_tensor_map()
             self._build_aux_tensor_lists()
             self._validate_tensor_assignment()
             logger.info(f"[ChunkLoader] Single shard: {len(tensor_names)} tensors")
         except Exception as e:
-            logger.warning(f"[ChunkLoader] Failed to load single shard: {e}")
+            logger.warning(f"[ChunkLoader] Failed to load single safetensors shard: {e}")
+
+    @staticmethod
+    def _extract_state_dict(obj: Any) -> Dict[str, torch.Tensor]:
+        if not isinstance(obj, dict):
+            raise ValueError(f"Expected dict checkpoint, got {type(obj).__name__}")
+
+        if "state_dict" in obj and isinstance(obj["state_dict"], dict):
+            candidate = obj["state_dict"]
+        else:
+            candidate = obj
+
+        tensor_items = {k: v for k, v in candidate.items() if torch.is_tensor(v)}
+        if not tensor_items:
+            raise ValueError("No tensor entries found in checkpoint payload")
+        return tensor_items
+
+    def _torch_load_file(self, shard_path: Path) -> Dict[str, torch.Tensor]:
+        try:
+            loaded = torch.load(shard_path, map_location="cpu", weights_only=True)
+        except TypeError:
+            # torch<2.0 may not support weights_only
+            loaded = torch.load(shard_path, map_location="cpu")
+        return self._extract_state_dict(loaded)
+
+    def _load_single_torch_bin_shard(self, shard_path: Path) -> None:
+        """Fallback: load from single pytorch_model.bin."""
+        try:
+            tensor_map = self._torch_load_file(shard_path)
+
+            shard_name = shard_path.name
+            self._resolved_dir = shard_path.parent
+            self._weight_map = {name: shard_name for name in tensor_map.keys()}
+            self._checkpoint_format = "torch_bin"
+            self._tensor_names = list(tensor_map.keys())
+            self._build_layer_tensor_map()
+            self._build_aux_tensor_lists()
+            self._validate_tensor_assignment()
+            logger.info(f"[ChunkLoader] Single torch bin shard: {len(tensor_map)} tensors")
+        except Exception as e:
+            logger.warning(f"[ChunkLoader] Failed to load single torch bin shard: {e}")
 
     def _build_layer_tensor_map(self) -> None:
         """Build mapping from layer index to layer tensor names."""
@@ -175,15 +236,15 @@ class ChunkLoader:
         """Ensure all tensors are assigned to pre/layers/post buckets."""
         self._unassigned_tensor_names = self._compute_unassigned_tensor_names()
 
-        if self.strict_assignment and self._unassigned_tensor_names:
+        if self._unassigned_tensor_names:
             preview = ", ".join(self._unassigned_tensor_names[:8])
             if len(self._unassigned_tensor_names) > 8:
                 preview += ", ..."
-            raise ValueError(
-                "[ChunkLoader] strict_assignment=True but found "
+            logger.warning(
+                "[ChunkLoader] Found "
                 f"{len(self._unassigned_tensor_names)} unassigned tensors. "
                 f"Examples: {preview}. "
-                "Update block_name/pre_module_names/post_module_names to cover all weights."
+                "These tensors will be preserved by CompressorTask backfill."
             )
 
     def _load_module_infos(self, module_tensor_map: Dict[str, List[str]]) -> List[ModuleInfo]:
@@ -281,7 +342,12 @@ class ChunkLoader:
             raise RuntimeError("Index not loaded. Call refresh_index() first.")
 
         shard_path = self._resolved_dir / shard_name
-        handle = safe_open(shard_path, framework="pt", device=self.tensor_device)
+        if self._checkpoint_format == "safetensors":
+            handle = safe_open(shard_path, framework="pt", device=self.tensor_device)
+        elif self._checkpoint_format == "torch_bin":
+            handle = self._torch_load_file(shard_path)
+        else:
+            raise RuntimeError(f"Unsupported checkpoint format: {self._checkpoint_format}")
         self._opened_shards[shard_name] = handle
         return handle
 
@@ -292,7 +358,18 @@ class ChunkLoader:
             raise KeyError(f"Tensor not found: {tensor_name}")
 
         handle = self._get_shard_handle(shard)
-        return handle.get_tensor(tensor_name)
+        if self._checkpoint_format == "safetensors":
+            return handle.get_tensor(tensor_name)
+
+        if self._checkpoint_format == "torch_bin":
+            tensor = handle.get(tensor_name)
+            if not torch.is_tensor(tensor):
+                raise KeyError(f"Tensor '{tensor_name}' not found in shard '{shard}'")
+            if self.tensor_device != "cpu":
+                return tensor.to(self.tensor_device)
+            return tensor
+
+        raise RuntimeError(f"Unsupported checkpoint format: {self._checkpoint_format}")
 
     # === Public API ===
 

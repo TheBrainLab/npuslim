@@ -17,13 +17,17 @@ from npuslim.registry import SaverRegistry
 from npuslim.savers.base_saver import BaseSaver
 
 
-@SaverRegistry.register("HuggingFaceSaver", aliases=["hf", "HF"])
-class HuggingFaceSaver(BaseSaver):
+@SaverRegistry.register(
+    "StreamingHuggingFaceSaver",
+    aliases=["streaming_hf", "StreamingHFSaver", "streaming_hf_saver"],
+)
+class StreamingHuggingFaceSaver(BaseSaver):
     """Streaming safetensors saver with HuggingFace-compatible output layout."""
 
     _WEIGHT_FILE_SUFFIXES = (
         ".safetensors",
         ".bin",
+        ".h5",
         ".pt",
         ".pth",
         ".ckpt",
@@ -60,7 +64,9 @@ class HuggingFaceSaver(BaseSaver):
         if output_dir is None:
             output_dir = save_dir
         if output_dir is None:
-            raise ValueError("HuggingFaceSaver requires 'output_dir' (or legacy 'save_dir').")
+            raise ValueError(
+                "StreamingHuggingFaceSaver requires 'output_dir' (or legacy 'save_dir')."
+            )
 
         threshold_source = max_shard_size if max_shard_size is not None else shard_size
         if threshold_source is None:

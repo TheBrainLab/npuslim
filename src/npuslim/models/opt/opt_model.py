@@ -14,14 +14,7 @@ class OPTSlimModel(BaseLLMModel):
             "model.decoder.embed_positions",
         ]
         self.block_name = "model.decoder.layers"
-
-    def get_parent_dict(self, observer_layers_dict):
-        _ = observer_layers_dict
-        return {}
-
-    def get_layers(self):
-        """Get transformer layers."""
-        current = self.model
-        for part in self.block_name.split("."):
-            current = getattr(current, part)
-        return current
+        self.post_transformer_module_names = [
+            "model.decoder.final_layer_norm",
+            "lm_head",
+        ]

@@ -67,7 +67,7 @@ class BaseTask(ABC):
         """Create saver from config."""
         if not self.saver_config:
             return None
-        saver_type = self.saver_config.get("type", "HuggingFaceSaver")
+        saver_type = self.saver_config.get("type", "StreamingHuggingFaceSaver")
         saver_kwargs = {k: v for k, v in self.saver_config.items() if k != "type"}
         return SaverRegistry.create(saver_type, **saver_kwargs)
 
