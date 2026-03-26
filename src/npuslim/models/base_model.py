@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import torch
+from accelerate import init_empty_weights
 from loguru import logger
 from npuslim.core.backend import bh
 
@@ -98,6 +99,7 @@ class BaseLLMModel(ABC):
         # self.observer_layer_classes = [torch.nn.Linear]
 
         self.model = None
+        self.empty_model = None
         self.tokenizer = None
         self.config = None
         self.quantized = False
@@ -172,6 +174,37 @@ class BaseLLMModel(ABC):
 
     def release_full_model(self) -> None:
         self.model = None
+        bh.empty_cache()
+
+    def prepare_empty_model(self):
+        """Build and cache a meta-device model skeleton without loading weights."""
+        if self.empty_model is not None:
+            return self.empty_model
+
+        if self.config is None:
+            self.prepare_metadata()
+        if self.config is None:
+            raise RuntimeError("Config is required to build empty model skeleton.")
+
+        AutoModelForCausalLM = get_hub_class(self.model_hub, "AutoModelForCausalLM")
+        trust_remote_code = bool(self.model_kwargs.get("trust_remote_code", False))
+        extra_kwargs: Dict[str, Any] = {}
+        if "attn_implementation" in self.model_kwargs:
+            extra_kwargs["attn_implementation"] = self.model_kwargs["attn_implementation"]
+        if "torch_dtype" in self.model_kwargs:
+            extra_kwargs["torch_dtype"] = self.model_kwargs["torch_dtype"]
+
+        with init_empty_weights():
+            self.empty_model = AutoModelForCausalLM.from_config(
+                self.config,
+                trust_remote_code=trust_remote_code,
+                **extra_kwargs,
+            )
+        self.empty_model.eval()
+        return self.empty_model
+
+    def release_empty_model(self) -> None:
+        self.empty_model = None
         bh.empty_cache()
 
     def forward(self, *args, **kwargs):

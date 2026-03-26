@@ -36,14 +36,38 @@ def validate_config(config: EngineConfig, strict: bool = False) -> None:
 
     # Validate recipe references
     for task in config.recipe:
-        for ref_field in ["model", "data", "main_model", "draft_model"]:
-            ref = getattr(task, ref_field)
+        if hasattr(task, "extra") and "data" in task.extra:
+            errors.append(
+                f"Task '{task.name}': 'data' is no longer supported; use dataloader.dataset"
+            )
+
+        for ref_field in ["model", "main_model", "draft_model"]:
+            ref = getattr(task, ref_field, None)
             if ref:
                 clean_ref = ref.lstrip("@")
                 if clean_ref not in resource_ids:
                     errors.append(
                         f"Task '{task.name}': {ref_field}='{ref}' references non-existent resource"
                     )
+
+        dataloader_cfg = getattr(task, "dataloader", None)
+        if dataloader_cfg is not None:
+            if not isinstance(dataloader_cfg, dict):
+                errors.append(
+                    f"Task '{task.name}': dataloader must be a dict"
+                )
+            else:
+                dataset_ref = dataloader_cfg.get("dataset")
+                if not dataset_ref:
+                    errors.append(
+                        f"Task '{task.name}': dataloader.dataset is required"
+                    )
+                else:
+                    clean_ref = str(dataset_ref).lstrip("@")
+                    if clean_ref not in resource_ids:
+                        errors.append(
+                            f"Task '{task.name}': dataloader.dataset='{dataset_ref}' references non-existent resource"
+                        )
 
     # Warnings
     if not config.resources:

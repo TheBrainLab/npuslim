@@ -53,7 +53,7 @@ class SlimEngine:
                     type_name=task_config.type,
                     name=task_config.name,
                     model=task_config.model,
-                    data=task_config.data,
+                    dataloader=task_config.dataloader,
                     algorithm=task_config.algorithm,
                     saver=task_config.saver,
                     resource_manager=self.rm,

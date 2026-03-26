@@ -9,16 +9,15 @@ This implementation mirrors legacy `compressor/quantizer/int8_dyn` behavior for:
 
 from __future__ import annotations
 
-import fnmatch
 import math
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
+from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import torch
 from loguru import logger
 
-from npuslim.algorithms.base_algo import BaseAlgorithm
+from npuslim.algorithms.quantization.base_quant_algo import BaseQuantizationAlgorithm
 from npuslim.core.backend import bh
 from npuslim.registry import register_algorithm
 
@@ -227,7 +226,7 @@ def quantize_weight_int(
 
 
 @register_algorithm("INT8Dynamic", aliases=["INT8Dyn", "int8_dyn"])
-class INT8DynamicAlgorithm(BaseAlgorithm):
+class INT8DynamicAlgorithm(BaseQuantizationAlgorithm):
     """INT8 dynamic quantization with observer-hook workflow."""
 
     _ASCEND_QUANT_TYPE = "W8A8_DYNAMIC"
@@ -277,22 +276,6 @@ class INT8DynamicAlgorithm(BaseAlgorithm):
         self.weight_scales_dict: Dict[str, torch.Tensor] = {}
         self.observer_layers: Dict[str, torch.Tensor] = {}
         self.ptq_hook: Optional[PTQObserverHook] = None
-        self._model_obj: Optional[Any] = None
-        self._model_config: Optional[Any] = None
-        self._skip_layer_names: List[str] = []
-
-    def set_runtime_context(
-        self,
-        *,
-        model_obj: Any = None,
-        model_config: Any = None,
-        skip_layer_names: Optional[List[str]] = None,
-    ) -> None:
-        """Attach runtime objects needed for algorithm-specific metadata updates."""
-        self._model_obj = model_obj
-        self._model_config = model_config
-        if skip_layer_names is not None:
-            self._skip_layer_names = list(skip_layer_names)
 
     def on_start(self) -> None:
         logger.info(
@@ -368,8 +351,7 @@ class INT8DynamicAlgorithm(BaseAlgorithm):
             }
             model_config.quantization_config = quantization_config
 
-        if self._model_obj is not None and hasattr(self._model_obj, "quantized"):
-            self._model_obj.quantized = True
+        self._mark_model_quantized()
         logger.info("[INT8Dynamic] model quantization metadata updated")
 
     def _resolve_weight_observer_cls(self):
@@ -390,38 +372,15 @@ class INT8DynamicAlgorithm(BaseAlgorithm):
             return f"{weight_name[:-7]}.weight_scale"
         return f"{weight_name}_scale"
 
-    @staticmethod
-    def _should_skip(full_name: str, skip_layer_names: Iterable[str]) -> bool:
-        for skip_name in skip_layer_names:
-            if not skip_name:
-                continue
-
-            if skip_name.startswith("re:"):
-                try:
-                    if re.fullmatch(skip_name[3:], full_name):
-                        return True
-                except re.error:
-                    continue
-                continue
-
-            if full_name == skip_name or full_name.startswith(f"{skip_name}."):
-                return True
-
-            if fnmatch.fnmatch(full_name, skip_name):
-                return True
-        return False
-
     def _collect_observer_layers(
         self, chunk: "ChunkContext"
     ) -> Dict[str, torch.Tensor]:
-        skip_layer_names = list(chunk.metadata.get("skip_layer_names", []) or [])
-        if skip_layer_names:
-            self._skip_layer_names = skip_layer_names
+        skip_layer_names = self._set_skip_from_chunk_metadata(chunk)
         observer_layers: Dict[str, torch.Tensor] = {}
         for layer in chunk.layers:
             for rel_name, tensor in layer.tensors.items():
                 full_name = f"{layer.name}.{rel_name}"
-                if self._should_skip(full_name, skip_layer_names):
+                if self.should_skip_name(full_name, skip_layer_names):
                     continue
                 if not isinstance(tensor, torch.Tensor):
                     continue

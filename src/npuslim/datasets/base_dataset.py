@@ -29,12 +29,13 @@ class BaseDataset(Dataset):
         *args,
         processor: "ProcessorMixin",
         device: str = "cpu",
+        num_samples: int = 256, 
         max_seq_length: int = 2048,
         **kwargs,
     ):
-        _ = args, kwargs
         self.processor = processor
         self.device = device
+        self.num_samples = num_samples
         self.max_length = max_seq_length
         self.data = []
 

@@ -48,7 +48,7 @@ class RecipeTaskConfig:
     name: str
     type: str
     model: Optional[str] = None
-    data: Optional[str] = None
+    dataloader: Optional[Dict[str, Any]] = None
     algorithm: Optional[Dict[str, Any]] = None
     saver: Optional[Dict[str, Any]] = None
     extra: Dict[str, Any] = field(default_factory=dict)

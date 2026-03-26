@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from loguru import logger
+from torch.utils.data import DataLoader
 
 from npuslim.algorithms import BaseAlgorithm
 from npuslim.registry import AlgorithmRegistry, SaverRegistry
@@ -24,7 +25,7 @@ class BaseTask(ABC):
         *,
         name: str = "",
         model: Optional[str] = None,
-        data: Optional[str] = None,
+        dataloader: Optional[Dict[str, Any]] = None,
         algorithm: Optional[Dict[str, Any]] = None,
         saver: Optional[Dict[str, Any]] = None,
         resource_manager: Optional["ResourceManager"] = None,
@@ -32,7 +33,10 @@ class BaseTask(ABC):
     ):
         self.name = name
         self.model_ref = model
-        self.data_ref = data
+        self.dataloader_config = dataloader or {}
+        if self.dataloader_config and not isinstance(self.dataloader_config, dict):
+            raise ValueError("[Task] 'dataloader' must be a dict")
+        self.data_ref = self.dataloader_config.get("dataset")
         self.rm = resource_manager
         self.algorithm_config = algorithm or {}
         self.saver_config = saver or {}
@@ -49,10 +53,28 @@ class BaseTask(ABC):
         if self.rm and self.model_ref:
             self._model_obj = self.rm.acquire_model(self.model_ref)
 
-    def _create_data(self):
-        """Acquire calibration data from resource manager."""
-        if self.rm and self.data_ref:
-            self._calib_data = self.rm.acquire_dataset(self.data_ref)
+    def _create_data(self) -> None:
+        """Create calibration dataloader from task `dataloader` config."""
+        if not self.dataloader_config:
+            self._calib_data = None
+            return
+        if self.rm is None:
+            raise ValueError("resource_manager is required")
+        if not self.data_ref:
+            raise ValueError("[Task] dataloader.dataset is required")
+
+        # VL models use processor, LLM models use tokenizer
+        processor = getattr(self._model_obj, "processor", None)
+        if processor is None:
+            processor = getattr(self._model_obj, "tokenizer", None)
+        dataset = self.rm.acquire_dataset(self.data_ref, processor=processor)
+
+        loader_kwargs = {
+            k: v for k, v in self.dataloader_config.items() if k != "dataset"
+        }
+        if "collate_fn" not in loader_kwargs and hasattr(dataset, "collate_fn"):
+            loader_kwargs["collate_fn"] = getattr(dataset, "collate_fn")
+        self._calib_data = DataLoader(dataset, **loader_kwargs)
 
     def _create_algorithm(self) -> BaseAlgorithm:
         """Create algorithm from config."""
