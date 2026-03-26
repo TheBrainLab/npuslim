@@ -11,12 +11,21 @@ class BaseSaver(ABC):
     """Base class for model savers."""
 
     @abstractmethod
-    def add_tensor(self, name: str, tensor: torch.Tensor) -> None:
+    def add_tensor(
+        self,
+        name: str,
+        tensor: torch.Tensor,
+        tensor_type: Optional[str] = None,
+    ) -> None:
         """Add a tensor to be saved."""
         pass
 
     @abstractmethod
-    def add_tensors(self, tensors: Dict[str, torch.Tensor]) -> None:
+    def add_tensors(
+        self,
+        tensors: Dict[str, torch.Tensor],
+        tensor_types: Optional[Dict[str, str]] = None,
+    ) -> None:
         """Add multiple tensors."""
         pass
 

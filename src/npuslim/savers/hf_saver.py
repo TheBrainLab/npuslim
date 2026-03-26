@@ -12,11 +12,12 @@ import torch
 from loguru import logger
 from safetensors.torch import save_file
 
+from npuslim.core.backend import bh
 from npuslim.registry import SaverRegistry
 from npuslim.savers.base_saver import BaseSaver
 
 
-@SaverRegistry.register("HuggingFaceSaver", aliases=["HF"])
+@SaverRegistry.register("HuggingFaceSaver", aliases=["hf", "HF"])
 class HuggingFaceSaver(BaseSaver):
     """Streaming safetensors saver with HuggingFace-compatible output layout."""
 
@@ -31,6 +32,7 @@ class HuggingFaceSaver(BaseSaver):
     )
     _SKIP_SOURCE_FILE_NAMES = {
         "model.safetensors.index.json",
+        "quant_model_description.json",
         "optimizer.pt",
         "training_args.bin",
         "trainer_state.json",
@@ -52,6 +54,8 @@ class HuggingFaceSaver(BaseSaver):
         shard_size: int | str | None = None,
         shard_name_pattern: str = "model-{:05d}.safetensors",
         copy_aux_files: bool = True,
+        strip_quantization_config_on_npu: bool = True,
+        require_tensor_types_on_npu: bool = True,
     ):
         if output_dir is None:
             output_dir = save_dir
@@ -66,11 +70,14 @@ class HuggingFaceSaver(BaseSaver):
         self.size_threshold = self._parse_size_to_bytes(threshold_source)
         self.shard_name_pattern = shard_name_pattern
         self.copy_aux_files = bool(copy_aux_files)
+        self.strip_quantization_config_on_npu = bool(strip_quantization_config_on_npu)
+        self.require_tensor_types_on_npu = bool(require_tensor_types_on_npu)
 
         self.buffer: Dict[str, torch.Tensor] = {}
         self.buffer_size: int = 0
         self.shard_counter: int = 0
         self.weight_map: Dict[str, str] = {}
+        self.tensor_type_map: Dict[str, str] = {}
         self._written_shards: set[str] = set()
 
         self._source_ref: Optional[str] = None
@@ -139,8 +146,18 @@ class HuggingFaceSaver(BaseSaver):
         self._tokenizer = tokenizer
         self._processor = processor
 
-    def add_tensor(self, name: str, tensor: torch.Tensor) -> None:
+    def add_tensor(
+        self,
+        name: str,
+        tensor: torch.Tensor,
+        tensor_type: Optional[str] = None,
+    ) -> None:
         """Add tensor to buffer, auto-flush if threshold exceeded."""
+        if bh.name == "npu" and self.require_tensor_types_on_npu and not tensor_type:
+            raise ValueError(
+                f"[HFSaver] NPU mode requires explicit tensor_type for '{name}'."
+            )
+
         if name in self.buffer:
             old_tensor = self.buffer[name]
             self.buffer_size -= old_tensor.numel() * old_tensor.element_size()
@@ -153,15 +170,24 @@ class HuggingFaceSaver(BaseSaver):
 
         self.buffer[name] = tensor.cpu().contiguous()
         self.buffer_size += tensor_size
+        if tensor_type:
+            self.tensor_type_map[name] = str(tensor_type)
+        elif name not in self.tensor_type_map:
+            self.tensor_type_map[name] = "FLOAT"
 
         # Flush immediately once threshold is reached.
         if self.buffer_size >= self.size_threshold:
             self.flush()
 
-    def add_tensors(self, tensors: Dict[str, torch.Tensor]) -> None:
+    def add_tensors(
+        self,
+        tensors: Dict[str, torch.Tensor],
+        tensor_types: Optional[Dict[str, str]] = None,
+    ) -> None:
         """Add multiple tensors."""
+        tensor_types = tensor_types or {}
         for name, tensor in tensors.items():
-            self.add_tensor(name, tensor)
+            self.add_tensor(name, tensor, tensor_type=tensor_types.get(name))
 
     def flush(self) -> Optional[str]:
         """Write buffer to safetensors shard."""
@@ -217,6 +243,63 @@ class HuggingFaceSaver(BaseSaver):
                 obj.save_pretrained(self.output_dir)
             except Exception as exc:
                 logger.warning(f"[HFSaver] Failed to save {label}: {exc}")
+
+    def _build_ascend_quant_model_description(self, ascend_config: Dict[str, Any]) -> Dict[str, Any]:
+        quant_type = str(ascend_config.get("model_quant_type", "FLOAT"))
+        group_size = int(ascend_config.get("group_size", -1))
+
+        description: Dict[str, Any] = {
+            "version": "1.0.0",
+            "model_quant_type": quant_type,
+        }
+        if group_size > 0:
+            description["group_size"] = group_size
+
+        missing_types = sorted(
+            tensor_name
+            for tensor_name in self.weight_map.keys()
+            if tensor_name not in self.tensor_type_map
+        )
+        if missing_types and self.require_tensor_types_on_npu:
+            preview = ", ".join(missing_types[:8])
+            if len(missing_types) > 8:
+                preview += ", ..."
+            raise ValueError(
+                "[HFSaver] Missing tensor types for Ascend quant description. "
+                f"Examples: {preview}"
+            )
+
+        for tensor_name in sorted(self.weight_map.keys()):
+            description[tensor_name] = self.tensor_type_map.get(tensor_name, "FLOAT")
+        return description
+
+    def _save_ascend_quant_description_if_needed(self) -> None:
+        if self._model_config is None:
+            return
+
+        ascend_config = getattr(self._model_config, "ascend_quant_config", None)
+        if not isinstance(ascend_config, dict):
+            return
+
+        description = self._build_ascend_quant_model_description(ascend_config)
+        desc_path = self.output_dir / "quant_model_description.json"
+        with open(desc_path, "w", encoding="utf-8") as f:
+            json.dump(description, f, indent=2)
+        logger.info("[HFSaver] Wrote quant_model_description.json for Ascend runtime")
+
+        if self.strip_quantization_config_on_npu:
+            config_path = self.output_dir / "config.json"
+            if config_path.exists():
+                try:
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        config_data = json.load(f)
+                    if "quantization_config" in config_data:
+                        del config_data["quantization_config"]
+                        with open(config_path, "w", encoding="utf-8") as f:
+                            json.dump(config_data, f, indent=2)
+                        logger.info("[HFSaver] Stripped quantization_config for Ascend output")
+                except Exception as exc:
+                    logger.warning(f"[HFSaver] Failed stripping quantization_config: {exc}")
 
     @staticmethod
     def _is_hidden_path(path: Path) -> bool:
@@ -318,6 +401,7 @@ class HuggingFaceSaver(BaseSaver):
 
         self._save_hf_assets()
         self._copy_aux_files_from_source()
+        self._save_ascend_quant_description_if_needed()
 
         logger.success(
             f"[HFSaver] Finalized: tensors={len(self.weight_map)}, "

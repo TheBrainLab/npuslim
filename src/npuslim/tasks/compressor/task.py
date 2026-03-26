@@ -196,7 +196,10 @@ class CompressorTask(BaseTask):
                     chunk = algo.process_chunk(chunk)
 
                     if saver is not None:
-                        saver.add_tensors(chunk.all_tensors())
+                        saver.add_tensors(
+                            chunk.all_tensors(),
+                            tensor_types=self._resolve_chunk_tensor_types(chunk, npu_strict=(bh.name == "npu")),
+                        )
 
                     loader.unload_chunk(0)
             else:
@@ -209,7 +212,10 @@ class CompressorTask(BaseTask):
                     chunk = algo.process_chunk(chunk)
 
                     if saver is not None:
-                        saver.add_tensors(chunk.all_tensors())
+                        saver.add_tensors(
+                            chunk.all_tensors(),
+                            tensor_types=self._resolve_chunk_tensor_types(chunk, npu_strict=(bh.name == "npu")),
+                        )
 
                     loader.unload_chunk(chunk_idx)
 
@@ -220,7 +226,10 @@ class CompressorTask(BaseTask):
                         f"[CompressorTask] Backfilling {len(missing_original_keys)} untouched original tensors"
                     )
                     missing_tensors = loader.load_tensors(missing_original_keys)
-                    saver.add_tensors(missing_tensors)
+                    saver.add_tensors(
+                        missing_tensors,
+                        tensor_types={name: "FLOAT" for name in missing_original_keys},
+                    )
         finally:
             try:
                 algo.on_finish()
@@ -248,3 +257,47 @@ class CompressorTask(BaseTask):
             "chunks_processed": chunk_count,
             "output_dir": str(output_dir) if output_dir else None,
         }
+
+    @staticmethod
+    def _resolve_chunk_tensor_types(
+        chunk,
+        *,
+        npu_strict: bool,
+    ) -> Optional[Dict[str, str]]:
+        all_names = list(chunk.all_tensors().keys())
+        tensor_types = chunk.metadata.get("tensor_types")
+
+        if tensor_types is None:
+            if npu_strict:
+                raise ValueError(
+                    "[CompressorTask] NPU mode requires chunk.metadata['tensor_types'] "
+                    "from algorithm for every tensor."
+                )
+            return None
+
+        if not isinstance(tensor_types, dict):
+            raise ValueError(
+                "[CompressorTask] chunk.metadata['tensor_types'] must be a dict[str, str]"
+            )
+
+        resolved: Dict[str, str] = {}
+        missing: List[str] = []
+        for name in all_names:
+            t = tensor_types.get(name)
+            if t is None:
+                if npu_strict:
+                    missing.append(name)
+                else:
+                    resolved[name] = "FLOAT"
+            else:
+                resolved[name] = str(t)
+
+        if missing:
+            preview = ", ".join(missing[:8])
+            if len(missing) > 8:
+                preview += ", ..."
+            raise ValueError(
+                "[CompressorTask] Missing tensor types for NPU chunk save. "
+                f"Examples: {preview}"
+            )
+        return resolved

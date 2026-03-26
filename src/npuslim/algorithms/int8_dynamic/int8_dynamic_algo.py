@@ -230,6 +230,7 @@ def quantize_weight_int(
 class INT8DynamicAlgorithm(BaseAlgorithm):
     """INT8 dynamic quantization with observer-hook workflow."""
 
+    _ASCEND_QUANT_TYPE = "W8A8_DYNAMIC"
     _WEIGHT_OBSERVERS_CLASS = {
         "per-tensor": AbsMaxPerTensorWeightObserver,
         "per-channel": AbsMaxChannelWiseWeightObserver,
@@ -325,41 +326,47 @@ class INT8DynamicAlgorithm(BaseAlgorithm):
         w_strategy = self._extract_strategy(self.cfg.w_quant_method, "channel")
         a_strategy = self._extract_strategy(self.cfg.a_quant_method, "token")
 
-        quantization_config = {
-            "quant_method": "compressed-tensors",
-            "quantization_status": "compressed",
-            "format": "int-quantized",
-            "ignore": list(self._skip_layer_names),
-            "kv_cache_scheme": None,
-            "config_groups": {
-                "group_0": {
-                    "targets": ["Linear"],
-                    "weights": {
-                        "num_bits": self.cfg.wbits,
-                        "strategy": w_strategy,
-                        "dynamic": False,
-                        "type": "int",
-                    },
-                    "input_activations": {
-                        "num_bits": 8,
-                        "strategy": a_strategy,
-                        "dynamic": True,
-                        "type": "int",
-                    },
-                    "output_activations": None,
-                }
-            },
-        }
-        model_config.quantization_config = quantization_config
-
         if bh.name == "npu":
             model_config.ascend_quant_config = {
-                "model_quant_type": "W8A8_DYNAMIC",
+                "model_quant_type": self._ASCEND_QUANT_TYPE,
                 "group_size": self.cfg.group_size if w_strategy == "group" else -1,
                 "quant_layer_types": ["Linear"],
                 "include_g_idx": False,
                 "has_offset": False,
             }
+            # Ascend runtime consumes quant_model_description.json instead.
+            if hasattr(model_config, "quantization_config"):
+                try:
+                    delattr(model_config, "quantization_config")
+                except Exception:
+                    pass
+        else:
+            quantization_config = {
+                "quant_method": "compressed-tensors",
+                "quantization_status": "compressed",
+                "format": "int-quantized",
+                "ignore": list(self._skip_layer_names),
+                "kv_cache_scheme": None,
+                "config_groups": {
+                    "group_0": {
+                        "targets": ["Linear"],
+                        "weights": {
+                            "num_bits": self.cfg.wbits,
+                            "strategy": w_strategy,
+                            "dynamic": False,
+                            "type": "int",
+                        },
+                        "input_activations": {
+                            "num_bits": 8,
+                            "strategy": a_strategy,
+                            "dynamic": True,
+                            "type": "int",
+                        },
+                        "output_activations": None,
+                    }
+                },
+            }
+            model_config.quantization_config = quantization_config
 
         if self._model_obj is not None and hasattr(self._model_obj, "quantized"):
             self._model_obj.quantized = True
@@ -427,11 +434,28 @@ class INT8DynamicAlgorithm(BaseAlgorithm):
                 observer_layers[full_name] = tensor
         return observer_layers
 
+    def _build_chunk_tensor_types(
+        self,
+        chunk: "ChunkContext",
+        quantized_tensor_names: set[str],
+    ) -> Dict[str, str]:
+        tensor_types: Dict[str, str] = {
+            name: "FLOAT" for name in chunk.all_tensors().keys()
+        }
+        for name in quantized_tensor_names:
+            if name in tensor_types:
+                tensor_types[name] = self._ASCEND_QUANT_TYPE
+        return tensor_types
+
     def process_chunk(self, chunk: "ChunkContext") -> "ChunkContext":
         observer_cls, obs_key = self._resolve_weight_observer_cls()
         self.observer_layers = self._collect_observer_layers(chunk)
+        quantized_tensor_names: set[str] = set()
 
         if not self.observer_layers:
+            chunk.metadata["tensor_types"] = self._build_chunk_tensor_types(
+                chunk, quantized_tensor_names=quantized_tensor_names
+            )
             logger.info("[INT8Dynamic] chunk has no quantizable weights")
             return chunk
 
@@ -472,11 +496,16 @@ class INT8DynamicAlgorithm(BaseAlgorithm):
                     layer.tensors[rel_name] = quant_weight.to(dtype=tensor.dtype)
                     layer.tensors[scale_name] = stored_scale.to(dtype=tensor.dtype)
                     self.weight_scales_dict[full_name] = stored_scale
+                    quantized_tensor_names.add(full_name)
+                    quantized_tensor_names.add(f"{layer.name}.{scale_name}")
                     quantized_count += 1
         finally:
             self.ptq_hook.remove_hook()
             self.ptq_hook.post_process()
 
+        chunk.metadata["tensor_types"] = self._build_chunk_tensor_types(
+            chunk, quantized_tensor_names=quantized_tensor_names
+        )
         logger.info(
             f"[INT8Dynamic] chunk={chunk.chunk_index}, "
             f"observer={obs_key}, quantized_weights={quantized_count}"

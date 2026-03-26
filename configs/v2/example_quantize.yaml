@@ -24,8 +24,7 @@ recipe:
     algorithm:
       type: INT8Dynamic
       wbits: 8
-    ignore_layers: 
-      - "model.layers.*.mlp.down_proj"
+    ignore_layers: []
     execution:
       mode: streaming
       chunk_size: 8
