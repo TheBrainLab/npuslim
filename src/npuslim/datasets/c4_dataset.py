@@ -10,8 +10,7 @@ from npuslim.registry import DatasetRegistry
 class C4Dataset(BaseDataset):
     """C4 dataset for calibration, matching original QuIP/GPTQ behavior."""
 
-    def __init__(self, *args, num_samples: int = 256, seed: int = 0, **kwargs):
-        self.num_samples = num_samples
+    def __init__(self, *args, seed: int = 0, **kwargs):
         self.seed = seed
         super().__init__(*args, **kwargs)
         self._load_data()

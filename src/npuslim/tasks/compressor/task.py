@@ -35,6 +35,10 @@ class CompressorTask(BaseTask):
 
     def _create_loader(self) -> ChunkLoader:
         """Create chunk loader using model object."""
+        model_kwargs = getattr(self._model_obj, "model_kwargs", {}) or {}
+        model_device_map = model_kwargs.get("device_map")
+        tensor_device = bh.resolve_device_map(model_device_map, default=self.device)
+
         block_name = getattr(
             self._model_obj,
             "block_name",
@@ -49,8 +53,8 @@ class CompressorTask(BaseTask):
         return ChunkLoader(
             model_path=getattr(self._model_obj, "path_str", str(getattr(self._model_obj, "path", ""))),
             model_hub=getattr(self._model_obj, "model_hub", "hf"),
-            model_kwargs=getattr(self._model_obj, "model_kwargs", {}),
-            tensor_device=self.device,
+            model_kwargs=model_kwargs,
+            tensor_device=tensor_device,
             chunk_size=self.chunk_size,
             block_name=block_name,
             pre_module_names=pre_module_names,

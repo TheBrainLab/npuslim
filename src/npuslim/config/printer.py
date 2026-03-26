@@ -44,17 +44,22 @@ def print_config(config: EngineConfig, console: Console = None) -> None:
         table.add_column("Name", style="cyan")
         table.add_column("Type", style="yellow")
         table.add_column("Model", style="green")
-        table.add_column("Data", style="green")
+        table.add_column("Dataset", style="green")
         table.add_column("Algorithm", style="blue")
 
         for t in config.recipe:
-            model_ref = t.model or t.main_model or "-"
-            algo = t.algorithm.type if t.algorithm else "-"
-            table.add_row(t.name, t.type, model_ref, t.data or "-", algo)
+            model_ref = getattr(t, "model", None) or getattr(t, "main_model", None) or "-"
+            algo = t.algorithm.get("type", "-") if isinstance(t.algorithm, dict) else "-"
+            dataset_ref = "-"
+            if isinstance(t.dataloader, dict):
+                dataset_ref = t.dataloader.get("dataset", "-")
+            table.add_row(t.name, t.type, model_ref, dataset_ref, algo)
 
         console.print(table)
 
         # Algorithm details
         for t in config.recipe:
-            if t.algorithm and t.algorithm.extra:
-                console.print(f"\n[bold]{t.name}[/bold] algorithm: {t.algorithm.extra}")
+            if isinstance(t.algorithm, dict):
+                extra = {k: v for k, v in t.algorithm.items() if k != "type"}
+                if extra:
+                    console.print(f"\n[bold]{t.name}[/bold] algorithm: {extra}")

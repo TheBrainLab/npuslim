@@ -7,7 +7,7 @@ metadata:
 resources:
   - id: qwen3
     type: Qwen3Model
-    path: Qwen/Qwen3-0.6B
+    path: Qwen/Qwen3-8B
     model_hub: hf
     device_map: cuda
 
@@ -20,14 +20,13 @@ recipe:
   - name: "INT8_Quantization"
     type: compressor
     model: "@qwen3"
-    # data: "@calib_data"
     algorithm:
       type: INT8Dynamic
       wbits: 8
     ignore_layers: []
     execution:
       mode: streaming
-      chunk_size: 8
+      chunk_size: 4
     saver:
       type: StreamingHuggingFaceSaver
-      save_dir: "./outputs/Qwen3-0.6B-INT8"
+      save_dir: "./outputs/Qwen3-8B-INT8"

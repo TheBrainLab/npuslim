@@ -1,4 +1,4 @@
-"""INT8 Dynamic algorithm package."""
+"""INT8 Dynamic quantization algorithm package."""
 
 from .int8_dynamic_algo import INT8DynamicAlgorithm
 

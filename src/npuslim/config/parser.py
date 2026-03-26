@@ -44,7 +44,7 @@ def _parse_task(t: Dict) -> RecipeTaskConfig:
 
     # Parse common fields
     model = t_copy.pop("model", None)
-    data = t_copy.pop("data", None)
+    dataloader = t_copy.pop("dataloader", None)
     algorithm = t_copy.pop("algorithm", None)
     saver = t_copy.pop("saver", None)
 
@@ -52,7 +52,7 @@ def _parse_task(t: Dict) -> RecipeTaskConfig:
         name=task_name,
         type=task_type,
         model=model,
-        data=data,
+        dataloader=dataloader,
         algorithm=algorithm,
         saver=saver,
         extra=t_copy,
