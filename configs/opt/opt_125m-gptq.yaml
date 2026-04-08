@@ -10,17 +10,29 @@ resources:
     path: facebook/opt-125m
     device_map: cuda
 
+  - id: calib_data
+    type: C4Dataset
+    num_samples: 128
+    max_seq_length: 2048
+
 recipe:
-  - name: "INT8_Quantization"
+  - name: "GPTQ_Quantization"
     type: compressor
     model: "@opt"
+    # data: "@calib_data"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 1
+      shuffle: true
+      pin_memory: true
     algorithm:
-      type: INT8Dynamic
-      wbits: 8
+      type: GPTQ
+      wbits: 4
+      groupsize: 128
     ignore_layers: []
     execution:
       mode: streaming
-      chunk_size: 2
+      chunk_size: 4
     saver:
       type: StreamingHuggingFaceSaver
-      save_dir: "./outputs/OPT-125M-INT8"
+      save_dir: "./outputs"

@@ -79,10 +79,15 @@ class BaseLLMModel(ABC):
         merged_model_kwargs: Dict[str, Any] = dict(model_kwargs or {})
         merged_tokenizer_kwargs: Dict[str, Any] = dict(tokenizer_kwargs or {})
         for key in list(kwargs.keys()):
+            should_pop = False
             if key in passthrough_model_keys and key not in merged_model_kwargs:
-                merged_model_kwargs[key] = kwargs.pop(key)
+                merged_model_kwargs[key] = kwargs[key]
+                should_pop = True
             if key in passthrough_tokenizer_keys and key not in merged_tokenizer_kwargs:
-                merged_tokenizer_kwargs[key] = kwargs.pop(key)
+                merged_tokenizer_kwargs[key] = kwargs[key]
+                should_pop = True
+            if should_pop:
+                kwargs.pop(key)
 
         self.path = Path(path)
         self.path_str = path
@@ -211,3 +216,7 @@ class BaseLLMModel(ABC):
         if self.model is None:
             raise RuntimeError("Forward requires full model runtime. Call prepare_full_model().")
         return self.model(*args, **kwargs)
+
+    def adapt_gptq_runtime_model(self, runtime_model):
+        """Optional model-specific GPTQ runtime adaptation hook."""
+        return runtime_model

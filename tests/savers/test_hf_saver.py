@@ -30,6 +30,21 @@ def test_hf_saver_streaming_writes_shards_and_index(tmp_path):
     assert index["metadata"]["total_size"] > 0
 
 
+def test_hf_saver_save_path_has_higher_priority_than_save_dir(tmp_path):
+    save_path = tmp_path / "from-save-path"
+    save_dir = tmp_path / "from-save-dir"
+
+    saver = StreamingHuggingFaceSaver(
+        save_path=save_path,
+        save_dir=save_dir,
+        size_threshold=1024,
+    )
+
+    assert saver.output_dir == save_path
+    assert save_path.exists()
+    assert not save_dir.exists()
+
+
 def test_hf_saver_copies_non_weight_aux_files_from_source(tmp_path):
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True, exist_ok=True)

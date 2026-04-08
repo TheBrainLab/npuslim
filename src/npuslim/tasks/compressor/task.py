@@ -31,13 +31,14 @@ class CompressorTask(BaseTask):
         # Execution settings
         self.mode = self.execution_config.get("mode", "full")
         self.chunk_size = max(int(self.execution_config.get("chunk_size", 1)), 1)
-        self.device = self.execution_config.get("device", bh.default_device_str())
 
     def _create_loader(self) -> ChunkLoader:
         """Create chunk loader using model object."""
         model_kwargs = getattr(self._model_obj, "model_kwargs", {}) or {}
         model_device_map = model_kwargs.get("device_map")
-        tensor_device = bh.resolve_device_map(model_device_map, default=self.device)
+        tensor_device = bh.resolve_device_map(
+            model_device_map, default=bh.default_device_str()
+        )
 
         block_name = getattr(
             self._model_obj,
@@ -187,7 +188,7 @@ class CompressorTask(BaseTask):
 
         logger.info(
             f"[CompressorTask] Starting: mode={self.mode}, "
-            f"chunks={chunk_count}, chunk_size={self.chunk_size}, device={self.device}"
+            f"chunks={chunk_count}, chunk_size={self.chunk_size}, device={loader.tensor_device}"
         )
 
         output_dir = None

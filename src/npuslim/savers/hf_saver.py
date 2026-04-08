@@ -51,6 +51,7 @@ class StreamingHuggingFaceSaver(BaseSaver):
 
     def __init__(
         self,
+        save_path: Path | str | None = None,
         output_dir: Path | str | None = None,
         save_dir: Path | str | None = None,
         size_threshold: int | str = 4 * 1024 * 1024 * 1024,  # 4 GiB
@@ -61,18 +62,16 @@ class StreamingHuggingFaceSaver(BaseSaver):
         strip_quantization_config_on_npu: bool = True,
         require_tensor_types_on_npu: bool = True,
     ):
-        if output_dir is None:
-            output_dir = save_dir
-        if output_dir is None:
-            raise ValueError(
-                "StreamingHuggingFaceSaver requires 'output_dir' (or legacy 'save_dir')."
-            )
+        super().__init__(
+            save_path=save_path,
+            output_dir=output_dir,
+            save_dir=save_dir,
+        )
 
         threshold_source = max_shard_size if max_shard_size is not None else shard_size
         if threshold_source is None:
             threshold_source = size_threshold
 
-        self.output_dir = Path(output_dir)
         self.size_threshold = self._parse_size_to_bytes(threshold_source)
         self.shard_name_pattern = shard_name_pattern
         self.copy_aux_files = bool(copy_aux_files)

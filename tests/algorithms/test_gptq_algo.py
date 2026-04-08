@@ -161,3 +161,122 @@ def test_gptq_sanitize_layer_kwargs_disables_cache():
     out = GPTQAlgorithm._sanitize_layer_kwargs(kwargs)
     assert out["use_cache"] is False
     assert out["past_key_values"] is None
+
+
+def test_gptq_process_chunk_skips_unresolvable_moe_target(monkeypatch):
+    monkeypatch.setattr(bh, "name", "cuda")
+    algo = GPTQAlgorithm(wbits=4, group_size=2, max_calib_samples=8)
+
+    class _NonSubscriptableExperts(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.act_fn = torch.nn.SiLU()
+
+    class _DummyLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = torch.nn.Module()
+            self.self_attn.q_proj = torch.nn.Linear(32, 32, bias=False)
+            self.mlp = torch.nn.Module()
+            self.mlp.experts = _NonSubscriptableExperts()
+
+        def forward(self, hidden_states, **kwargs):
+            _ = kwargs
+            return (self.self_attn.q_proj(hidden_states),)
+
+    class _DummyRuntime(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = torch.nn.Module()
+            self.model.embed_tokens = torch.nn.Embedding(128, 32)
+            self.model.layers = torch.nn.ModuleList([_DummyLayer()])
+
+        def forward(self, input_ids=None, **kwargs):
+            _ = kwargs
+            hidden = self.model.embed_tokens(input_ids)
+            for layer in self.model.layers:
+                hidden = layer(hidden)[0]
+            return (hidden,)
+
+    runtime_model = _DummyRuntime()
+    model_obj = SimpleNamespace(
+        block_name="model.layers",
+        prepare_empty_model=lambda: runtime_model,
+        release_empty_model=lambda: None,
+    )
+    model_config = SimpleNamespace()
+    algo.set_runtime_context(model_obj=model_obj, model_config=model_config)
+
+    chunk = ChunkContext(
+        chunk_index=0,
+        pre_modules=[
+            SimpleNamespace(
+                name="model.embed_tokens",
+                tensors={"weight": torch.randn(128, 32, dtype=torch.float32)},
+            )
+        ],
+        layers=[
+            LayerInfo(
+                name="model.layers.0",
+                index=0,
+                tensors={
+                    "mlp.experts.0.down_proj.weight": torch.randn(32, 32, dtype=torch.float32),
+                    "self_attn.q_proj.weight": torch.randn(32, 32, dtype=torch.float32),
+                },
+            )
+        ],
+        calib_data=[{"input_ids": torch.tensor([[1, 2, 3, 4]])}],
+    )
+
+    algo.on_start()
+    out_chunk = algo.process_chunk(chunk)
+    algo.on_finish()
+
+    keys = set(out_chunk.layers[0].tensors.keys())
+    assert "self_attn.q_proj.qweight" in keys
+    assert "self_attn.q_proj.qzeros" in keys
+    assert "self_attn.q_proj.scales" in keys
+    assert "self_attn.q_proj.g_idx" in keys
+    assert "mlp.experts.0.down_proj.weight" in keys
+
+
+def test_gptq_on_start_calls_model_runtime_adapter(monkeypatch):
+    monkeypatch.setattr(bh, "name", "cuda")
+    algo = GPTQAlgorithm(wbits=4, group_size=2, max_calib_samples=8)
+
+    class _DummyLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = torch.nn.Module()
+            self.self_attn.q_proj = torch.nn.Linear(32, 32, bias=False)
+
+        def forward(self, hidden_states, **kwargs):
+            _ = kwargs
+            return (self.self_attn.q_proj(hidden_states),)
+
+    class _DummyRuntime(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = torch.nn.Module()
+            self.model.layers = torch.nn.ModuleList([_DummyLayer()])
+
+    runtime_model = _DummyRuntime()
+    called = {"ok": False}
+
+    def _adapt(model):
+        called["ok"] = True
+        return model
+
+    model_obj = SimpleNamespace(
+        block_name="model.layers",
+        prepare_empty_model=lambda: runtime_model,
+        release_empty_model=lambda: None,
+        adapt_gptq_runtime_model=_adapt,
+    )
+    model_config = SimpleNamespace()
+    algo.set_runtime_context(model_obj=model_obj, model_config=model_config)
+
+    algo.on_start()
+    algo.on_finish()
+
+    assert called["ok"] is True

@@ -2,45 +2,33 @@
 """Simple pipeline orchestrator.
 
 Responsibilities:
-1. Parse YAML config into runtime objects.
-2. Create ResourceManager from config resources.
-3. Execute tasks in order, passing resource_manager via kwargs.
+1. Create ResourceManager from parsed config resources.
+2. Execute tasks in order, passing resource_manager via kwargs.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List
 
 from loguru import logger
 
-from npuslim.config.schema import EngineConfig, ResourceConfig
+from npuslim.config.schema import EngineConfig
 from npuslim.core.resource_manager import ResourceManager
 from npuslim.registry import TaskRegistry
 
 
 class SlimEngine:
     """
-    Simple task runner - loads config, creates tasks, executes them.
+    Simple task runner - builds tasks from parsed config and executes them.
 
     Tasks receive `resource_manager` via kwargs and decide what resources
     to acquire themselves. This keeps the engine minimal and tasks flexible.
     """
 
-    def __init__(self, config: Union[str, Path, EngineConfig]):
-        if isinstance(config, (str, Path)):
-            from npuslim.config.parser import parse_config
-            self.config = parse_config(config)
-            self.cfg_path = Path(config)
-        else:
-            self.config = config
-            self.cfg_path = None
-
+    def __init__(self, config: EngineConfig):
+        self.config = config
         self.pipeline: List[Any] = []
         self.rm = ResourceManager(resources=self.config.resources)
-
-        if self.cfg_path:
-            logger.info(f"Loaded config from: {self.cfg_path}")
         self._build_pipeline()
 
     def _build_pipeline(self) -> None:
@@ -60,9 +48,9 @@ class SlimEngine:
                     **task_kwargs,
                 )
                 self.pipeline.append(task)
-                logger.info(f"  Added task: {task_config.name} ({task_config.type})")
+                logger.info(f"Added task: {task_config.name} ({task_config.type})")
             except Exception as e:
-                logger.error(f"  Failed to create task '{task_config.name}': {e}")
+                logger.error(f"Failed to create task '{task_config.name}': {e}")
                 raise
 
     def run(self) -> List[Dict[str, Any]]:
