@@ -39,10 +39,8 @@ def parse_args():
 
 def main():
     args = parse_args()
-    config_str = args.config_flag or args.config
+    config_str = (args.config_flag or args.config or "").strip()
     if not config_str:
-        parser = argparse.ArgumentParser()
-        parser.print_help()
         raise SystemExit("Error: config path is required (positional or -c/--config)")
     cfg_path = Path(config_str)
     if not cfg_path.exists():
