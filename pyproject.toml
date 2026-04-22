@@ -10,15 +10,10 @@ license = { text = "Apache-2.0" }
 dependencies = [
     "rich",
     "loguru",
-    "easydict",
-    "dacite",
-    "threadpoolctl",
     "datasets",
     "transformers<5.0.0",
     "lm-eval[api]",
     "evalscope[perf]",
-    "optimum",
-    "primefac",
 ]
 
 [project.scripts]

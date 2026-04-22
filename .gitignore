@@ -20,6 +20,9 @@ reports/
 # Distribution / packaging
 .Python
 build/
+**build_context**
+*.tgz
+*.tar.gz
 develop-eggs/
 dist/
 downloads/
@@ -132,8 +135,9 @@ dmypy.json
 # Pycharm
 .idea
 
-# Claude
+# Ai agents
 .claude
+.codex
 **/plans/**
 .worktrees/
 
