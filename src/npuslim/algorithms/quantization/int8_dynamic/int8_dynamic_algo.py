@@ -229,6 +229,7 @@ def quantize_weight_int(
 class INT8DynamicAlgorithm(BaseQuantizationAlgorithm):
     """INT8 dynamic quantization with observer-hook workflow."""
 
+    _TAG = "INT8Dynamic"
     _ASCEND_QUANT_TYPE = "W8A8_DYNAMIC"
     _WEIGHT_OBSERVERS_CLASS = {
         "per-tensor": AbsMaxPerTensorWeightObserver,
@@ -251,7 +252,7 @@ class INT8DynamicAlgorithm(BaseQuantizationAlgorithm):
                 wbits
             ):
                 logger.warning(
-                    f"[INT8Dynamic] both wbits={wbits} and legacy w_bits={legacy_w_bits} provided; "
+                    f"[{self._TAG}] both wbits={wbits} and legacy w_bits={legacy_w_bits} provided; "
                     f"using wbits={wbits}"
                 )
             else:
@@ -279,7 +280,7 @@ class INT8DynamicAlgorithm(BaseQuantizationAlgorithm):
 
     def on_start(self) -> None:
         logger.info(
-            "[INT8Dynamic] start: "
+            f"[{self._TAG}] start: "
             f"wbits={self.cfg.wbits}, w_quant_method={self.cfg.w_quant_method}, "
             f"a_quant_method={self.cfg.a_quant_method}, group_size={self.cfg.group_size}"
         )
@@ -290,7 +291,7 @@ class INT8DynamicAlgorithm(BaseQuantizationAlgorithm):
     def on_finish(self) -> None:
         self._update_quantization_metadata()
         logger.info(
-            f"[INT8Dynamic] finish: observed={len(self.observer_layers)}, "
+            f"[{self._TAG}] finish: observed={len(self.observer_layers)}, "
             f"scales={len(self.weight_scales_dict)}"
         )
 
@@ -352,7 +353,7 @@ class INT8DynamicAlgorithm(BaseQuantizationAlgorithm):
             model_config.quantization_config = quantization_config
 
         self._mark_model_quantized()
-        logger.info("[INT8Dynamic] model quantization metadata updated")
+        logger.info(f"[{self._TAG}] model quantization metadata updated")
 
     def _resolve_weight_observer_cls(self):
         obs_key = self.cfg.weight_observer or self.cfg.w_quant_method
@@ -415,7 +416,7 @@ class INT8DynamicAlgorithm(BaseQuantizationAlgorithm):
             chunk.metadata["tensor_types"] = self._build_chunk_tensor_types(
                 chunk, quantized_tensor_names=quantized_tensor_names
             )
-            logger.info("[INT8Dynamic] chunk has no quantizable weights")
+            logger.info(f"[{self._TAG}] chunk has no quantizable weights")
             return chunk
 
         weight_observer_factory = lambda tensor: observer_cls(  # noqa: E731
@@ -466,7 +467,7 @@ class INT8DynamicAlgorithm(BaseQuantizationAlgorithm):
             chunk, quantized_tensor_names=quantized_tensor_names
         )
         logger.info(
-            f"[INT8Dynamic] chunk={chunk.chunk_index}, "
+            f"[{self._TAG}] chunk={chunk.chunk_index}, "
             f"observer={obs_key}, quantized_weights={quantized_count}"
         )
         return chunk

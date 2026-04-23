@@ -15,6 +15,11 @@ AlgorithmRegistry.register_lazy(
     ".quantization.gptq.gptq_algo",
     aliases=["gptq", "GPTQStepwise", "GPTQExample", "gptq_stepwise"],
 )
+AlgorithmRegistry.register_lazy(
+    "SparseGPT",
+    ".quantization.sparsegpt.sparsegpt_algo",
+    aliases=["sparsegpt", "sparse_gpt"],
+)
 
 __all__ = [
     "BaseAlgorithm",

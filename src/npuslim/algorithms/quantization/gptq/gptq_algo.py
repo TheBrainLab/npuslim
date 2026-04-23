@@ -605,6 +605,8 @@ class GPTQQuantLinear(nn.Module):
 class GPTQAlgorithm(BaseQuantizationAlgorithm):
     """Chunk-wise GPTQ algorithm."""
 
+    _TAG = "GPTQ"
+
     def __init__(
         self,
         wbits: int = 4,
@@ -666,12 +668,12 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
 
     def on_start(self) -> None:
         logger.info(
-            "[GPTQ] start: "
+            f"[{self._TAG}] start: "
             f"wbits={self.wbits}, groupsize={self.groupsize}, "
             f"actorder={self.actorder}, percdamp={self.percdamp}"
         )
         if self._model_obj is None:
-            raise ValueError("[GPTQ] runtime model is required")
+            raise ValueError(f"[{self._TAG}] runtime model is required")
 
         self._runtime_model = self._build_runtime_model()
         runtime_cfg = getattr(self._runtime_model, "config", None)
@@ -708,7 +710,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
         if self._model_obj is not None and hasattr(self._model_obj, "release_empty_model"):
             self._model_obj.release_empty_model()
         bh.empty_cache()
-        logger.info("[GPTQ] finish")
+        logger.info(f"[{self._TAG}] finish")
 
     def _build_runtime_model(self) -> nn.Module:
         if self._model_obj is not None and hasattr(self._model_obj, "prepare_empty_model"):
@@ -718,7 +720,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
                 return model
 
         if self._model_config is None:
-            raise ValueError("[GPTQ] model_config is required to build empty runtime model")
+            raise ValueError(f"[{self._TAG}] model_config is required to build empty runtime model")
 
         auto_model_cls = get_hub_class(
             getattr(self._model_obj, "model_hub", "hf"),
@@ -847,9 +849,9 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
 
     def _assign_runtime_tensors(self, tensor_map: Dict[str, torch.Tensor]) -> List[str]:
         if self._runtime_model is None:
-            raise RuntimeError("[GPTQ] runtime model is not initialized")
+            raise RuntimeError(f"[{self._TAG}] runtime model is not initialized")
         if self._runtime_device is None:
-            raise RuntimeError("[GPTQ] runtime device is not initialized")
+            raise RuntimeError(f"[{self._TAG}] runtime device is not initialized")
 
         assigned: List[str] = []
         for full_name, tensor in tensor_map.items():
@@ -886,7 +888,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
 
     def _move_batch_to_device(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         if self._runtime_device is None:
-            raise RuntimeError("[GPTQ] runtime device is not initialized")
+            raise RuntimeError(f"[{self._TAG}] runtime device is not initialized")
         moved: Dict[str, Any] = {}
         for key, value in batch.items():
             if torch.is_tensor(value):
@@ -907,11 +909,11 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
 
     def _capture_initial_inputs(self, chunk) -> None:
         if self._runtime_model is None:
-            raise RuntimeError("[GPTQ] runtime model is not initialized")
+            raise RuntimeError(f"[{self._TAG}] runtime model is not initialized")
         if not chunk.layers:
-            raise ValueError("[GPTQ] first chunk must contain at least one layer")
+            raise ValueError(f"[{self._TAG}] first chunk must contain at least one layer")
         if chunk.calib_data is None:
-            raise ValueError("[GPTQ] calibration data is required")
+            raise ValueError(f"[{self._TAG}] calibration data is required")
 
         class _CaptureInputsStop(RuntimeError):
             pass
@@ -941,7 +943,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
                 batch_iter = tqdm(
                     self._iter_calib_batches(chunk.calib_data),
                     total=total_batches,
-                    desc="gptq capture first-layer",
+                    desc=f"{self._TAG.lower()} capture first-layer",
                     leave=True,
                 )
                 for raw_batch in batch_iter:
@@ -962,7 +964,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
             handle.remove()
 
         if not captured:
-            raise RuntimeError("[GPTQ] failed to capture first-layer inputs from calibration data")
+            raise RuntimeError(f"[{self._TAG}] failed to capture first-layer inputs from calibration data")
 
         inps = torch.cat(captured, dim=0)
         inps = inps[: self.max_calib_samples]
@@ -986,7 +988,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
         chunk_index: int,
     ) -> None:
         if self._inps is None:
-            raise RuntimeError("[GPTQ] missing captured inputs")
+            raise RuntimeError(f"[{self._TAG}] missing captured inputs")
         hooks = []
         for handler in handlers.values():
             hooks.append(
@@ -1001,7 +1003,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
             sample_iter = tqdm(
                 self._iter_layer_sample_ranges(total_samples),
                 total=total_steps,
-                desc=f"gptq calib c{chunk_index} {layer_name}",
+                desc=f"{self._TAG.lower()} calib c{chunk_index} {layer_name}",
                 leave=True,
                 disable=total_steps <= 1,
             )
@@ -1020,7 +1022,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
         chunk_index: int,
     ) -> None:
         if self._inps is None or self._outs is None:
-            raise RuntimeError("[GPTQ] missing captured inputs")
+            raise RuntimeError(f"[{self._TAG}] missing captured inputs")
         total_samples = int(self._inps.shape[0])
         step = max(int(self._calib_batch_size), 1)
         total_steps = (total_samples + step - 1) // step
@@ -1028,7 +1030,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
             sample_iter = tqdm(
                 self._iter_layer_sample_ranges(total_samples),
                 total=total_steps,
-                desc=f"gptq forward c{chunk_index} {layer_name}",
+                desc=f"{self._TAG.lower()} forward c{chunk_index} {layer_name}",
                 leave=True,
                 disable=total_steps <= 1,
             )
@@ -1047,7 +1049,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
         for idx in indices:
             if idx != expected:
                 raise ValueError(
-                    f"[GPTQ] chunk order mismatch: expected layer {expected}, got {idx}"
+                    f"[{self._TAG}] chunk order mismatch: expected layer {expected}, got {idx}"
                 )
             expected += 1
         self._next_expected_layer_index = expected
@@ -1082,11 +1084,11 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
             }
 
         self._mark_model_quantized()
-        logger.info("[GPTQ] model quantization metadata updated")
+        logger.info(f"[{self._TAG}] model quantization metadata updated")
 
     def process_chunk(self, chunk) -> Any:
         if self._runtime_model is None:
-            raise RuntimeError("[GPTQ] on_start must be called before process_chunk")
+            raise RuntimeError(f"[{self._TAG}] on_start must be called before process_chunk")
         self._validate_chunk_order(chunk)
         if self._runtime_device is None:
             self._runtime_device = self._resolve_runtime_device(chunk)
@@ -1099,7 +1101,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
         if self._inps is None:
             if not chunk.is_first_chunk:
                 raise ValueError(
-                    "[GPTQ] first processed chunk must include layer-0 to capture initial inputs"
+                    f"[{self._TAG}] first processed chunk must include layer-0 to capture initial inputs"
                 )
             pre_tensor_map: Dict[str, torch.Tensor] = {}
             for module in chunk.pre_modules:
@@ -1115,7 +1117,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
         layer_iter = tqdm(
             chunk.layers,
             total=chunk.layer_count,
-            desc=f"gptq chunk {chunk.chunk_index}",
+            desc=f"{self._TAG.lower()} chunk {chunk.chunk_index}",
             leave=True,
             disable=chunk.layer_count <= 1,
         )
@@ -1167,11 +1169,9 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
                     metrics = getattr(handler, "last_metrics", {})
                     if metrics:
                         logger.info(
-                            "[GPTQ] layer={}.{} avg_loss={:.6f} norm_loss={:.6f}",
-                            layer.name,
-                            module_rel_name,
-                            float(metrics.get("avg_loss", 0.0)),
-                            float(metrics.get("norm_loss", 0.0)),
+                            f"[{self._TAG}] layer={layer.name}.{module_rel_name} "
+                            f"avg_loss={float(metrics.get('avg_loss', 0.0)):.6f} "
+                            f"norm_loss={float(metrics.get('norm_loss', 0.0)):.6f}"
                         )
                     quant_results.append(
                         (
@@ -1189,7 +1189,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
                 pack_iter = tqdm(
                     quant_results,
                     total=len(quant_results),
-                    desc=f"gptq pack c{chunk.chunk_index} {layer.name}",
+                    desc=f"{self._TAG.lower()} pack c{chunk.chunk_index} {layer.name}",
                     leave=True,
                     disable=len(quant_results) <= 1,
                 )
@@ -1244,7 +1244,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
         chunk.metadata["tensor_types"] = tensor_types
 
         logger.info(
-            f"[GPTQ] chunk={chunk.chunk_index}, layers={chunk.layer_count}, "
+            f"[{self._TAG}] chunk={chunk.chunk_index}, layers={chunk.layer_count}, "
             f"quantized_weights={quantized_weights}"
         )
         return chunk

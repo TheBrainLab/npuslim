@@ -1,0 +1,41 @@
+# config.yaml
+
+metadata:
+  name: "Qwen3_SparseGPT_Recipe"
+  description: "SparseGPT pruning for Qwen3-0.6B with unstructured sparsity."
+
+resources:
+  - id: qwen3
+    type: Qwen3Model
+    path: Qwen/Qwen3-0.6B
+    model_hub: hf
+    device_map: cpu
+
+  - id: calib_data
+    type: C4Dataset
+    num_samples: 128
+    max_seq_length: 2048
+
+recipe:
+  - name: "SparseGPT_Pruning"
+    type: compressor
+    model: "@qwen3"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 1
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: SparseGPT
+      # sparsity: 0.5
+      prunen: 2
+      prunem: 4
+      blocksize: 128
+      percdamp: 0.01
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 1
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs/Qwen3-0.6B-SparseGPT"

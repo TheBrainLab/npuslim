@@ -12,6 +12,8 @@ from npuslim.algorithms.base_algo import BaseAlgorithm
 class BaseQuantizationAlgorithm(BaseAlgorithm):
     """Shared runtime context and skip-matching utilities."""
 
+    _TAG: str = "Base"
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._model_obj: Optional[Any] = None

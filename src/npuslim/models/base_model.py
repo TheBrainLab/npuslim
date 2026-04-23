@@ -106,11 +106,45 @@ class BaseLLMModel(ABC):
         self.model = None
         self.empty_model = None
         self.tokenizer = None
+        self.processor = None
         self.config = None
         self.quantized = False
         self.model_type = "LLM"
 
         self.prepare_metadata()
+
+    def get_model_loader_candidates(self) -> List[str]:
+        """Ordered model loader class candidates."""
+        return ["AutoModelForCausalLM"]
+
+    def get_tokenizer_loader_candidates(self) -> List[str]:
+        """Ordered tokenizer loader class candidates."""
+        return ["AutoTokenizer"]
+
+    def get_processor_loader_candidates(self) -> List[str]:
+        """Ordered processor loader class candidates. Empty means no processor."""
+        return []
+
+    def _resolve_first_available_class(
+        self,
+        class_names: List[str],
+        *,
+        kind: str,
+    ):
+        if not class_names:
+            raise RuntimeError(f"No {kind} class candidates provided")
+
+        errors: List[str] = []
+        for class_name in class_names:
+            try:
+                return get_hub_class(self.model_hub, class_name)
+            except Exception as exc:
+                errors.append(f"{class_name}: {exc}")
+
+        raise RuntimeError(
+            f"Failed to resolve {kind} class. "
+            f"Candidates={class_names}. Errors={errors}"
+        )
 
     def _resolve_pretrained_source(self) -> str:
         if self.path.exists():
@@ -134,15 +168,33 @@ class BaseLLMModel(ABC):
 
     def prepare_metadata(self, pretrained_source: Optional[str] = None) -> None:
         source = pretrained_source or self._resolve_pretrained_source()
-        AutoTokenizer = get_hub_class(self.model_hub, "AutoTokenizer")
+        tokenizer_cls = self._resolve_first_available_class(
+            self.get_tokenizer_loader_candidates(),
+            kind="tokenizer",
+        )
 
         logger.info(
             f"Loading tokenizer metadata from: '{source}' with kwargs: {self.tokenizer_kwargs}"
         )
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        self.tokenizer = tokenizer_cls.from_pretrained(
             pretrained_model_name_or_path=source,
             **self.tokenizer_kwargs,
         )
+
+        processor_candidates = self.get_processor_loader_candidates()
+        if processor_candidates:
+            try:
+                processor_cls = self._resolve_first_available_class(
+                    processor_candidates,
+                    kind="processor",
+                )
+                self.processor = processor_cls.from_pretrained(
+                    pretrained_model_name_or_path=source,
+                    **self.tokenizer_kwargs,
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to load processor metadata: {exc}")
+                self.processor = None
 
         try:
             AutoConfig = get_hub_class(self.model_hub, "AutoConfig")
@@ -159,11 +211,14 @@ class BaseLLMModel(ABC):
             return
 
         source = pretrained_source or self._resolve_pretrained_source()
-        AutoModelForCausalLM = get_hub_class(self.model_hub, "AutoModelForCausalLM")
+        model_cls = self._resolve_first_available_class(
+            self.get_model_loader_candidates(),
+            kind="model",
+        )
         logger.info(
             f"Loading full model from: '{source}' with kwargs: {self.model_kwargs}"
         )
-        self.model = AutoModelForCausalLM.from_pretrained(
+        self.model = model_cls.from_pretrained(
             pretrained_model_name_or_path=source,
             **self.model_kwargs,
         )
@@ -191,7 +246,10 @@ class BaseLLMModel(ABC):
         if self.config is None:
             raise RuntimeError("Config is required to build empty model skeleton.")
 
-        AutoModelForCausalLM = get_hub_class(self.model_hub, "AutoModelForCausalLM")
+        model_cls = self._resolve_first_available_class(
+            self.get_model_loader_candidates(),
+            kind="model",
+        )
         trust_remote_code = bool(self.model_kwargs.get("trust_remote_code", False))
         extra_kwargs: Dict[str, Any] = {}
         if "attn_implementation" in self.model_kwargs:
@@ -200,7 +258,7 @@ class BaseLLMModel(ABC):
             extra_kwargs["torch_dtype"] = self.model_kwargs["torch_dtype"]
 
         with init_empty_weights():
-            self.empty_model = AutoModelForCausalLM.from_config(
+            self.empty_model = model_cls.from_config(
                 self.config,
                 trust_remote_code=trust_remote_code,
                 **extra_kwargs,

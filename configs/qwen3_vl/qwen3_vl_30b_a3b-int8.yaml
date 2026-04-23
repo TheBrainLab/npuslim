@@ -1,0 +1,29 @@
+metadata:
+  name: "Qwen3VL_INT8_Recipe"
+  description: "INT8 dynamic quantization for Qwen3-VL-30B-A3B-Instruct."
+
+resources:
+  - id: qwen3_vl
+    type: Qwen3VLModel
+    path: Qwen/Qwen3-VL-30B-A3B-Thinking
+    model_hub: ms
+    device_map: cuda
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+
+recipe:
+  - name: "INT8_Quantization"
+    type: compressor
+    model: "@qwen3_vl"
+    algorithm:
+      type: INT8Dynamic
+      wbits: 8
+      w_quant_method: per-channel
+      a_quant_method: per-token
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 2
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs"
