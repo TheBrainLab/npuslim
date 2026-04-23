@@ -24,7 +24,7 @@ from tqdm import tqdm
 from npuslim.algorithms.quantization.base_quant_algo import BaseQuantizationAlgorithm
 from npuslim.core.backend import bh
 from npuslim.models.base_model import get_hub_class
-from npuslim.registry import register_algorithm
+from npuslim.core import register_algorithm
 
 
 def _is_transformers_conv1d(layer: nn.Module) -> bool:

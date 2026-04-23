@@ -4,7 +4,7 @@ import torch
 
 from npuslim.algorithms.quantization.gptq.gptq_algo import GPTQAlgorithm
 from npuslim.core.backend import bh
-from npuslim.registry import AlgorithmRegistry
+from npuslim.core import AlgorithmRegistry
 from npuslim.tasks.compressor.context import ChunkContext, LayerInfo
 
 

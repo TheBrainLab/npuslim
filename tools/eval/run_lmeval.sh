@@ -219,6 +219,7 @@ if [[ "$BACKEND" == "api" ]]; then
 
     MODEL_ARGS+=",base_url=${API_URL}"
     MODEL_ARGS+=",tokenized_requests=False"
+    MODEL_ARGS+=",max_length=${MAX_MODEL_LEN}"
     MODEL_ARGS+=",trust_remote_code=True"
     LM_EVAL_MODEL="local-completions"
 

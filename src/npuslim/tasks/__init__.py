@@ -1,7 +1,7 @@
 """Tasks for NPUSlim."""
 
 from npuslim.tasks.base_task import BaseTask
-from npuslim.registry import TaskRegistry
+from npuslim.core import TaskRegistry
 
 # Lazy registration for compressor task
 TaskRegistry.register_lazy(

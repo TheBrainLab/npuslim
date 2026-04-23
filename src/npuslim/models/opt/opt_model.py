@@ -1,5 +1,5 @@
 from ..base_model import BaseLLMModel
-from npuslim.registry import ModelRegistry
+from npuslim.core import ModelRegistry
 
 
 @ModelRegistry.register("OPT", aliases=["OPTModel"])

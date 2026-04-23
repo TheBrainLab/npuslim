@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from npuslim.core.backend import bh
-from npuslim.registry import TaskRegistry
+from npuslim.core import TaskRegistry
 from npuslim.tasks.base_task import BaseTask
 from npuslim.tasks.compressor.loader import ChunkLoader
 

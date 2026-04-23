@@ -8,7 +8,7 @@ import torch
 from loguru import logger
 
 from npuslim.datasets.base_dataset import BaseDataset
-from npuslim.registry import DatasetRegistry
+from npuslim.core import DatasetRegistry
 
 
 @DatasetRegistry.register("Text", aliases=["TextDataset", "text"])

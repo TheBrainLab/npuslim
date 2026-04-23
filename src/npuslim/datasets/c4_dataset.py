@@ -5,7 +5,7 @@ from pathlib import Path
 import torch
 
 from .base_dataset import BaseDataset
-from npuslim.registry import DatasetRegistry
+from npuslim.core import DatasetRegistry
 
 
 @DatasetRegistry.register("C4")

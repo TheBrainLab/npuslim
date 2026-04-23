@@ -10,7 +10,7 @@ from loguru import logger
 from torch.utils.data import DataLoader
 
 from npuslim.algorithms import BaseAlgorithm
-from npuslim.registry import AlgorithmRegistry, SaverRegistry
+from npuslim.core import AlgorithmRegistry, SaverRegistry
 
 if TYPE_CHECKING:
     from npuslim.core.resource_manager import ResourceManager

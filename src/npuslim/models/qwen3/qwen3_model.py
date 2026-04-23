@@ -2,7 +2,7 @@ import re
 
 
 from ..base_model import BaseLLMModel
-from npuslim.registry import ModelRegistry
+from npuslim.core import ModelRegistry
 
 
 @ModelRegistry.register("Qwen3", aliases=["Qwen3Model"])

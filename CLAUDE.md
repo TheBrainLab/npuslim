@@ -7,20 +7,23 @@
 # Use mirror if HuggingFace is inaccessible
 export HF_ENDPOINT="https://hf-mirror.com"
 
-# GPU
-python tools/run.py -c configs/compressor/int8_dyn/qwen3/qwen3_0_6b.yaml
+# GPU (INT8)
+python tools/run.py -c configs/qwen3/qwen3_8b-int8.yaml
 
-# NPU
-python tools/run.py -c configs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b.yaml
+# GPU (GPTQ)
+python tools/run.py -c configs/opt/opt_125m-gptq.yaml
+
+# NPU (use device_map: npu in config)
+python tools/run.py -c configs/qwen3/qwen3_8b-int8.yaml
 ```
 
 ### Deployment (vLLM)
 ```bash
 # GPU
-bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b -d 0 -t 1
+bash tools/serve/deploy_vllm.sh outputs/model -d 0 -t 1
 
 # NPU
-bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b -d 0 -t 1 -q
+bash tools/serve/deploy_vllm.sh outputs/model -d 0 -t 1 -q
 ```
 
 ### Evaluation
@@ -49,60 +52,100 @@ bash tools/eval/run_stress_test.sh outputs/model
 
 ## Architecture
 
-### Core Classes
+### Core Design
 
-**SlimEngine** (`src/npuslim/slim_engine.py`):
-- Orchestrator managing global resources (models, dataloader, tokenizer)
-- Builds/executes task pipeline from config
-- Resources dict: `main_model`, `draft_model`, `student_model`, `dataloader`, `tokenizer`, `engine`
+NPUSlim v2 uses a **streaming-first, chunk-based quantization pipeline**. Instead of loading the full model into memory, it streams through checkpoint shards chunk-by-chunk via `ChunkLoader`, applies algorithms, and writes results incrementally via `StreamingHuggingFaceSaver`.
 
-**Factory Pattern** (`src/npuslim/utils/factory.py`):
-- `ModelFactory.create(config=model_cfg)` - Creates Qwen3, OPT models
-- `DatasetFactory.create(config=dataset_cfg)` - Creates C4, WikiText2, MMLU datasets
-- `TaskFactory.create(task_key, raw_config, resources)` - Creates ptq, eval, save tasks
-- `CompressorFactory.create(algo_name, ...)` - Creates quantization algorithms
-- `SaverFactory.create(format_name, ...)` - Creates HuggingFace/Ascend savers
+### Core Module (`src/npuslim/core/`)
 
-**Base Classes**:
-- `BaseLLMModel`: Model wrapper with HF/ModelScope hub support via `get_hub_class()`
-- `BaseTask`: Abstract task with `ConfigClass` auto-parsing and `_resolve_layer_names()` for glob/regex patterns
-- `BaseCompressorAlgo`: Unified interface with `prepare()`, `calibrate()`, `convert()`, `compress()`, `apply_masks()`
-- `BaseObserver`: Activation/weight observers (AbsMaxActivation, AbsMaxWeight, PTQObserver)
-- `BaseSaver`: Model serialization base class
+**SlimEngine** (`core/engine.py`):
+- Pipeline orchestrator: creates `ResourceManager` from config resources, builds and executes recipe tasks
+- Each task receives `resource_manager` for lazy resource acquisition
 
-### Pipeline Task Types
+**Registry Pattern** (`core/factory.py`):
+- Single `Registry` class with `register()`, `register_lazy()`, `get()`, `create()`, `list()` methods
+- 5 singleton registries: `AlgorithmRegistry`, `ModelRegistry`, `DatasetRegistry`, `TaskRegistry`, `SaverRegistry`
+- `register_algorithm()` decorator for convenience
+- Lazy loading: modules are imported only on first `get()`/`create()` call
 
-- `ptq`: Post-training quantization
-- `eval`: Model evaluation (perplexity, accuracy)
-- `save`: Export quantized model
+**ResourceManager** (`core/resource_manager.py`):
+- Resolves `@resource_id` references from config
+- Lazy model/dataset instantiation via registry lookup
+
+**BackendHandler** (`core/backend.py`):
+- Unified CPU/CUDA/NPU backend abstraction
+
+**bootstrap_from_path()** (`core/bootstrap.py`):
+- CLI bootstrap: YAML loading, config parse/validate, logging setup
+
+### Base Classes
+
+- **BaseAlgorithm** (`algorithms/base_algo.py`): `process_chunk(chunk: ChunkContext) -> ChunkContext` with `on_start()`/`on_finish()` lifecycle hooks
+- **BaseQuantizationAlgorithm** (`algorithms/quantization/base_quant_algo.py`): Adds `set_runtime_context()`, `should_skip_name()` for glob/regex skip matching, `_mark_model_quantized()`
+- **BaseLLMModel** (`models/base_model.py`): Model wrapper with HF/ModelScope hub support, `prepare_empty_model()` for meta-device skeleton
+- **BaseTask** (`tasks/base_task.py`): Lifecycle hooks (`on_start`, `on_finish`, `execute`) with lazy resource acquisition via `ResourceManager`
+- **BaseSaver** (`savers/base_saver.py`): Streaming tensor writer interface
+- **BaseDataset** (`datasets/base_dataset.py`): Dataset with `processor` argument, `collate_fn` static method
+
+### Task Types
+
+- **compressor** (`tasks/compressor/`): Streaming quantization task — handles chunk loading, algorithm invocation, skip-layer resolution, and saver coordination all in one unified task
 
 ### Directory Structure
 
 ```
 src/npuslim/
-├── slim_engine.py          # Main orchestrator
-├── cli/                    # Command-line interface
+├── core/                   # Core framework
+│   ├── engine.py           # SlimEngine orchestrator
+│   ├── factory.py          # Registry pattern (5 singleton registries)
+│   ├── resource_manager.py # Lazy resource acquisition
+│   ├── backend.py          # CPU/CUDA/NPU backend handler
+│   └── bootstrap.py        # CLI bootstrap
+├── config/                 # Config parsing
+│   ├── schema.py           # Dataclasses (EngineConfig, ResourceConfig, etc.)
+│   ├── parser.py           # YAML/dict -> EngineConfig
+│   ├── validator.py        # Reference checking
+│   └── printer.py          # Pretty-printing, logging setup
+├── algorithms/             # Quantization algorithms
+│   ├── base_algo.py        # BaseAlgorithm (process_chunk interface)
+│   └── quantization/
+│       ├── base_quant_algo.py  # Shared runtime context + skip-matching
+│       ├── gptq/           # GPTQ algorithm
+│       └── int8_dynamic/   # INT8 dynamic quantization
+├── models/                 # Model wrappers
+│   ├── base_model.py       # BaseLLMModel
+│   ├── qwen3/              # Qwen3 model
+│   ├── opt/                # OPT model
+│   └── glm5/               # GLM-5 model (GlmMoeDsa)
+├── datasets/               # Calibration datasets
+│   ├── base_dataset.py     # BaseDataset
+│   ├── c4_dataset.py       # C4 dataset (streaming + local cache)
+│   └── text_dataset.py     # Text dataset (JSONL + Parquet)
+├── tasks/                  # Pipeline tasks
+│   ├── base_task.py        # BaseTask with lifecycle hooks
+│   └── compressor/         # Streaming compressor task
+│       ├── context.py      # ChunkContext, LayerInfo, ModuleInfo
+│       ├── loader.py       # ChunkLoader (streaming safetensors reader)
+│       └── task.py         # CompressorTask
+├── savers/                 # Model savers
+│   ├── base_saver.py       # BaseSaver interface
+│   └── hf_saver.py         # StreamingHuggingFaceSaver (safetensors)
+├── hooks/                  # Lifecycle hook system (HookType, HookRegistry)
+├── distributed/            # Distributed execution support
 ├── cann_ops/               # CANN-specific operators
 │   ├── quant/              # Quantization primitives (PTQ, QAT tools)
 │   ├── llm_ptq/            # LLM-specific PTQ utilities
 │   ├── sparse/             # Sparsity utilities
 │   ├── lowbit/             # Low-bit quantization
 │   └── multi_modal/        # Multi-modal support
-├── compressor/
-│   ├── quantizer/          # Quantization algorithms
-│   │   ├── int8_dyn/       # INT8 dynamic quantization
-│   │   ├── gptq/           # GPTQ algorithm
-│   │   ├── quip/           # QuIP algorithm
-│   │   └── sparsegpt/      # SparseGPT pruning + quantization
-│   ├── observers/          # Activation/weight observers
-│   └── core/               # Quantization utilities, LayerWiseScheduler
-├── dataset/                # Calibration datasets (C4, WikiText2, MMLU)
-├── tasks/                  # Pipeline tasks (ptq, eval, save)
-├── saver/                  # Model savers (HuggingFace, Ascend)
 ├── plugins/                # Integration plugins
 │   ├── vllm/               # vLLM model executor plugins
-│   └── vllm_ascend/        # vLLM-Ascend quantization methods
-└── utils/                  # Config parser, backend utilities, factory
+│   │   └── model_executor/models/
+│   │       ├── qwen3_moe.py
+│   │       └── kimi_k2_mcore.py
+│   ├── vllm_ascend/        # vLLM-Ascend quantization methods
+│   └── transformers/       # HuggingFace quantizers
+└── cli/                    # CLI entry point (tools/run.py)
 
 tools/
 ├── run.py                  # Main entry point
@@ -116,48 +159,62 @@ tools/
 ## Config Format
 
 ```yaml
-meta:
-  type: llm
-  work_dir: ./logs
+metadata:
+  name: "Qwen3_INT8_Recipe"
+  description: "INT8 quantization for Qwen3"
 
-model:
-  type: Qwen3  # or OPT
-  model_path: Qwen/Qwen3-0.6B
-  model_hub: hf  # or ms (ModelScope)
-  model_kwargs:
-    trust_remote_code: true
-    low_cpu_mem_usage: true
+resources:
+  - id: qwen3
+    type: Qwen3
+    path: Qwen/Qwen3-0.6B
+    model_hub: hf          # or ms (ModelScope)
+    device_map: cuda       # or cpu, npu
 
-calib_dataset:
-  dataset:
-    type: C4Dataset  # or WikiText2, MMLU, TextDataset
-    num_samples: 256
+  - id: calib_data
+    type: C4
+    num_samples: 128
     max_seq_length: 2048
-  dataloader:
-    batch_size: 1
 
-pipeline:
-  - type: ptq
-    algo_name: INT8Dynamic  # or GPTQ, QuIP, SparseGPT
-    ignore_layers: []  # glob/regex patterns
-    algo_config:
-      w_bits: 8
-
-  - type: eval
-
-  - type: save
-    save_dir: ./outputs
-    format: AscendSaver  # or HuggingFaceSaver
+recipe:
+  - name: "INT8_Quantization"
+    type: compressor
+    model: "@qwen3"                         # Reference to resource
+    dataloader:
+      dataset: "@calib_data"               # Reference to resource
+      batch_size: 1
+    algorithm:
+      type: INT8Dynamic                    # or GPTQ
+      wbits: 8
+    ignore_layers: []                      # glob/regex patterns
+    execution:
+      mode: streaming
+      chunk_size: 4
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs"
 ```
+
+### Config Schema
+
+- **EngineConfig**: `metadata` + `resources` (list) + `recipe` (list of tasks)
+- **ResourceConfig**: `id`, `type`, extra fields passed to constructor
+- **RecipeTaskConfig**: `name`, `type`, `model` (@ref), `dataloader`, `algorithm`, `saver`, `execution`
+- Resource references use `@id` syntax (e.g., `@qwen3`, `@calib_data`)
 
 ## Quantization Algorithms
 
-| Algorithm | Directory | Description |
-|-----------|-----------|-------------|
-| INT8Dynamic | `int8_dyn/` | Per-channel weight, per-token activation |
-| GPTQ | `gptq/` | Activation-aware weight quantization |
-| QuIP | `quip/` | Quaternion-inspired with vector balancing |
-| SparseGPT | `sparsegpt/` | Structured pruning + quantization |
+| Algorithm | Registry Name | Description |
+|-----------|--------------|-------------|
+| INT8Dynamic | `INT8Dynamic` | Per-channel weight, per-token activation quantization |
+| GPTQ | `GPTQ` | Activation-aware weight quantization with Hessian statistics |
+
+## Supported Models
+
+| Model | Registry Name | Description |
+|-------|--------------|-------------|
+| Qwen3 | `Qwen3` (or `Qwen3Model`) | Qwen3 series |
+| OPT | `OPT` (or `OPTModel`) | Meta OPT series |
+| GLM-5 | `GLM5` | GlmMoeDsa with MLA attention |
 
 ## Plugin System
 
@@ -184,11 +241,12 @@ quip = "npuslim.plugins.transformers.quantizers.quantizer_quip:QuipHfQuantizer"
 src/npuslim/plugins/
 ├── vllm/                              # Patches vllm.* modules
 │   └── model_executor/models/
-│       └── qwen3_moe.py               # Patches vllm.model_executor.models.qwen3_moe
+│       ├── qwen3_moe.py               # Patches vllm.model_executor.models.qwen3_moe
+│       └── kimi_k2_mcore.py           # Patches vllm.model_executor.models.kimi_k2_mcore
 ├── vllm_ascend/                       # Patches vllm_ascend.* modules
 │   └── quantization/
 │       ├── method_adapters.py         # Patches vllm_ascend.quantization.method_adapters
-│       └── methods/w4a16_linear.py    # New quantization scheme for vLLM-Ascend
+│       └── methods/w4a16_linear.py    # Quantization scheme for vLLM-Ascend
 └── transformers/                      # Patches transformers.* modules
     └── quantizers/quantizer_quip.py   # Registers QuipHfQuantizer
 ```
@@ -216,8 +274,7 @@ class MyW4A16LinearMethod(AscendLinearScheme):
 
 ## Saver Modules
 
-- **HuggingFaceSaver**: Standard HF format export
-- **AscendSaver**: Generates `quant_model_description.json` for vLLM-Ascend
+- **StreamingHuggingFaceSaver**: Streaming safetensors writer with auto-flush on size threshold. Writes `model.safetensors.index.json`, copies auxiliary files, saves config/tokenizer. Generates `quant_model_description.json` for Ascend runtime when NPU mode is detected.
 
 ## Requirements
 

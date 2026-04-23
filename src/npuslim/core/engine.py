@@ -14,7 +14,7 @@ from loguru import logger
 
 from npuslim.config.schema import EngineConfig
 from npuslim.core.resource_manager import ResourceManager
-from npuslim.registry import TaskRegistry
+from npuslim.core.factory import TaskRegistry
 
 
 class SlimEngine:

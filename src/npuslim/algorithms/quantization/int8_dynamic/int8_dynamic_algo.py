@@ -19,7 +19,7 @@ from loguru import logger
 
 from npuslim.algorithms.quantization.base_quant_algo import BaseQuantizationAlgorithm
 from npuslim.core.backend import bh
-from npuslim.registry import register_algorithm
+from npuslim.core import register_algorithm
 
 if TYPE_CHECKING:
     from npuslim.tasks.compressor.context import ChunkContext, LayerInfo

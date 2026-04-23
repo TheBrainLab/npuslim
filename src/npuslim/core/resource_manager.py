@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, Optional
 from loguru import logger
 
 from npuslim.config.schema import ResourceConfig
-from npuslim.registry import DatasetRegistry, ModelRegistry
+from npuslim.core.factory import DatasetRegistry, ModelRegistry
 
 
 class ResourceManager:

@@ -13,7 +13,7 @@ from loguru import logger
 from safetensors.torch import save_file
 
 from npuslim.core.backend import bh
-from npuslim.registry import SaverRegistry
+from npuslim.core import SaverRegistry
 from npuslim.savers.base_saver import BaseSaver
 
 

@@ -1,4 +1,4 @@
-from npuslim.registry import ModelRegistry
+from npuslim.core import ModelRegistry
 
 ModelRegistry.register_lazy("Qwen3", ".qwen3", aliases=["Qwen3Model"])
 ModelRegistry.register_lazy(
