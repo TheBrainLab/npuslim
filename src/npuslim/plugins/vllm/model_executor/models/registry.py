@@ -9,12 +9,18 @@ logger = init_logger(__name__)
 
 @register_patch("vllm.model_executor.models.registry")
 def patch_model_registry(module):
-    """Register NPUSlim architecture into vLLM model registry."""
-    model_arch = "KimiK2MCoreForCausalLM"
+    """Register NPUSlim architectures into vLLM model registry."""
+    arch_to_entrypoint = {
+        "KimiK2MCoreForCausalLM": (
+            "npuslim.plugins.vllm.model_executor.models.kimi_k2_mcore:"
+            "KimiK2MCoreForCausalLM"
+        ),
+        "KimiK2MCoreV1ForCausalLM": (
+            "npuslim.plugins.vllm.model_executor.models.kimi_k2_mcore_v1:"
+            "KimiK2MCoreV1ForCausalLM"
+        ),
+    }
 
-    module.ModelRegistry.register_model(
-        model_arch,
-        "npuslim.plugins.vllm.model_executor.models.kimi_k2_mcore:"
-        "KimiK2MCoreForCausalLM",
-    )
-    logger.info("Registered custom architecture %s in ModelRegistry", model_arch)
+    for model_arch, entrypoint in arch_to_entrypoint.items():
+        module.ModelRegistry.register_model(model_arch, entrypoint)
+        logger.info("Registered custom architecture %s in ModelRegistry", model_arch)

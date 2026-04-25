@@ -1,23 +1,18 @@
-"""NPUSlim vLLM model entry for Kimi-K2 MCore converted checkpoints.
+"""NPUSlim vLLM model entry for Kimi-K2 MCore (v1 / pre-router-patch version).
 
-This module provides Kimi-K2-MCore specific runtime adaptations on top of
-vLLM's DeepSeek stack:
-1. Force non-MLA GQA execution path (q_proj/k_proj/v_proj).
-2. Use Kimi-specific attention head geometry (kv_channels, num_query_groups).
-3. Support q/k per-head norm weights from the MCore checkpoint.
+This is the previous iteration kept for A/B comparison. Differences from the
+current version (kimi_k2_mcore.py):
+- No MoE expert-capacity / token-drop router patching.
+- Uses custom _QKLayerNormNoBias instead of vLLM RMSNorm for qk norm.
+- Simpler HF config normalisation (no capacity-factor / token-drop defaults).
 """
 
-import math
 from collections.abc import Iterable
 from typing import Any
 
 import torch
 from torch import nn
 from vllm.logger import init_logger
-from vllm.model_executor.layers.batch_invariant import vllm_is_batch_invariant
-from vllm.model_executor.layers.fused_moe.router import (
-    grouped_topk_router as moe_grouped_topk_router,
-)
 from vllm.model_executor.models import deepseek_v2
 
 logger = init_logger(__name__)
@@ -28,33 +23,25 @@ _OPTIONAL_MISSING_BIAS_SUFFIXES = (
     ".mlp.gate.bias",
 )
 
-def _log_warning_once(message: str, *args: object) -> None:
-    log_once = getattr(logger, "warning_once", None)
-    if callable(log_once):
-        log_once(message, *args)
-    else:
-        logger.warning(message, *args)
 
+class _QKLayerNormNoBias(nn.Module):
+    """LayerNorm without bias for q/k layernorm compatibility."""
 
-def _resolve_expert_capacity_factor(hf_config: Any) -> float | None:
-    capacity_factor = getattr(
-        hf_config,
-        "moe_expert_capacity_factor",
-        getattr(hf_config, "expert_capacity_factor", None),
-    )
-    if capacity_factor is None:
-        return 2.0
-    return float(capacity_factor)
+    def __init__(self, hidden_size: int, eps: float = 1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
 
-
-def _resolve_token_drop_policy(hf_config: Any) -> str:
-    return str(
-        getattr(
-            hf_config,
-            "moe_token_drop_policy",
-            getattr(hf_config, "token_drop_policy", "probs"),
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        mean = hidden_states.mean(-1, keepdim=True)
+        variance = (hidden_states - mean).pow(2).mean(-1, keepdim=True)
+        hidden_states = (hidden_states - mean) * torch.rsqrt(
+            variance + self.variance_epsilon
         )
-    )
+        hidden_states = hidden_states * self.weight
+        return hidden_states.to(input_dtype)
 
 
 def _build_rope_parameters_from_hf_config(hf_config: Any) -> dict[str, Any]:
@@ -88,212 +75,11 @@ def _build_rope_parameters_from_hf_config(hf_config: Any) -> dict[str, Any]:
     return rope_params
 
 
-def _build_qk_norm_layer(head_dim: int, eps: float) -> nn.Module:
-    return deepseek_v2.RMSNorm(head_dim, eps=eps)
-
-
-def _apply_kimi_moe_capacity(
-    *,
-    topk_ids: torch.Tensor,
-    topk_weights: torch.Tensor,
-    scores: torch.Tensor,
-    top_k: int,
-    num_experts: int,
-    expert_capacity_factor: float | None,
-    token_drop_policy: str,
-) -> torch.Tensor:
-    if expert_capacity_factor is None:
-        return topk_weights
-
-    num_tokens = topk_ids.shape[0]
-    expert_capacity = int(
-        math.ceil((num_tokens * top_k / num_experts) * expert_capacity_factor)
-    )
-    if expert_capacity <= 0:
-        return topk_weights.new_zeros(topk_weights.shape)
-
-    topk_masked_gates = torch.zeros_like(scores).scatter(1, topk_ids, topk_weights)
-    k = min(expert_capacity, topk_masked_gates.shape[0])
-    if token_drop_policy == "position":
-        capacity_indices = torch.topk(
-            (topk_masked_gates > 0).int(),
-            k=k,
-            dim=0,
-            sorted=False,
-        ).indices
-    else:
-        capacity_indices = torch.topk(
-            topk_masked_gates,
-            k=k,
-            dim=0,
-            sorted=False,
-        ).indices
-
-    capacity_mask = torch.zeros_like(topk_masked_gates).scatter(
-        0, capacity_indices, 1
-    ).bool()
-    topk_masked_gates = topk_masked_gates * capacity_mask
-    return topk_masked_gates.gather(1, topk_ids)
-
-
-def _kimi_grouped_topk(
-    *,
-    hidden_states: torch.Tensor,
-    gating_output: torch.Tensor,
-    topk: int,
-    renormalize: bool,
-    num_expert_group: int,
-    topk_group: int,
-    scoring_func: str,
-    routed_scaling_factor: float,
-    e_score_correction_bias: torch.Tensor | None,
-    expert_capacity_factor: float | None,
-    token_drop_policy: str,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    del hidden_states
-
-    if scoring_func == "softmax":
-        scores = torch.softmax(gating_output, dim=-1)
-    elif scoring_func == "sigmoid":
-        scores = gating_output.sigmoid()
-    else:
-        raise ValueError(f"Unsupported scoring function: {scoring_func}")
-
-    num_tokens, num_experts = scores.shape
-    scores_for_choice = scores
-    if e_score_correction_bias is not None:
-        scores_for_choice = scores_for_choice + e_score_correction_bias.unsqueeze(0)
-
-    safe_topk_group = min(max(1, topk_group), num_expert_group)
-    experts_per_group = max(1, num_experts // num_expert_group)
-    group_top_n = min(max(1, topk // safe_topk_group), experts_per_group)
-    group_scores = scores_for_choice.view(num_tokens, num_expert_group, -1).topk(
-        group_top_n, dim=-1
-    )[0].sum(dim=-1)
-
-    use_sorted = vllm_is_batch_invariant()
-    group_idx = torch.topk(
-        group_scores, k=safe_topk_group, dim=-1, sorted=use_sorted
-    ).indices
-    group_mask = torch.zeros_like(group_scores)
-    group_mask.scatter_(1, group_idx, 1)
-    score_mask = (
-        group_mask.unsqueeze(-1)
-        .expand(num_tokens, num_expert_group, num_experts // num_expert_group)
-        .reshape(num_tokens, -1)
-    )
-    tmp_scores = scores_for_choice.masked_fill(~score_mask.bool(), float("-inf"))
-    topk_ids = torch.topk(tmp_scores, k=topk, dim=-1, sorted=use_sorted).indices
-    topk_weights = scores.gather(1, topk_ids)
-
-    if renormalize:
-        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
-    if routed_scaling_factor != 1.0:
-        topk_weights = topk_weights * routed_scaling_factor
-
-    topk_weights = _apply_kimi_moe_capacity(
-        topk_ids=topk_ids,
-        topk_weights=topk_weights,
-        scores=scores,
-        top_k=topk,
-        num_experts=num_experts,
-        expert_capacity_factor=expert_capacity_factor,
-        token_drop_policy=token_drop_policy,
-    )
-    return topk_weights.to(torch.float32), topk_ids.to(torch.int32)
-
-
-class _KimiGroupedTopKRouter(moe_grouped_topk_router.GroupedTopKRouter):
-    def __init__(
-        self,
-        *,
-        expert_capacity_factor: float | None,
-        token_drop_policy: str,
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(**kwargs)
-        self.expert_capacity_factor = expert_capacity_factor
-        self.token_drop_policy = token_drop_policy
-
-    @classmethod
-    def from_existing(
-        cls,
-        router: moe_grouped_topk_router.GroupedTopKRouter,
-        *,
-        expert_capacity_factor: float | None,
-        token_drop_policy: str,
-    ) -> "_KimiGroupedTopKRouter":
-        new_router = cls(
-            top_k=router.top_k,
-            global_num_experts=router.global_num_experts,
-            eplb_state=router.eplb_state,
-            num_expert_group=router.num_expert_group,
-            topk_group=router.topk_group,
-            renormalize=router.renormalize,
-            scoring_func=router.scoring_func,
-            routed_scaling_factor=router.routed_scaling_factor,
-            e_score_correction_bias=router.e_score_correction_bias,
-            num_fused_shared_experts=router.num_fused_shared_experts,
-            enable_eplb=router.enable_eplb,
-            indices_type_getter=router.indices_type_getter,
-            expert_capacity_factor=expert_capacity_factor,
-            token_drop_policy=token_drop_policy,
-        )
-        new_router.set_capture_fn(router.capture_fn)
-        return new_router
-
-    def _compute_routing(
-        self,
-        hidden_states: torch.Tensor,
-        router_logits: torch.Tensor,
-        indices_type: torch.dtype | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        num_experts = router_logits.shape[-1]
-        valid_grouping = num_experts > self.num_expert_group and (
-            num_experts % self.num_expert_group == 0
-        )
-        if not valid_grouping:
-            return super()._compute_routing(hidden_states, router_logits, indices_type)
-
-        return _kimi_grouped_topk(
-            hidden_states=hidden_states,
-            gating_output=router_logits,
-            topk=self.top_k,
-            renormalize=self.renormalize,
-            num_expert_group=self.num_expert_group,
-            topk_group=self.topk_group,
-            scoring_func=self.scoring_func,
-            routed_scaling_factor=self.routed_scaling_factor,
-            e_score_correction_bias=self.e_score_correction_bias,
-            expert_capacity_factor=self.expert_capacity_factor,
-            token_drop_policy=self.token_drop_policy,
-        )
-
-
-def _patch_kimi_moe_router(moe: deepseek_v2.DeepseekV2MoE, config: Any) -> None:
-    if getattr(config, "topk_method", None) != "noaux_tc":
-        return
-
-    experts = getattr(moe, "experts", None)
-    if experts is None:
-        return
-
-    old_router = getattr(experts, "router", None)
-    if not isinstance(old_router, moe_grouped_topk_router.GroupedTopKRouter):
-        return
-    if isinstance(old_router, _KimiGroupedTopKRouter):
-        return
-
-    new_router = _KimiGroupedTopKRouter.from_existing(
-        old_router,
-        expert_capacity_factor=_resolve_expert_capacity_factor(config),
-        token_drop_policy=_resolve_token_drop_policy(config),
-    )
-    experts.router = new_router
-    if hasattr(experts, "runner") and hasattr(experts.runner, "router"):
-        experts.runner.router = new_router
-    if hasattr(experts, "routing_method_type"):
-        experts.routing_method_type = new_router.routing_method_type
+def _build_qk_norm_layer(head_dim: int, eps: float, hf_config: Any) -> nn.Module:
+    use_rmsnorm = bool(getattr(hf_config, "use_rmsnorm_for_qk", False))
+    if use_rmsnorm:
+        return deepseek_v2.RMSNorm(head_dim, eps=eps)
+    return _QKLayerNormNoBias(head_dim, eps=eps)
 
 
 def _prepare_kimi_k2_mcore_hf_config(hf_config: Any) -> None:
@@ -325,25 +111,8 @@ def _prepare_kimi_k2_mcore_hf_config(hf_config: Any) -> None:
         if rope_params:
             hf_config.rope_parameters = rope_params
 
-    if (
-        getattr(hf_config, "moe_expert_capacity_factor", None) is None
-        and getattr(hf_config, "expert_capacity_factor", None) is None
-    ):
-        _log_warning_once(
-            "Config missing `moe_expert_capacity_factor`/`expert_capacity_factor`; "
-            "defaulting to 2.0 for Kimi-K2-MCore alignment."
-        )
-    expert_capacity_factor = _resolve_expert_capacity_factor(hf_config)
-    setattr(hf_config, "moe_expert_capacity_factor", expert_capacity_factor)
-    setattr(hf_config, "expert_capacity_factor", expert_capacity_factor)
 
-    token_drop_policy = _resolve_token_drop_policy(hf_config)
-    setattr(hf_config, "moe_token_drop_policy", token_drop_policy)
-    if getattr(hf_config, "token_drop_policy", None) is None:
-        setattr(hf_config, "token_drop_policy", token_drop_policy)
-
-
-class KimiK2MCoreAttention(nn.Module):
+class KimiK2MCoreV1Attention(nn.Module):
     """GQA attention for Kimi-K2-MCore with optional q/k per-head norm."""
 
     def __init__(
@@ -424,8 +193,8 @@ class KimiK2MCoreAttention(nn.Module):
 
         eps = float(getattr(config, "rms_norm_eps", 1e-6))
         if bool(getattr(config, "qk_layernorm", False)):
-            self.q_layernorm = _build_qk_norm_layer(self.head_dim, eps)
-            self.k_layernorm = _build_qk_norm_layer(self.head_dim, eps)
+            self.q_layernorm = _build_qk_norm_layer(self.head_dim, eps, config)
+            self.k_layernorm = _build_qk_norm_layer(self.head_dim, eps, config)
         else:
             self.q_layernorm = None
             self.k_layernorm = None
@@ -454,7 +223,7 @@ class KimiK2MCoreAttention(nn.Module):
         return output
 
 
-class KimiK2MCoreDecoderLayer(deepseek_v2.DeepseekV2DecoderLayer):
+class KimiK2MCoreV1DecoderLayer(deepseek_v2.DeepseekV2DecoderLayer):
     """Decoder layer overriding attention with Kimi-K2-MCore GQA attention."""
 
     def __init__(
@@ -479,7 +248,7 @@ class KimiK2MCoreDecoderLayer(deepseek_v2.DeepseekV2DecoderLayer):
         self.layer_idx = layer_idx
 
         self.use_mha = True
-        self.self_attn = KimiK2MCoreAttention(
+        self.self_attn = KimiK2MCoreV1Attention(
             config=config,
             hidden_size=self.hidden_size,
             num_heads=config.num_attention_heads,
@@ -501,7 +270,6 @@ class KimiK2MCoreDecoderLayer(deepseek_v2.DeepseekV2DecoderLayer):
                 quant_config=quant_config,
                 prefix=f"{prefix}.mlp",
             )
-            _patch_kimi_moe_router(self.mlp, config)
         else:
             self.mlp = deepseek_v2.DeepseekV2MLP(
                 hidden_size=config.hidden_size,
@@ -552,7 +320,7 @@ class KimiK2MCoreDecoderLayer(deepseek_v2.DeepseekV2DecoderLayer):
 
 
 @deepseek_v2.support_torch_compile
-class KimiK2MCoreModel(deepseek_v2.DeepseekV2Model):
+class KimiK2MCoreV1Model(deepseek_v2.DeepseekV2Model):
     """DeepSeek model wrapper with Kimi-K2-MCore decoder layer."""
 
     def __init__(self, *, vllm_config: Any, prefix: str = ""):
@@ -588,7 +356,7 @@ class KimiK2MCoreModel(deepseek_v2.DeepseekV2Model):
 
         self.start_layer, self.end_layer, self.layers = deepseek_v2.make_layers(
             config.num_hidden_layers,
-            lambda prefix: KimiK2MCoreDecoderLayer(
+            lambda prefix: KimiK2MCoreV1DecoderLayer(
                 vllm_config, prefix, topk_indices_buffer=topk_indices_buffer
             ),
             prefix=f"{prefix}.layers",
@@ -607,10 +375,10 @@ class KimiK2MCoreModel(deepseek_v2.DeepseekV2Model):
         self.aux_hidden_state_layers = ()
 
 
-class KimiK2MCoreForCausalLM(deepseek_v2.DeepseekV3ForCausalLM):
-    """Runtime model for `architectures = ["KimiK2MCoreForCausalLM"]`."""
+class KimiK2MCoreV1ForCausalLM(deepseek_v2.DeepseekV3ForCausalLM):
+    """Runtime model for `architectures = ["KimiK2MCoreV1ForCausalLM"]`."""
 
-    model_cls = KimiK2MCoreModel
+    model_cls = KimiK2MCoreV1Model
 
     def __init__(self, *, vllm_config: Any, prefix: str = ""):
         _prepare_kimi_k2_mcore_hf_config(vllm_config.model_config.hf_config)
