@@ -38,4 +38,4 @@ recipe:
       chunk_size: 1
     saver:
       type: StreamingHuggingFaceSaver
-      save_dir: "./outputs/Qwen3-0.6B-SparseGPT"
+      save_dir: "./outputs"

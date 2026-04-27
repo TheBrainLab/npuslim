@@ -29,4 +29,4 @@ recipe:
       chunk_size: 4
     saver:
       type: StreamingHuggingFaceSaver
-      save_dir: "./outputs/Qwen3-8B-INT8"
+      save_dir: "./outputs"

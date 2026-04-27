@@ -7,7 +7,7 @@ metadata:
 resources:
   - id: qwen
     type: Qwen3Model
-    path: Qwen/Qwen3-8B
+    path: Qwen/Qwen3-0.6B
     device_map: cpu
 
   - id: calib_data

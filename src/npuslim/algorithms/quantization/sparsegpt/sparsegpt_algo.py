@@ -25,7 +25,7 @@ from npuslim.algorithms.quantization.gptq.gptq_algo import (
     _get_child_module,
     _is_transformers_conv1d,
 )
-from npuslim.registry import register_algorithm
+from npuslim.core import register_algorithm
 
 
 def _validate_sparsegpt_params(
