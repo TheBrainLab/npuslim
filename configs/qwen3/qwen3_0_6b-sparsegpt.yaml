@@ -12,9 +12,10 @@ resources:
     device_map: cpu
 
   - id: calib_data
-    type: C4Dataset
+    type: TextDataset
+    data_path: dataset/sharegpt_gpt4_qwen/sharegpt_gpt4-qwen3_a22B_output.jsonl
     num_samples: 128
-    max_seq_length: 2048
+    max_seq_length: 4096
 
 recipe:
   - name: "SparseGPT_Pruning"
@@ -27,9 +28,9 @@ recipe:
       pin_memory: true
     algorithm:
       type: SparseGPT
-      # sparsity: 0.5
-      prunen: 2
-      prunem: 4
+      sparsity: 0.5
+      # prunen: 2
+      # prunem: 4
       blocksize: 128
       percdamp: 0.01
     ignore_layers: []

@@ -70,6 +70,13 @@ def _validate_sparsegpt_params(
             f"[SparseGPT] invalid N:M setting, require prunen <= prunem, got {prunen}:{prunem}."
         )
 
+    if prunen > 0 and sparsity > 0:
+        logger.warning(
+            f"[SparseGPT] both `sparsity` ({sparsity}) and `prunen:prunem` "
+            f"({prunen}:{prunem}) are set — N:M semi-structured mode takes "
+            f"precedence; `sparsity` is ignored."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Per-layer pruning module
