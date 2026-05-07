@@ -11,11 +11,11 @@ Usage:
         module.foo = new_foo
 """
 
+from __future__ import annotations
+
 from typing import Callable
 
-from vllm.logger import init_logger
-
-logger = init_logger(__name__)
+from loguru import logger
 
 # Global registry: target_module -> list of patch functions
 _PATCH_REGISTRY: dict[str, list[Callable]] = {}

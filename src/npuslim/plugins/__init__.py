@@ -5,7 +5,29 @@ Provides automatic registration of NPUSlim quantization methods
 with various deployment backends (vLLM, HuggingFace, etc.).
 """
 
+from __future__ import annotations
+
+import importlib
+import importlib.util
+
 _REGISTERED = False
+
+
+def _module_available(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
+
+
+def _load_backend_name() -> str:
+    from npuslim.core.backend import bh
+
+    return bh.name
+
+
+def _register_plugin(package_name: str) -> None:
+    module = importlib.import_module(package_name)
+    register_fn = getattr(module, "register", None)
+    if callable(register_fn):
+        register_fn()
 
 
 def register():
@@ -19,21 +41,16 @@ def register():
     if _REGISTERED:
         return
 
-    from npuslim.core.backend import bh
+    if _module_available("vllm"):
+        _register_plugin("npuslim.plugins.vllm")
 
-    from .transformers import register as register_hf
-    from .vllm import register as register_vllm_core
+    _register_plugin("npuslim.plugins.transformers")
 
-    # Register vLLM core patches first (model patches, etc.)
-    register_vllm_core()
-    # Register HuggingFace transformers patches
-    register_hf()
+    if _load_backend_name() == "npu" and _module_available("vllm_ascend"):
+        _register_plugin("npuslim.plugins.vllm_ascend")
 
-    # Only register vLLM-Ascend specific patches when NPU is available
-    if bh.name == "npu":
-        from .vllm_ascend import register as register_vllm_ascend
-
-        register_vllm_ascend()
+    if _module_available("speculators"):
+        _register_plugin("npuslim.plugins.speculators")
 
     _REGISTERED = True
 

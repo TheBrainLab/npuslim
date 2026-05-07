@@ -12,8 +12,28 @@ dependencies = [
     "loguru",
     "datasets",
     "transformers<5.0.0",
+]
+
+[project.optional-dependencies]
+eval = [
     "lm-eval[api]",
     "evalscope[perf]",
+]
+vllm = [
+    "vllm",
+]
+npu = [
+    "vllm-ascend",
+]
+speculators = [
+    "speculators",
+]
+all = [
+    "lm-eval[api]",
+    "evalscope[perf]",
+    "vllm",
+    "vllm-ascend",
+    "speculators",
 ]
 
 [project.scripts]
