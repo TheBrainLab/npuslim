@@ -1,11 +1,15 @@
-"""NPUSlim vLLM model entry for Kimi-K2 MCore converted checkpoints.
+"""NPUSlim vLLM model entry for Kimi-K2 MCore.
 
-This module provides Kimi-K2-MCore specific runtime adaptations on top of
-vLLM's DeepSeek stack:
-1. Force non-MLA GQA execution path (q_proj/k_proj/v_proj).
-2. Use Kimi-specific attention head geometry (kv_channels, num_query_groups).
-3. Support q/k per-head norm weights from the MCore checkpoint.
+This adapter keeps the stable vLLM DeepSeek-V2/3 execution structure used by
+the previous Kimi plugin, while aligning adapter-owned runtime behavior with
+the fixed reference modeling:
+- grouped-query attention with q/k RMSNorm
+- RoPE parameters normalized from the HF config
+- runtime helpers prefer NPU ops when they are available
+- missing optional bias tensors are zero-initialized during weight loading
 """
+
+from __future__ import annotations
 
 import math
 from collections.abc import Iterable
@@ -14,13 +18,18 @@ from typing import Any
 import torch
 from torch import nn
 from vllm.logger import init_logger
-from vllm.model_executor.layers.batch_invariant import vllm_is_batch_invariant
-from vllm.model_executor.layers.fused_moe.router import (
-    grouped_topk_router as moe_grouped_topk_router,
+from vllm.model_executor.model_loader.weight_utils import (
+    default_weight_loader,
 )
 from vllm.model_executor.models import deepseek_v2
+from vllm.model_executor.models.utils import is_pp_missing_parameter
 
 logger = init_logger(__name__)
+
+try:
+    import torch_npu
+except ImportError:
+    torch_npu = None
 
 _OPTIONAL_MISSING_BIAS_SUFFIXES = (
     ".self_attn.q_layernorm.bias",
@@ -28,37 +37,32 @@ _OPTIONAL_MISSING_BIAS_SUFFIXES = (
     ".mlp.gate.bias",
 )
 
-def _log_warning_once(message: str, *args: object) -> None:
-    log_once = getattr(logger, "warning_once", None)
-    if callable(log_once):
-        log_once(message, *args)
-    else:
-        logger.warning(message, *args)
+_NPU_RMS_NORM = getattr(torch_npu, "npu_rms_norm", None) if torch_npu is not None else None
 
 
-def _resolve_expert_capacity_factor(hf_config: Any) -> float | None:
-    capacity_factor = getattr(
-        hf_config,
-        "moe_expert_capacity_factor",
-        getattr(hf_config, "expert_capacity_factor", None),
-    )
-    if capacity_factor is None:
-        return 2.0
-    return float(capacity_factor)
+class DeepseekV3RMSNorm(nn.Module):
+    def __init__(self, hidden_size: int, eps: float = 1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
+        self.bias = nn.Parameter(torch.zeros(hidden_size))
 
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if _NPU_RMS_NORM is not None:
+            output, _ = _NPU_RMS_NORM(
+                hidden_states, self.weight, epsilon=self.variance_epsilon,
+            )
+            return output + self.bias
 
-def _resolve_token_drop_policy(hf_config: Any) -> str:
-    return str(
-        getattr(
-            hf_config,
-            "moe_token_drop_policy",
-            getattr(hf_config, "token_drop_policy", "probs"),
+        hidden_fp32 = hidden_states.float()
+        weight_fp32 = self.weight.float()
+        normed_fp32 = hidden_fp32 * torch.rsqrt(
+            hidden_fp32.pow(2).mean(dim=-1, keepdim=True) + self.variance_epsilon
         )
-    )
+        return (normed_fp32 * weight_fp32).to(hidden_states.dtype) + self.bias
 
 
 def _build_rope_parameters_from_hf_config(hf_config: Any) -> dict[str, Any]:
-    """Build vLLM rope_parameters from HF config fields."""
     rope_scaling = getattr(hf_config, "rope_scaling", None) or {}
     rope_params: dict[str, Any] = {}
 
@@ -68,6 +72,10 @@ def _build_rope_parameters_from_hf_config(hf_config: Any) -> dict[str, Any]:
 
     rope_type = rope_scaling.get("rope_type") or rope_scaling.get("type")
     if rope_type is not None:
+        # Kimi-K2 MCore checkpoints store HF-style "yarn", but the reference
+        # train/baseline path matches vLLM's DeepSeek-specific rotary variant.
+        if rope_type == "yarn":
+            rope_type = "deepseek_yarn"
         rope_params["rope_type"] = rope_type
 
     for key in (
@@ -88,216 +96,8 @@ def _build_rope_parameters_from_hf_config(hf_config: Any) -> dict[str, Any]:
     return rope_params
 
 
-def _build_qk_norm_layer(head_dim: int, eps: float) -> nn.Module:
-    return deepseek_v2.RMSNorm(head_dim, eps=eps)
-
-
-def _apply_kimi_moe_capacity(
-    *,
-    topk_ids: torch.Tensor,
-    topk_weights: torch.Tensor,
-    scores: torch.Tensor,
-    top_k: int,
-    num_experts: int,
-    expert_capacity_factor: float | None,
-    token_drop_policy: str,
-) -> torch.Tensor:
-    if expert_capacity_factor is None:
-        return topk_weights
-
-    num_tokens = topk_ids.shape[0]
-    expert_capacity = int(
-        math.ceil((num_tokens * top_k / num_experts) * expert_capacity_factor)
-    )
-    if expert_capacity <= 0:
-        return topk_weights.new_zeros(topk_weights.shape)
-
-    topk_masked_gates = torch.zeros_like(scores).scatter(1, topk_ids, topk_weights)
-    k = min(expert_capacity, topk_masked_gates.shape[0])
-    if token_drop_policy == "position":
-        capacity_indices = torch.topk(
-            (topk_masked_gates > 0).int(),
-            k=k,
-            dim=0,
-            sorted=False,
-        ).indices
-    else:
-        capacity_indices = torch.topk(
-            topk_masked_gates,
-            k=k,
-            dim=0,
-            sorted=False,
-        ).indices
-
-    capacity_mask = torch.zeros_like(topk_masked_gates).scatter(
-        0, capacity_indices, 1
-    ).bool()
-    topk_masked_gates = topk_masked_gates * capacity_mask
-    return topk_masked_gates.gather(1, topk_ids)
-
-
-def _kimi_grouped_topk(
-    *,
-    hidden_states: torch.Tensor,
-    gating_output: torch.Tensor,
-    topk: int,
-    renormalize: bool,
-    num_expert_group: int,
-    topk_group: int,
-    scoring_func: str,
-    routed_scaling_factor: float,
-    e_score_correction_bias: torch.Tensor | None,
-    expert_capacity_factor: float | None,
-    token_drop_policy: str,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    del hidden_states
-
-    if scoring_func == "softmax":
-        scores = torch.softmax(gating_output, dim=-1)
-    elif scoring_func == "sigmoid":
-        scores = gating_output.sigmoid()
-    else:
-        raise ValueError(f"Unsupported scoring function: {scoring_func}")
-
-    num_tokens, num_experts = scores.shape
-    scores_for_choice = scores
-    if e_score_correction_bias is not None:
-        scores_for_choice = scores_for_choice + e_score_correction_bias.unsqueeze(0)
-
-    safe_topk_group = min(max(1, topk_group), num_expert_group)
-    experts_per_group = max(1, num_experts // num_expert_group)
-    group_top_n = min(max(1, topk // safe_topk_group), experts_per_group)
-    group_scores = scores_for_choice.view(num_tokens, num_expert_group, -1).topk(
-        group_top_n, dim=-1
-    )[0].sum(dim=-1)
-
-    use_sorted = vllm_is_batch_invariant()
-    group_idx = torch.topk(
-        group_scores, k=safe_topk_group, dim=-1, sorted=use_sorted
-    ).indices
-    group_mask = torch.zeros_like(group_scores)
-    group_mask.scatter_(1, group_idx, 1)
-    score_mask = (
-        group_mask.unsqueeze(-1)
-        .expand(num_tokens, num_expert_group, num_experts // num_expert_group)
-        .reshape(num_tokens, -1)
-    )
-    tmp_scores = scores_for_choice.masked_fill(~score_mask.bool(), float("-inf"))
-    topk_ids = torch.topk(tmp_scores, k=topk, dim=-1, sorted=use_sorted).indices
-    topk_weights = scores.gather(1, topk_ids)
-
-    if renormalize:
-        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
-    if routed_scaling_factor != 1.0:
-        topk_weights = topk_weights * routed_scaling_factor
-
-    topk_weights = _apply_kimi_moe_capacity(
-        topk_ids=topk_ids,
-        topk_weights=topk_weights,
-        scores=scores,
-        top_k=topk,
-        num_experts=num_experts,
-        expert_capacity_factor=expert_capacity_factor,
-        token_drop_policy=token_drop_policy,
-    )
-    return topk_weights.to(torch.float32), topk_ids.to(torch.int32)
-
-
-class _KimiGroupedTopKRouter(moe_grouped_topk_router.GroupedTopKRouter):
-    def __init__(
-        self,
-        *,
-        expert_capacity_factor: float | None,
-        token_drop_policy: str,
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(**kwargs)
-        self.expert_capacity_factor = expert_capacity_factor
-        self.token_drop_policy = token_drop_policy
-
-    @classmethod
-    def from_existing(
-        cls,
-        router: moe_grouped_topk_router.GroupedTopKRouter,
-        *,
-        expert_capacity_factor: float | None,
-        token_drop_policy: str,
-    ) -> "_KimiGroupedTopKRouter":
-        new_router = cls(
-            top_k=router.top_k,
-            global_num_experts=router.global_num_experts,
-            eplb_state=router.eplb_state,
-            num_expert_group=router.num_expert_group,
-            topk_group=router.topk_group,
-            renormalize=router.renormalize,
-            scoring_func=router.scoring_func,
-            routed_scaling_factor=router.routed_scaling_factor,
-            e_score_correction_bias=router.e_score_correction_bias,
-            num_fused_shared_experts=router.num_fused_shared_experts,
-            enable_eplb=router.enable_eplb,
-            indices_type_getter=router.indices_type_getter,
-            expert_capacity_factor=expert_capacity_factor,
-            token_drop_policy=token_drop_policy,
-        )
-        new_router.set_capture_fn(router.capture_fn)
-        return new_router
-
-    def _compute_routing(
-        self,
-        hidden_states: torch.Tensor,
-        router_logits: torch.Tensor,
-        indices_type: torch.dtype | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        num_experts = router_logits.shape[-1]
-        valid_grouping = num_experts > self.num_expert_group and (
-            num_experts % self.num_expert_group == 0
-        )
-        if not valid_grouping:
-            return super()._compute_routing(hidden_states, router_logits, indices_type)
-
-        return _kimi_grouped_topk(
-            hidden_states=hidden_states,
-            gating_output=router_logits,
-            topk=self.top_k,
-            renormalize=self.renormalize,
-            num_expert_group=self.num_expert_group,
-            topk_group=self.topk_group,
-            scoring_func=self.scoring_func,
-            routed_scaling_factor=self.routed_scaling_factor,
-            e_score_correction_bias=self.e_score_correction_bias,
-            expert_capacity_factor=self.expert_capacity_factor,
-            token_drop_policy=self.token_drop_policy,
-        )
-
-
-def _patch_kimi_moe_router(moe: deepseek_v2.DeepseekV2MoE, config: Any) -> None:
-    if getattr(config, "topk_method", None) != "noaux_tc":
-        return
-
-    experts = getattr(moe, "experts", None)
-    if experts is None:
-        return
-
-    old_router = getattr(experts, "router", None)
-    if not isinstance(old_router, moe_grouped_topk_router.GroupedTopKRouter):
-        return
-    if isinstance(old_router, _KimiGroupedTopKRouter):
-        return
-
-    new_router = _KimiGroupedTopKRouter.from_existing(
-        old_router,
-        expert_capacity_factor=_resolve_expert_capacity_factor(config),
-        token_drop_policy=_resolve_token_drop_policy(config),
-    )
-    experts.router = new_router
-    if hasattr(experts, "runner") and hasattr(experts.runner, "router"):
-        experts.runner.router = new_router
-    if hasattr(experts, "routing_method_type"):
-        experts.routing_method_type = new_router.routing_method_type
-
-
 def _prepare_kimi_k2_mcore_hf_config(hf_config: Any) -> None:
-    """Normalize HF config to Kimi-K2-MCore GQA behavior."""
+    """Normalize HF config to the Kimi-K2 MCore vLLM execution path."""
     num_query_groups = getattr(hf_config, "num_query_groups", None)
     if num_query_groups is not None:
         num_query_groups = int(num_query_groups)
@@ -318,33 +118,52 @@ def _prepare_kimi_k2_mcore_hf_config(hf_config: Any) -> None:
         if getattr(hf_config, attr, None) != value:
             setattr(hf_config, attr, value)
 
-    if not hasattr(hf_config, "rope_parameters") or not getattr(
-        hf_config, "rope_parameters"
-    ):
-        rope_params = _build_rope_parameters_from_hf_config(hf_config)
-        if rope_params:
-            hf_config.rope_parameters = rope_params
+    rope_params = _build_rope_parameters_from_hf_config(hf_config)
+    if rope_params:
+        hf_config.rope_parameters = rope_params
 
-    if (
-        getattr(hf_config, "moe_expert_capacity_factor", None) is None
-        and getattr(hf_config, "expert_capacity_factor", None) is None
-    ):
-        _log_warning_once(
-            "Config missing `moe_expert_capacity_factor`/`expert_capacity_factor`; "
-            "defaulting to 2.0 for Kimi-K2-MCore alignment."
+
+def _reorder_fused_qkv_weight_for_vllm(
+    fused_qkv: torch.Tensor,
+    *,
+    num_attention_heads: int,
+    num_query_groups: int,
+    head_dim: int,
+) -> torch.Tensor:
+    """Convert Megatron GQA-interleaved fused_qkv rows into vLLM Q|K|V order."""
+    # Checkpoint layout follows the fused Megatron/GQA grouping:
+    # [Q_g0, K_g0, V_g0, Q_g1, K_g1, V_g1, ...]
+    # vLLM QKVParallelLinear expects contiguous blocks instead:
+    # [all Q | all K | all V]
+    heads_per_group = num_attention_heads // num_query_groups
+    rows_per_group = (heads_per_group + 2) * head_dim
+    expected_rows = num_query_groups * rows_per_group
+    if fused_qkv.shape[0] != expected_rows:
+        raise ValueError(
+            "Unexpected fused_qkv rows for Kimi-K2-MCore: "
+            f"got {fused_qkv.shape[0]}, expected {expected_rows} "
+            f"(num_attention_heads={num_attention_heads}, "
+            f"num_query_groups={num_query_groups}, head_dim={head_dim})"
         )
-    expert_capacity_factor = _resolve_expert_capacity_factor(hf_config)
-    setattr(hf_config, "moe_expert_capacity_factor", expert_capacity_factor)
-    setattr(hf_config, "expert_capacity_factor", expert_capacity_factor)
 
-    token_drop_policy = _resolve_token_drop_policy(hf_config)
-    setattr(hf_config, "moe_token_drop_policy", token_drop_policy)
-    if getattr(hf_config, "token_drop_policy", None) is None:
-        setattr(hf_config, "token_drop_policy", token_drop_policy)
+    grouped = fused_qkv.view(num_query_groups, rows_per_group, *fused_qkv.shape[1:])
+    q, k, v = torch.split(
+        grouped,
+        [heads_per_group * head_dim, head_dim, head_dim],
+        dim=1,
+    )
+    return torch.cat(
+        [
+            q.reshape(num_attention_heads * head_dim, *fused_qkv.shape[1:]),
+            k.reshape(num_query_groups * head_dim, *fused_qkv.shape[1:]),
+            v.reshape(num_query_groups * head_dim, *fused_qkv.shape[1:]),
+        ],
+        dim=0,
+    )
 
 
 class KimiK2MCoreAttention(nn.Module):
-    """GQA attention for Kimi-K2-MCore with optional q/k per-head norm."""
+    """Grouped-query attention with q/k RMSNorm for Kimi-K2 MCore."""
 
     def __init__(
         self,
@@ -424,8 +243,8 @@ class KimiK2MCoreAttention(nn.Module):
 
         eps = float(getattr(config, "rms_norm_eps", 1e-6))
         if bool(getattr(config, "qk_layernorm", False)):
-            self.q_layernorm = _build_qk_norm_layer(self.head_dim, eps)
-            self.k_layernorm = _build_qk_norm_layer(self.head_dim, eps)
+            self.q_layernorm = DeepseekV3RMSNorm(self.head_dim, eps=eps)
+            self.k_layernorm = DeepseekV3RMSNorm(self.head_dim, eps=eps)
         else:
             self.q_layernorm = None
             self.k_layernorm = None
@@ -449,9 +268,90 @@ class KimiK2MCoreAttention(nn.Module):
             k = k.view(-1, self.kv_size)
 
         q, k = self.rotary_emb(positions, q, k)
+
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
+
         return output
+
+
+def _baseline_grouped_topk_with_capacity(
+    router_logits: torch.Tensor,
+    top_k: int,
+    num_expert_group: int,
+    topk_group: int,
+    capacity_factor: float | None,
+    pad_to_capacity: bool,
+    drop_policy: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Grouped top-k routing with capacity-based token dropping.
+
+    Ported from ``KimiK2MCoreV2MoEGate._topk_with_capacity`` to align V1
+    routing with the baseline.  Returns ``(topk_weights, topk_ids)`` *without*
+    ``routed_scaling_factor`` — ``DeepseekV2MoE.forward`` applies it post-hoc.
+    """
+    num_tokens, num_experts = router_logits.shape
+    scores = router_logits.float().sigmoid()
+
+    # Grouped expert selection (no bias — baseline doesn't use it)
+    if num_expert_group > 0 and topk_group > 0:
+        per_group_topk = max(1, top_k // topk_group)
+        group_scores = (
+            scores.view(num_tokens, num_expert_group, -1)
+            .topk(per_group_topk, dim=-1)[0]
+            .sum(dim=-1)
+        )
+        group_idx = torch.topk(
+            group_scores, k=topk_group, dim=-1, sorted=False
+        )[1]
+        group_mask = torch.zeros_like(group_scores)
+        group_mask.scatter_(1, group_idx, 1)
+        score_mask = (
+            group_mask.unsqueeze(-1)
+            .expand(num_tokens, num_expert_group, num_experts // num_expert_group)
+            .reshape(num_tokens, -1)
+        )
+        masked_scores = scores.masked_fill(~score_mask.bool(), float("-inf"))
+        _, top_indices = torch.topk(masked_scores, k=top_k, dim=-1, sorted=False)
+    else:
+        _, top_indices = torch.topk(scores, k=top_k, dim=-1)
+
+    # Normalize
+    selected_scores = torch.gather(scores, dim=1, index=top_indices)
+    probs = selected_scores / (selected_scores.sum(dim=-1, keepdim=True) + 1e-20)
+
+    if capacity_factor is None:
+        return probs.to(torch.float32), top_indices.to(torch.int32)
+
+    # Capacity-based token dropping
+    topk_masked_gates = torch.zeros_like(scores).scatter(1, top_indices, probs)
+    topk_map = (
+        torch.zeros_like(scores).int().scatter(1, top_indices, 1).bool()
+    )
+
+    expert_capacity = min(
+        math.ceil((num_tokens * top_k / num_experts) * capacity_factor),
+        num_tokens,
+    )
+
+    if drop_policy == "probs":
+        _, capacity_indices = torch.topk(
+            topk_masked_gates, k=expert_capacity, dim=0, sorted=False
+        )
+    else:
+        _, capacity_indices = torch.topk(
+            topk_map.int(), k=expert_capacity, dim=0, sorted=False
+        )
+    capacity_mask = (
+        torch.zeros_like(scores).scatter(0, capacity_indices, 1).bool()
+    )
+
+    final_map = capacity_mask if pad_to_capacity else torch.logical_and(topk_map, capacity_mask)
+    final_probs = topk_masked_gates * final_map
+
+    topk_idx = torch.topk(final_probs, k=top_k, dim=-1).indices
+    topk_weight = torch.gather(final_probs, dim=1, index=topk_idx)
+    return topk_weight.to(torch.float32), topk_idx.to(torch.int32)
 
 
 class KimiK2MCoreDecoderLayer(deepseek_v2.DeepseekV2DecoderLayer):
@@ -501,7 +401,37 @@ class KimiK2MCoreDecoderLayer(deepseek_v2.DeepseekV2DecoderLayer):
                 quant_config=quant_config,
                 prefix=f"{prefix}.mlp",
             )
-            _patch_kimi_moe_router(self.mlp, config)
+
+            # Replace router with baseline-style routing that includes
+            # capacity-based token dropping (the key difference between
+            # vLLM's grouped_topk and the baseline).
+            _router = self.mlp.experts.router
+            _top_k = _router.top_k
+            _num_groups = getattr(config, "moe_router_num_groups", 0)
+            _topk_group = getattr(config, "moe_router_group_topk", 0)
+            _cap_factor = getattr(config, "moe_expert_capacity_factor", None)
+            _pad_cap = getattr(config, "moe_pad_expert_input_to_capacity", False)
+            _drop_policy = getattr(config, "moe_token_drop_policy", "probs")
+
+            def _baseline_routing(
+                _self, hidden_states, router_logits, indices_type,
+                __top_k=_top_k, __ng=_num_groups, __tg=_topk_group,
+                __cf=_cap_factor, __pc=_pad_cap, __dp=_drop_policy,
+            ):
+                return _baseline_grouped_topk_with_capacity(
+                    router_logits=router_logits,
+                    top_k=__top_k,
+                    num_expert_group=__ng,
+                    topk_group=__tg,
+                    capacity_factor=__cf,
+                    pad_to_capacity=__pc,
+                    drop_policy=__dp,
+                )
+
+            import types as _types
+            _router._compute_routing = _types.MethodType(
+                _baseline_routing, _router,
+            )
         else:
             self.mlp = deepseek_v2.DeepseekV2MLP(
                 hidden_size=config.hidden_size,
@@ -541,6 +471,7 @@ class KimiK2MCoreDecoderLayer(deepseek_v2.DeepseekV2DecoderLayer):
                 residual *= 1.0 / self.routed_scaling_factor
 
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+
         hidden_states = self.mlp(hidden_states)
 
         if isinstance(self.mlp, deepseek_v2.DeepseekV2MLP) and (
@@ -589,7 +520,9 @@ class KimiK2MCoreModel(deepseek_v2.DeepseekV2Model):
         self.start_layer, self.end_layer, self.layers = deepseek_v2.make_layers(
             config.num_hidden_layers,
             lambda prefix: KimiK2MCoreDecoderLayer(
-                vllm_config, prefix, topk_indices_buffer=topk_indices_buffer
+                vllm_config,
+                prefix,
+                topk_indices_buffer=topk_indices_buffer,
             ),
             prefix=f"{prefix}.layers",
         )
@@ -616,11 +549,55 @@ class KimiK2MCoreForCausalLM(deepseek_v2.DeepseekV3ForCausalLM):
         _prepare_kimi_k2_mcore_hf_config(vllm_config.model_config.hf_config)
         super().__init__(vllm_config=vllm_config, prefix=prefix)
 
-    def load_weights(self, weights: Iterable[tuple[str, object]]) -> set[str]:
-        loaded = super().load_weights(weights)
-
-        # Some converted checkpoints do not store these bias tensors.
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         params_dict = dict(self.named_parameters())
+        deferred_weights: list[tuple[str, torch.Tensor]] = []
+        loaded: set[str] = set()
+
+        for name, loaded_weight in weights:
+            if "fused_qkv" not in name:
+                deferred_weights.append((name, loaded_weight))
+                continue
+
+            name_mapped = name.replace("fused_qkv", "qkv_proj")
+            if is_pp_missing_parameter(name_mapped, self):
+                continue
+            if name_mapped not in params_dict:
+                continue
+            param = params_dict[name_mapped]
+            weight_loader = getattr(param, "weight_loader", default_weight_loader)
+
+            reordered_weight = _reorder_fused_qkv_weight_for_vllm(
+                loaded_weight,
+                num_attention_heads=int(self.config.num_attention_heads),
+                num_query_groups=int(self.config.num_query_groups),
+                head_dim=int(self.config.kv_channels),
+            )
+
+            weight_loader(param, reordered_weight)
+            loaded.add(name_mapped)
+
+        loaded.update(super().load_weights(deferred_weights))
+
+        # Disable e_score_correction_bias in MoE routing to match the baseline's
+        # grouped top-k logic. The baseline uses max-per-group scoring while
+        # vLLM's noaux_tc path uses topk(2).sum() with bias correction. Kimi-K2
+        # checkpoints carry e_score_correction_bias but the baseline model never
+        # applies it during routing, so we disable it here to align the routing.
+        for layer in self.model.layers:
+            mlp = getattr(layer, "mlp", None)
+            if mlp is None or not hasattr(mlp, "gate"):
+                continue
+            if hasattr(mlp.gate, "e_score_correction_bias"):
+                mlp.gate.e_score_correction_bias = None
+            if hasattr(mlp, "experts"):
+                if hasattr(mlp.experts, "e_score_correction_bias"):
+                    mlp.experts.e_score_correction_bias = None
+                if hasattr(mlp.experts, "router") and hasattr(
+                    mlp.experts.router, "e_score_correction_bias"
+                ):
+                    mlp.experts.router.e_score_correction_bias = None
+
         optional_missing = {
             name
             for name in params_dict

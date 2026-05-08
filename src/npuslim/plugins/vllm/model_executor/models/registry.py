@@ -15,6 +15,10 @@ def patch_model_registry(module):
             "npuslim.plugins.vllm.model_executor.models.kimi_k2_mcore:"
             "KimiK2MCoreForCausalLM"
         ),
+        "KimiK2MCoreV2ForCausalLM": (
+            "npuslim.plugins.vllm.model_executor.models.kimi_k2_mcore_v2:"
+            "KimiK2MCoreV2ForCausalLM"
+        ),
         "KimiK2MCoreV1ForCausalLM": (
             "npuslim.plugins.vllm.model_executor.models.kimi_k2_mcore_v1:"
             "KimiK2MCoreV1ForCausalLM"
