@@ -229,7 +229,7 @@ class KimiK2MCoreAttention(nn.Module):
             self.head_dim,
             max_position=max_position_embeddings,
             rope_parameters=rope_parameters,
-            is_neox_style=False,
+            # is_neox_style=False,
         )
 
         self.attn = deepseek_v2.Attention(
@@ -293,12 +293,12 @@ def _baseline_grouped_topk_with_capacity(
 
     Ported from ``KimiK2MCoreV2MoEGate._topk_with_capacity`` to align V1
     routing with the baseline.  Returns ``(topk_weights, topk_ids)`` *without*
-    ``routed_scaling_factor`` — ``DeepseekV2MoE.forward`` applies it post-hoc.
+    ``routed_scaling_factor`` -- ``DeepseekV2MoE.forward`` applies it post-hoc.
     """
     num_tokens, num_experts = router_logits.shape
     scores = router_logits.float().sigmoid()
 
-    # Grouped expert selection (no bias — baseline doesn't use it)
+    # Grouped expert selection (no bias -- baseline doesn't use it)
     if num_expert_group > 0 and topk_group > 0:
         per_group_topk = max(1, top_k // topk_group)
         group_scores = (
