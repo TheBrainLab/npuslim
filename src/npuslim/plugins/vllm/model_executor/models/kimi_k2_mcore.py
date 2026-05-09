@@ -27,7 +27,7 @@ from vllm.model_executor.models.utils import is_pp_missing_parameter
 logger = init_logger(__name__)
 
 try:
-    import torch_npu
+    import torch_npu    # type: ignore[import]
 except ImportError:
     torch_npu = None
 
@@ -229,6 +229,7 @@ class KimiK2MCoreAttention(nn.Module):
             self.head_dim,
             max_position=max_position_embeddings,
             rope_parameters=rope_parameters,
+            is_neox_style=False,
         )
 
         self.attn = deepseek_v2.Attention(
@@ -257,17 +258,21 @@ class KimiK2MCoreAttention(nn.Module):
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
+        q = q.view(-1, self.num_heads, self.head_dim)
+        k = k.view(-1, self.num_kv_heads, self.head_dim)
+
         if self.q_layernorm is not None:
-            q = q.view(-1, self.num_heads, self.head_dim)
             q = self.q_layernorm(q)
-            q = q.view(-1, self.q_size)
 
         if self.k_layernorm is not None:
-            k = k.view(-1, self.num_kv_heads, self.head_dim)
             k = self.k_layernorm(k)
-            k = k.view(-1, self.kv_size)
 
+        # Keep Q/K in per-head layout through RoPE. The DeepSeek rotary path is
+        # compiled against [num_tokens, num_heads, head_dim] tensors and may
+        # introduce leading singleton dims under torch.compile.
         q, k = self.rotary_emb(positions, q, k)
+        q = q.reshape(-1, self.q_size)
+        k = k.reshape(-1, self.kv_size)
 
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
@@ -584,7 +589,8 @@ class KimiK2MCoreForCausalLM(deepseek_v2.DeepseekV3ForCausalLM):
         # vLLM's noaux_tc path uses topk(2).sum() with bias correction. Kimi-K2
         # checkpoints carry e_score_correction_bias but the baseline model never
         # applies it during routing, so we disable it here to align the routing.
-        for layer in self.model.layers:
+        model_layers = getattr(getattr(self, "model", None), "layers", ())
+        for layer in model_layers:
             mlp = getattr(layer, "mlp", None)
             if mlp is None or not hasattr(mlp, "gate"):
                 continue
