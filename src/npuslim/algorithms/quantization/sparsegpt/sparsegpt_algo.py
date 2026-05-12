@@ -24,7 +24,7 @@ from npuslim.algorithms.quantization.hessian import (
     _get_child_module,
     _is_transformers_conv1d,
 )
-from npuslim.core import register_algorithm
+from npuslim.core import AlgorithmRegistry
 
 
 def _validate_sparsegpt_params(
@@ -192,7 +192,7 @@ class SparseGPTModule(BaseHessianModule):
         return {"avg_loss": avg_loss, "norm_loss": norm_loss}
 
 
-@register_algorithm("SparseGPT", aliases=["sparsegpt", "sparse_gpt"])
+@AlgorithmRegistry.register("SparseGPT", aliases=["sparsegpt", "sparse_gpt"])
 class SparseGPTAlgorithm(BaseHessianAlgorithm):
     """Chunk-wise SparseGPT pruning algorithm."""
 

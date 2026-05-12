@@ -113,8 +113,3 @@ ModelRegistry = Registry("Model", "models")
 DatasetRegistry = Registry("Dataset", "datasets")
 TaskRegistry = Registry("Task", "tasks")
 SaverRegistry = Registry("Saver", "savers")
-
-
-def register_algorithm(name: str, aliases: Optional[Iterable[str] | str] = None):
-    """Decorator helper for algorithm registration."""
-    return AlgorithmRegistry.register(name, aliases=aliases)

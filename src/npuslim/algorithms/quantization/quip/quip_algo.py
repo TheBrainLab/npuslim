@@ -35,7 +35,7 @@ from npuslim.algorithms.quantization.hessian import (
     _is_transformers_conv1d,
     compute_scales_with_zero,
 )
-from npuslim.core import register_algorithm
+from npuslim.core import AlgorithmRegistry
 from npuslim.core.backend import bh
 
 
@@ -834,7 +834,7 @@ class QuIPLinear(nn.Module):
 # QuIPAlgorithm — streaming chunk-based algorithm
 # ---------------------------------------------------------------------------
 
-@register_algorithm("QuIP", aliases=["quip"])
+@AlgorithmRegistry.register("QuIP", aliases=["quip"])
 class QuIPAlgorithm(BaseHessianAlgorithm):
     """Chunk-wise QuIP algorithm for compressor task."""
 

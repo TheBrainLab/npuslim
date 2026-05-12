@@ -1,4 +1,4 @@
-from npuslim.registry import ModelRegistry
+from npuslim.core import ModelRegistry
 
 from ..base_model import BaseLLMModel
 

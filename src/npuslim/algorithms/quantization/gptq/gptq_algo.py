@@ -26,7 +26,7 @@ from npuslim.algorithms.quantization.hessian import (
     compute_scales_with_zero,
     quantize_with_scale_zero,
 )
-from npuslim.core import register_algorithm
+from npuslim.core import AlgorithmRegistry
 from npuslim.core.backend import bh
 
 
@@ -412,7 +412,10 @@ class GPTQQuantLinear(nn.Module):
             self._pack_gptq(linear, scales, zeros, g_idx)
 
 
-@register_algorithm("GPTQ", aliases=["gptq", "GPTQStepwise", "GPTQExample", "gptq_stepwise"])
+@AlgorithmRegistry.register(
+    "GPTQ",
+    aliases=["gptq", "GPTQStepwise", "GPTQExample", "gptq_stepwise"],
+)
 class GPTQAlgorithm(BaseHessianAlgorithm):
     """Chunk-wise GPTQ algorithm."""
 

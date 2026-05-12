@@ -2,7 +2,7 @@
 
 from npuslim.algorithms.base_algo import BaseAlgorithm
 from npuslim.algorithms.quantization import BaseQuantizationAlgorithm
-from npuslim.core import AlgorithmRegistry, register_algorithm
+from npuslim.core import AlgorithmRegistry
 
 # Lazy registration for algorithms
 AlgorithmRegistry.register_lazy(
@@ -30,5 +30,4 @@ __all__ = [
     "BaseAlgorithm",
     "BaseQuantizationAlgorithm",
     "AlgorithmRegistry",
-    "register_algorithm",
 ]

@@ -1,4 +1,4 @@
-from npuslim.registry import ModelRegistry
+from npuslim.core import ModelRegistry
 
 
 def test_model_registry_has_qwen3_vl_aliases():

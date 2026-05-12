@@ -5,7 +5,7 @@ import torch
 from npuslim.algorithms.quantization.int8_dynamic.int8_dynamic_algo import (
     INT8DynamicAlgorithm,
 )
-from npuslim.registry import AlgorithmRegistry
+from npuslim.core import AlgorithmRegistry
 from npuslim.tasks.compressor.context import ChunkContext, LayerInfo
 
 

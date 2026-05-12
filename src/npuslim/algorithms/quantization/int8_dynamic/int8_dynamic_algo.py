@@ -19,7 +19,7 @@ from loguru import logger
 
 from npuslim.algorithms.quantization.base_quant_algo import BaseQuantizationAlgorithm
 from npuslim.core.backend import bh
-from npuslim.core import register_algorithm
+from npuslim.core import AlgorithmRegistry
 
 if TYPE_CHECKING:
     from npuslim.tasks.compressor.context import ChunkContext, LayerInfo
@@ -225,7 +225,7 @@ def quantize_weight_int(
     return quant_weight, stored_scale
 
 
-@register_algorithm("INT8Dynamic", aliases=["INT8Dyn", "int8_dyn"])
+@AlgorithmRegistry.register("INT8Dynamic", aliases=["INT8Dyn", "int8_dyn"])
 class INT8DynamicAlgorithm(BaseQuantizationAlgorithm):
     """INT8 dynamic quantization with observer-hook workflow."""
 

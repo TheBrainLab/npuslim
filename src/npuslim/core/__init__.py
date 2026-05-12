@@ -15,7 +15,6 @@ from npuslim.core.factory import (
     Registry,
     SaverRegistry,
     TaskRegistry,
-    register_algorithm,
 )
 from npuslim.core.resource_manager import ResourceManager
 
@@ -27,7 +26,6 @@ __all__ = [
     "ResourceManager",
     "Registry",
     "AlgorithmRegistry",
-    "register_algorithm",
     "ModelRegistry",
     "DatasetRegistry",
     "TaskRegistry",
