@@ -65,7 +65,6 @@ NPUSlim v2 uses a **streaming-first, chunk-based quantization pipeline**. Instea
 **Registry Pattern** (`core/factory.py`):
 - Single `Registry` class with `register()`, `register_lazy()`, `get()`, `create()`, `list()` methods
 - 5 singleton registries: `AlgorithmRegistry`, `ModelRegistry`, `DatasetRegistry`, `TaskRegistry`, `SaverRegistry`
-- `register_algorithm()` decorator for convenience
 - Lazy loading: modules are imported only on first `get()`/`create()` call
 
 **ResourceManager** (`core/resource_manager.py`):
