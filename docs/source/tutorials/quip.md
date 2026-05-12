@@ -65,7 +65,7 @@ pipeline:
 ## Run Command
 
 ```bash
-python tools/run.py -c configs/compressor/quip/qwen3_0_6b-w4.yaml
+python tools/run.py -c configs/opt/quip/opt_125m-w4a16.yaml
 ```
 
 ## Quantization Functions

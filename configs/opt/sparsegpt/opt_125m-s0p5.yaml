@@ -1,0 +1,36 @@
+metadata:
+  name: "OPT_SparseGPT_Recipe"
+  description: "SparseGPT pruning for OPT-125M with unstructured 50% sparsity."
+
+resources:
+  - id: opt
+    type: OPTModel
+    path: facebook/opt-125m
+    device_map: cuda
+
+  - id: calib_data
+    type: C4Dataset
+    num_samples: 128
+    max_seq_length: 2048
+
+recipe:
+  - name: "SparseGPT_Pruning"
+    type: compressor
+    model: "@opt"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 1
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: SparseGPT
+      sparsity: 0.5
+      blocksize: 128
+      percdamp: 0.01
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 4
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs"

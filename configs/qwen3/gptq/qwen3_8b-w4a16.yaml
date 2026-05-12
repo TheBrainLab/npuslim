@@ -1,14 +1,14 @@
 # config.yaml
 
 metadata:
-  name: "OPT_Quantization_Recipe"
-  description: "A recipe for quantizing OPT models using GPTQ and SparseGPTQ algorithms, followed by speculative fusion."
+  name: "Qwen3_Quantization_Recipe"
+  description: "GPTQ W4A16 quantization for Qwen3-8B."
 
 resources:
-  - id: opt
-    type: OPTModel
-    path: facebook/opt-125m
-    device_map: cuda
+  - id: qwen
+    type: Qwen3Model
+    path: Qwen/Qwen3-8B
+    device_map: cpu
 
   - id: calib_data
     type: C4Dataset
@@ -18,7 +18,7 @@ resources:
 recipe:
   - name: "GPTQ_Quantization"
     type: compressor
-    model: "@opt"
+    model: "@qwen"
     # data: "@calib_data"
     dataloader:
       dataset: "@calib_data"
@@ -32,7 +32,7 @@ recipe:
     ignore_layers: []
     execution:
       mode: streaming
-      chunk_size: 4
+      chunk_size: 1
     saver:
       type: StreamingHuggingFaceSaver
       save_dir: "./outputs"

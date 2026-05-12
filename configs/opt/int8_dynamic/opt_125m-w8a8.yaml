@@ -2,7 +2,7 @@
 
 metadata:
   name: "OPT_Quantization_Recipe"
-  description: "A recipe for quantizing OPT models using GPTQ and SparseGPTQ algorithms, followed by speculative fusion."
+  description: "INT8 dynamic quantization for OPT-125M."
 
 resources:
   - id: opt

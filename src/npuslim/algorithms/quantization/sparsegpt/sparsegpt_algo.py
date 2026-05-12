@@ -1,9 +1,9 @@
-"""Chunk-wise SparseGPT pruning algorithm for v2 compressor task.
+"""Chunk-wise SparseGPT pruning algorithm for compressor task.
 
 Design:
-- SparseGPTAlgorithm inherits GPTQAlgorithm to reuse the entire runtime-model
-  lifecycle, calibration capture, tensor management, and progressive-forward
-  infrastructure.
+- SparseGPTAlgorithm uses the shared Hessian runtime-model lifecycle,
+  calibration capture, tensor management, and progressive-forward
+  infrastructure from BaseHessianAlgorithm.
 - Only the layer-level optimisation differs: in-place pruning via
   :class:`SparseGPTModule` instead of quantize-and-pack.
 - SparseGPTModule inherits BaseHessianModule for Hessian accumulation/inversion.
@@ -17,11 +17,10 @@ from typing import Dict
 import torch
 import torch.nn as nn
 from loguru import logger
-from tqdm import tqdm
 
-from npuslim.algorithms.quantization.gptq.gptq_algo import (
+from npuslim.algorithms.quantization.hessian import (
+    BaseHessianAlgorithm,
     BaseHessianModule,
-    GPTQAlgorithm,
     _get_child_module,
     _is_transformers_conv1d,
 )
@@ -78,16 +77,11 @@ def _validate_sparsegpt_params(
         )
 
 
-# ---------------------------------------------------------------------------
-# Per-layer pruning module
-# ---------------------------------------------------------------------------
-
-
 class SparseGPTModule(BaseHessianModule):
     """Per-linear SparseGPT pruning module.
 
     Reuses Hessian accumulation (``add_batch``) and inversion (``compute_hinv``)
-    from :class:`BaseHessianModule`.  Only ``fasterprune`` is SparseGPT-specific.
+    from :class:`BaseHessianModule`. Only ``fasterprune`` is SparseGPT-specific.
     """
 
     def __init__(
@@ -146,14 +140,11 @@ class SparseGPTModule(BaseHessianModule):
             Losses1 = torch.zeros_like(W1)
             Hinv1 = Hinv[i1:i2, i1:i2]
 
-            # Mask computation
             if self.prunen == 0:
-                # Mode A: unstructured sparsity
-                tmp = W1 ** 2 / (torch.diag(Hinv1).reshape((1, -1))) ** 2
+                tmp = W1**2 / (torch.diag(Hinv1).reshape((1, -1))) ** 2
                 thresh = torch.sort(tmp.flatten())[0][int(tmp.numel() * self.sparsity)]
                 mask1 = tmp <= thresh
             else:
-                # Mode B: N:M semi-structured sparsity
                 mask1 = torch.zeros_like(W1) == 1
 
             for i in range(count):
@@ -165,8 +156,7 @@ class SparseGPTModule(BaseHessianModule):
                     k = min(self.prunen, window)
                     tmp = (
                         W1[:, i : (i + window)] ** 2
-                        / (torch.diag(Hinv1)[i : (i + window)].reshape((1, -1)))
-                        ** 2
+                        / (torch.diag(Hinv1)[i : (i + window)].reshape((1, -1))) ** 2
                     )
                     mask1.scatter_(
                         1,
@@ -177,7 +167,7 @@ class SparseGPTModule(BaseHessianModule):
                 q = w.clone()
                 q[mask1[:, i]] = 0
                 Q1[:, i] = q
-                Losses1[:, i] = (w - q) ** 2 / d ** 2
+                Losses1[:, i] = (w - q) ** 2 / d**2
                 err1 = (w - q) / d
                 W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
                 Err1[:, i] = err1
@@ -202,18 +192,12 @@ class SparseGPTModule(BaseHessianModule):
         return {"avg_loss": avg_loss, "norm_loss": norm_loss}
 
 
-# ---------------------------------------------------------------------------
-# Top-level algorithm — inherits GPTQ's runtime infrastructure
-# ---------------------------------------------------------------------------
-
-
 @register_algorithm("SparseGPT", aliases=["sparsegpt", "sparse_gpt"])
-class SparseGPTAlgorithm(GPTQAlgorithm):
-    """Chunk-wise SparseGPT pruning algorithm.
+class SparseGPTAlgorithm(BaseHessianAlgorithm):
+    """Chunk-wise SparseGPT pruning algorithm."""
 
-    Inherits the full runtime-model lifecycle from :class:`GPTQAlgorithm` and
-    overrides only the layer-level optimisation (pruning vs quantize-and-pack).
-    """
+    _TAG = "SparseGPT"
+    _quantized_type_label = "SparseGPT"
 
     def __init__(
         self,
@@ -233,32 +217,15 @@ class SparseGPTAlgorithm(GPTQAlgorithm):
             blocksize=int(blocksize),
             percdamp=float(percdamp),
         )
-        # Pass common params to GPTQAlgorithm; GPTQ-specific ones get defaults.
-        super().__init__(
-            wbits=4,
-            groupsize=128,
-            sym=True,
-            blocksize=blocksize,
-            actorder=False,
-            static_groups=True,
-            percdamp=percdamp,
-            preproc_hessian=preproc_hessian,
-            fake_quant=False,
-            max_calib_samples=max_calib_samples,
-            **kwargs,
-        )
-        # SparseGPT-specific params
+        super().__init__(max_calib_samples=max_calib_samples, **kwargs)
         self.sparsity = float(sparsity)
         self.prunen = int(prunen)
         self.prunem = int(prunem)
+        self.blocksize = int(blocksize)
+        self.percdamp = float(percdamp)
+        self.preproc_hessian = bool(preproc_hessian)
 
-    # -- tag for log messages -------------------------------------------------
-
-    _TAG = "SparseGPT"
-
-    # -- lifecycle overrides ---------------------------------------------------
-
-    def on_start(self) -> None:
+    def _log_start_params(self) -> None:
         sparsity_desc = (
             f"N:M={self.prunen}:{self.prunem}"
             if self.prunen > 0
@@ -268,124 +235,47 @@ class SparseGPTAlgorithm(GPTQAlgorithm):
             f"[{self._TAG}] start: {sparsity_desc}, "
             f"blocksize={self.blocksize}, percdamp={self.percdamp}"
         )
-        # Reuse GPTQ's on_start (runtime model init, input capture setup)
-        GPTQAlgorithm.on_start(self)
 
-    def on_finish(self) -> None:
-        # Skip GPTQ's _update_quantization_metadata — pruning has no quant config
-        self._runtime_model = None
-        self._runtime_state_keys.clear()
-        self._runtime_device = None
-        self._inps = None
-        self._outs = None
-        self._layer_kwargs = {}
-        self._next_expected_layer_index = None
-        self._calib_batch_size = 1
-        if self._model_obj is not None and hasattr(self._model_obj, "release_empty_model"):
-            self._model_obj.release_empty_model()
-        from npuslim.core.backend import bh
-        bh.empty_cache()
-        logger.info(f"[{self._TAG}] finish")
+    def _create_handlers(self, layer_module: nn.Module, targets) -> Dict[str, SparseGPTModule]:
+        handlers: Dict[str, SparseGPTModule] = {}
+        for module_rel_name, *_rest in targets:
+            submodule = _get_child_module(layer_module, module_rel_name)
+            if not (isinstance(submodule, nn.Linear) or _is_transformers_conv1d(submodule)):
+                continue
+            handlers[module_rel_name] = SparseGPTModule(
+                submodule,
+                sparsity=self.sparsity,
+                prunen=self.prunen,
+                prunem=self.prunem,
+                blocksize=self.blocksize,
+                percdamp=self.percdamp,
+                preproc_hessian=self.preproc_hessian,
+            )
+        return handlers
 
-    # -- main entry ------------------------------------------------------------
-
-    def process_chunk(self, chunk):  # noqa: ANN201
-        if self._runtime_model is None:
-            raise RuntimeError(f"[{self._TAG}] on_start must be called before process_chunk")
-        self._validate_chunk_order(chunk)
-        if self._runtime_device is None:
-            self._runtime_device = self._resolve_runtime_device(chunk)
-
-        skip_names = self._set_skip_from_chunk_metadata(chunk)
+    def _process_layer_handlers(self, layer, targets, handlers, chunk) -> tuple[set[str], int]:
+        _ = chunk
         pruned_weights = 0
+        for module_rel_name, rel_weight_name, _bias_name, weight_tensor, _bias in targets:
+            handler = handlers.get(module_rel_name)
+            if handler is None:
+                continue
+            metrics = handler.fasterprune(layer_name=f"{layer.name}.{module_rel_name}")
+            layer.tensors[rel_weight_name] = (
+                handler.layer.weight.detach().to(weight_tensor.dtype).cpu()
+            )
+            pruned_weights += 1
+            logger.info(
+                f"[{self._TAG}] layer={layer.name}.{module_rel_name} "
+                f"avg_loss={float(metrics.get('avg_loss', 0.0)):.6f} "
+                f"norm_loss={float(metrics.get('norm_loss', 0.0)):.6f}"
+            )
+        return set(), pruned_weights
 
-        if self._inps is None:
-            if not chunk.is_first_chunk:
-                raise ValueError(
-                    f"[{self._TAG}] first processed chunk must include layer-0"
-                )
-            pre_tensor_map = {}
-            for module in chunk.pre_modules:
-                pre_tensor_map.update(
-                    self._collect_module_runtime_tensors(module.name, module.tensors)
-                )
-            pre_assigned = self._assign_runtime_tensors(pre_tensor_map)
-            try:
-                self._capture_initial_inputs(chunk)
-            finally:
-                self._unassign_runtime_tensors(pre_assigned)
+    def _update_quantization_metadata(self) -> None:
+        pass
 
-        layer_iter = tqdm(
-            chunk.layers,
-            total=chunk.layer_count,
-            desc=f"{self._TAG.lower()} chunk {chunk.chunk_index}",
-            leave=True,
-            disable=chunk.layer_count <= 1,
-        )
-        for layer in layer_iter:
-            layer_tensor_map = self._collect_module_runtime_tensors(layer.name, layer.tensors)
-            layer_assigned = self._assign_runtime_tensors(layer_tensor_map)
-            try:
-                layer_module = _get_child_module(self._runtime_model, layer.name)
-                targets = self._extract_linear_targets(layer, skip_names)
-                handlers: Dict[str, SparseGPTModule] = {}
-                for module_rel_name, *_rest in targets:
-                    submodule = _get_child_module(layer_module, module_rel_name)
-                    if not (
-                        isinstance(submodule, nn.Linear)
-                        or _is_transformers_conv1d(submodule)
-                    ):
-                        continue
-                    handlers[module_rel_name] = SparseGPTModule(
-                        submodule,
-                        sparsity=self.sparsity,
-                        prunen=self.prunen,
-                        prunem=self.prunem,
-                        blocksize=self.blocksize,
-                        percdamp=self.percdamp,
-                        preproc_hessian=self.preproc_hessian,
-                    )
-
-                if handlers:
-                    self._collect_statistics(
-                        layer_module,
-                        handlers,
-                        layer_name=layer.name,
-                        chunk_index=chunk.chunk_index,
-                    )
-
-                for module_rel_name, rel_weight_name, _bias_name, weight_tensor, _bias in targets:
-                    handler = handlers.get(module_rel_name)
-                    if handler is None:
-                        continue
-                    metrics = handler.fasterprune(
-                        layer_name=f"{layer.name}.{module_rel_name}"
-                    )
-                    layer.tensors[rel_weight_name] = (
-                        handler.layer.weight.detach().to(weight_tensor.dtype).cpu()
-                    )
-                    pruned_weights += 1
-
-                    logger.info(
-                        f"[{self._TAG}] layer={layer.name}.{module_rel_name} "
-                        f"avg_loss={float(metrics.get('avg_loss', 0.0)):.6f} "
-                        f"norm_loss={float(metrics.get('norm_loss', 0.0)):.6f}",
-                    )
-
-                for handler in handlers.values():
-                    handler.free()
-
-                if layer.index < self._total_layers - 1:
-                    self._forward_layer_outputs(
-                        layer_module,
-                        layer_name=layer.name,
-                        chunk_index=chunk.chunk_index,
-                    )
-            finally:
-                self._unassign_runtime_tensors(layer_assigned)
-
-        logger.info(
-            f"[{self._TAG}] chunk={chunk.chunk_index}, "
-            f"layers={chunk.layer_count}, pruned_weights={pruned_weights}"
-        )
-        return chunk
+    def _finalize_chunk_metadata(self, chunk, quantized_tensor_names: set[str]) -> None:
+        _ = chunk
+        _ = quantized_tensor_names
+        pass

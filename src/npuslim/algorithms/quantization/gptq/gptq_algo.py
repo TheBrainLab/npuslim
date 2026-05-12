@@ -1,4 +1,4 @@
-"""Chunk-wise GPTQ algorithm for v2 compressor task.
+"""Chunk-wise GPTQ algorithm for compressor task.
 
 Design goal:
 - Strict chunk lifecycle: calibrate -> quantize -> pack inside each process_chunk call.
@@ -10,213 +10,24 @@ from __future__ import annotations
 
 import math
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
-import transformers  # type: ignore
-from accelerate import init_empty_weights
-from accelerate.utils import set_module_tensor_to_device
 from loguru import logger
 from tqdm import tqdm
 
-from npuslim.algorithms.quantization.base_quant_algo import BaseQuantizationAlgorithm
-from npuslim.core.backend import bh
-from npuslim.models.base_model import get_hub_class
+from npuslim.algorithms.quantization.hessian import (
+    BaseHessianAlgorithm,
+    BaseHessianModule,
+    _get_child_module,
+    _is_transformers_conv1d,
+    compute_scales_with_zero,
+    quantize_with_scale_zero,
+)
 from npuslim.core import register_algorithm
-
-
-def _is_transformers_conv1d(layer: nn.Module) -> bool:
-    conv1d_cls = getattr(transformers, "Conv1D", None)
-    return conv1d_cls is not None and isinstance(layer, conv1d_cls)
-
-
-def _unwrap_output(output: Any) -> torch.Tensor:
-    if isinstance(output, torch.Tensor):
-        return output
-    if isinstance(output, (list, tuple)) and output:
-        first = output[0]
-        if torch.is_tensor(first):
-            return first
-    raise TypeError(f"Unsupported output type: {type(output).__name__}")
-
-
-def _get_child_module(root: Any, dotted_name: str) -> Any:
-    module = root
-    if not dotted_name:
-        return module
-    for part in dotted_name.split("."):
-        if part.isdigit():
-            module = module[int(part)]
-        else:
-            module = getattr(module, part)
-    return module
-
-
-@torch.no_grad()
-def compute_scales_with_zero(
-    x: torch.Tensor,
-    bits: int = 4,
-    sym: bool = True,
-    perchannel: bool = True,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    maxq = 2**bits - 1
-    shape = x.shape
-
-    if perchannel:
-        x = x.flatten(1)
-    else:
-        x = x.flatten().unsqueeze(0)
-
-    tmp = torch.zeros(x.shape[0], device=x.device)
-    xmin = torch.minimum(x.min(1)[0], tmp)
-    xmax = torch.maximum(x.max(1)[0], tmp)
-
-    if sym:
-        xmax = torch.maximum(torch.abs(xmin), xmax)
-        negative = xmin < 0
-        if torch.any(negative):
-            xmin[negative] = -xmax[negative]
-
-    both_zero = (xmin == 0) & (xmax == 0)
-    xmin[both_zero] = -1
-    xmax[both_zero] = +1
-
-    scale = (xmax - xmin) / maxq
-    if sym:
-        zero = torch.full_like(scale, (maxq + 1) / 2)
-    else:
-        zero = torch.round(-xmin / scale)
-
-    out_shape = [-1] + [1] * (len(shape) - 1)
-    return scale.reshape(out_shape), zero.reshape(out_shape)
-
-
-@torch.no_grad()
-def quantize_with_scale_zero(
-    w: torch.Tensor,
-    scale: torch.Tensor,
-    zero: torch.Tensor,
-    bits: int = 4,
-) -> torch.Tensor:
-    maxq = 2**bits - 1
-    q = torch.clamp(torch.round(w / scale) + zero, 0, maxq)
-    return scale * (q - zero)
-
-
-class BaseHessianModule:
-    """Hessian accumulator shared by GPTQ modules."""
-
-    def __init__(
-        self,
-        layer: nn.Module,
-        *,
-        percdamp: float = 0.01,
-        preproc_hessian: bool = False,
-    ):
-        self.layer = layer
-        self.dev = self.layer.weight.device
-        w = layer.weight.data.clone().float()
-        if isinstance(self.layer, nn.Conv2d):
-            w = w.flatten(1)
-        if _is_transformers_conv1d(self.layer):
-            w = w.t()
-
-        self.rows = w.shape[0]
-        self.columns = w.shape[1]
-        self.H = torch.zeros((self.columns, self.columns), device=self.dev)
-        self.nsamples = 0
-        self.preproc_done = False
-
-        self.percdamp = float(percdamp)
-        self.preproc_hessian = bool(preproc_hessian)
-
-    def add_batch(self, inp: torch.Tensor, out: torch.Tensor) -> None:
-        _ = out
-        if len(inp.shape) == 2:
-            inp = inp.unsqueeze(0)
-        batch = inp.shape[0]
-
-        if isinstance(self.layer, nn.Linear) or _is_transformers_conv1d(self.layer):
-            if len(inp.shape) == 3:
-                inp = inp.reshape((-1, inp.shape[-1]))
-            inp = inp.t()
-        if isinstance(self.layer, nn.Conv2d):
-            unfold = nn.Unfold(
-                self.layer.kernel_size,
-                dilation=self.layer.dilation,
-                padding=self.layer.padding,
-                stride=self.layer.stride,
-            )
-            inp = unfold(inp)
-            inp = inp.permute([1, 0, 2])
-            inp = inp.flatten(1)
-
-        inp = inp.to(self.dev, dtype=torch.float32)
-        self.H *= self.nsamples / (self.nsamples + batch)
-        self.nsamples += batch
-        inp = math.sqrt(2 / self.nsamples) * inp
-        self.H += inp.matmul(inp.t())
-
-    def compute_hinv(self, hessian: torch.Tensor) -> torch.Tensor:
-        step = 0.01
-        current_percdamp = 0.0 if self.preproc_hessian else float(self.percdamp)
-        hinv = None
-
-        while current_percdamp < 1.0:
-            try:
-                h_try = hessian.clone()
-                if current_percdamp > 0:
-                    damp = current_percdamp * torch.mean(torch.diag(h_try))
-                    if damp == 0:
-                        damp = 1e-5
-                    diag_idx = torch.arange(self.columns, device=self.dev)
-                    h_try[diag_idx, diag_idx] += damp
-
-                if bh.name == "npu":
-                    h_cpu = h_try.to("cpu")
-                    l_cpu = torch.linalg.cholesky(h_cpu)
-                    inv_l_cpu = torch.cholesky_inverse(l_cpu)
-                    hinv_cpu = torch.linalg.cholesky(inv_l_cpu, upper=True)
-                    hinv = hinv_cpu.to(self.dev)
-                else:
-                    chol = torch.linalg.cholesky(h_try)
-                    inv_chol = torch.cholesky_inverse(chol)
-                    hinv = torch.linalg.cholesky(inv_chol, upper=True)
-                break
-            except (RuntimeError, torch._C._LinAlgError):
-                if current_percdamp == 0:
-                    current_percdamp = float(self.percdamp)
-                else:
-                    current_percdamp += step
-
-        if hinv is None:
-            raise RuntimeError("Hessian inversion failed even with max damping.")
-        return hinv
-
-    def preproc(self) -> None:
-        if self.preproc_hessian:
-            w = self.layer.weight.data.clone()
-            h = self.H.data.clone()
-            dead = torch.diag(h) == 0
-            h[dead, dead] = 1
-            w[:, dead] = 0
-            damp = self.percdamp * torch.mean(torch.diag(h))
-            diag = torch.arange(self.columns, device=self.dev)
-            h[diag, diag] += damp
-            self.layer.weight.data = w.to(self.layer.weight.data.dtype)
-            self.H.data = h.to(self.H.data.dtype)
-        self.preproc_done = True
-
-    def postproc(self) -> None:
-        assert self.preproc_done is True
-
-    def free(self) -> None:
-        self.H = None
-        self.Losses = None
-        self.Trace = None
-        bh.empty_cache()
+from npuslim.core.backend import bh
 
 
 class GPTQModule(BaseHessianModule):
@@ -602,10 +413,11 @@ class GPTQQuantLinear(nn.Module):
 
 
 @register_algorithm("GPTQ", aliases=["gptq", "GPTQStepwise", "GPTQExample", "gptq_stepwise"])
-class GPTQAlgorithm(BaseQuantizationAlgorithm):
+class GPTQAlgorithm(BaseHessianAlgorithm):
     """Chunk-wise GPTQ algorithm."""
 
     _TAG = "GPTQ"
+    _quantized_type_label = "GPTQ"
 
     def __init__(
         self,
@@ -627,19 +439,7 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
             wbits = int(w_bits)
         if group_size is not None:
             groupsize = int(group_size)
-        super().__init__(
-            wbits=wbits,
-            groupsize=groupsize,
-            sym=sym,
-            blocksize=blocksize,
-            actorder=actorder,
-            static_groups=static_groups,
-            percdamp=percdamp,
-            preproc_hessian=preproc_hessian,
-            fake_quant=fake_quant,
-            max_calib_samples=max_calib_samples,
-            **kwargs,
-        )
+        super().__init__(max_calib_samples=max_calib_samples, **kwargs)
         self.wbits = int(wbits)
         self.groupsize = int(groupsize)
         self.sym = bool(sym)
@@ -649,121 +449,17 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
         self.percdamp = float(percdamp)
         self.preproc_hessian = bool(preproc_hessian)
         self.fake_quant = bool(fake_quant)
-        self.max_calib_samples = max(int(max_calib_samples), 1)
-        self._calib_batch_size = 1
-
-        self._runtime_model: Optional[nn.Module] = None
-        self._runtime_device: Optional[torch.device] = None
-        self._runtime_state_keys: set[str] = set()
-        self._block_name: str = "model.layers"
-        self._total_layers: int = 0
-        self._next_expected_layer_index: Optional[int] = None
-        self._inps: Optional[torch.Tensor] = None
-        self._outs: Optional[torch.Tensor] = None
-        self._layer_kwargs: Dict[str, Any] = {}
 
     @property
     def _ascend_quant_type(self) -> str:
         return f"W{self.wbits}A16"
 
-    def on_start(self) -> None:
+    def _log_start_params(self) -> None:
         logger.info(
             f"[{self._TAG}] start: "
             f"wbits={self.wbits}, groupsize={self.groupsize}, "
             f"actorder={self.actorder}, percdamp={self.percdamp}"
         )
-        if self._model_obj is None:
-            raise ValueError(f"[{self._TAG}] runtime model is required")
-
-        self._runtime_model = self._build_runtime_model()
-        runtime_cfg = getattr(self._runtime_model, "config", None)
-        if runtime_cfg is not None and hasattr(runtime_cfg, "use_cache"):
-            try:
-                runtime_cfg.use_cache = False
-            except Exception:
-                pass
-        self._runtime_state_keys = set(self._runtime_model.state_dict().keys())
-        self._block_name = getattr(
-            self._model_obj,
-            "block_name",
-            getattr(self._model_obj, "layers_path", "model.layers"),
-        )
-        layer_container = _get_child_module(self._runtime_model, self._block_name)
-        self._total_layers = len(layer_container)
-        self._runtime_device = None
-        self._next_expected_layer_index = None
-        self._inps = None
-        self._outs = None
-        self._layer_kwargs = {}
-        self._calib_batch_size = 1
-
-    def on_finish(self) -> None:
-        self._update_quantization_metadata()
-        self._runtime_model = None
-        self._runtime_state_keys.clear()
-        self._runtime_device = None
-        self._inps = None
-        self._outs = None
-        self._layer_kwargs = {}
-        self._next_expected_layer_index = None
-        self._calib_batch_size = 1
-        if self._model_obj is not None and hasattr(self._model_obj, "release_empty_model"):
-            self._model_obj.release_empty_model()
-        bh.empty_cache()
-        logger.info(f"[{self._TAG}] finish")
-
-    def _build_runtime_model(self) -> nn.Module:
-        if self._model_obj is not None and hasattr(self._model_obj, "prepare_empty_model"):
-            model = self._model_obj.prepare_empty_model()
-            if model is not None:
-                model.eval()
-                return model
-
-        if self._model_config is None:
-            raise ValueError(f"[{self._TAG}] model_config is required to build empty runtime model")
-
-        auto_model_cls = get_hub_class(
-            getattr(self._model_obj, "model_hub", "hf"),
-            "AutoModelForCausalLM",
-        )
-        model_kwargs = dict(getattr(self._model_obj, "model_kwargs", {}) or {})
-        trust_remote_code = bool(model_kwargs.get("trust_remote_code", False))
-        extra_kwargs: Dict[str, Any] = {}
-        if "attn_implementation" in model_kwargs:
-            extra_kwargs["attn_implementation"] = model_kwargs["attn_implementation"]
-        if "torch_dtype" in model_kwargs:
-            extra_kwargs["torch_dtype"] = model_kwargs["torch_dtype"]
-
-        with init_empty_weights():
-            model = auto_model_cls.from_config(
-                self._model_config,
-                trust_remote_code=trust_remote_code,
-                **extra_kwargs,
-            )
-        model.eval()
-        return model
-
-    @staticmethod
-    def _extract_linear_targets(layer, skip_names: List[str]):
-        targets = []
-        for rel_name, tensor in layer.tensors.items():
-            if not rel_name.endswith(".weight"):
-                continue
-            if not isinstance(tensor, torch.Tensor):
-                continue
-            if not tensor.is_floating_point() or tensor.ndim != 2:
-                continue
-            module_rel_name = rel_name[:-7]
-            full_weight_name = f"{layer.name}.{rel_name}"
-            full_module_name = f"{layer.name}.{module_rel_name}"
-            if GPTQAlgorithm.should_skip_name(full_weight_name, skip_names):
-                continue
-            if GPTQAlgorithm.should_skip_name(full_module_name, skip_names):
-                continue
-            bias_name = f"{module_rel_name}.bias"
-            bias = layer.tensors.get(bias_name)
-            targets.append((module_rel_name, rel_name, bias_name, tensor, bias))
-        return targets
 
     def _pack_quant_linear_tensors(
         self,
@@ -818,241 +514,100 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
             tensors[f"{module_name}.bias"] = quant_linear.bias.cpu()
         return tensors, quantized_names
 
-    @staticmethod
-    def _full_tensor_name(module_name: str, rel_name: str) -> str:
-        if rel_name.startswith(f"{module_name}."):
-            return rel_name
-        return f"{module_name}.{rel_name}"
-
-    def _collect_module_runtime_tensors(
-        self,
-        module_name: str,
-        module_tensors: Dict[str, torch.Tensor],
-    ) -> Dict[str, torch.Tensor]:
-        tensor_map: Dict[str, torch.Tensor] = {}
-        for rel_name, tensor in module_tensors.items():
-            if not torch.is_tensor(tensor):
+    def _create_handlers(self, layer_module: nn.Module, targets) -> Dict[str, GPTQModule]:
+        handlers: Dict[str, GPTQModule] = {}
+        for module_rel_name, *_ in targets:
+            submodule = _get_child_module(layer_module, module_rel_name)
+            if not isinstance(submodule, nn.Linear):
                 continue
-            full_name = self._full_tensor_name(module_name, rel_name)
-            if full_name in self._runtime_state_keys:
-                tensor_map[full_name] = tensor
-        return tensor_map
-
-    def _resolve_runtime_device(self, chunk) -> torch.device:
-        for tensor in chunk.all_tensors().values():
-            if torch.is_tensor(tensor) and tensor.device.type != "cpu":
-                return tensor.device
-        backend_device = getattr(bh, "device", None)
-        if isinstance(backend_device, torch.device):
-            return backend_device
-        return torch.device(bh.default_device_str())
-
-    def _assign_runtime_tensors(self, tensor_map: Dict[str, torch.Tensor]) -> List[str]:
-        if self._runtime_model is None:
-            raise RuntimeError(f"[{self._TAG}] runtime model is not initialized")
-        if self._runtime_device is None:
-            raise RuntimeError(f"[{self._TAG}] runtime device is not initialized")
-
-        assigned: List[str] = []
-        for full_name, tensor in tensor_map.items():
-            set_module_tensor_to_device(
-                self._runtime_model,
-                full_name,
-                device=self._runtime_device,
-                value=tensor if tensor.device == self._runtime_device else tensor.to(self._runtime_device),
+            handlers[module_rel_name] = GPTQModule(
+                submodule,
+                wbits=self.wbits,
+                groupsize=self.groupsize,
+                blocksize=self.blocksize,
+                actorder=self.actorder,
+                static_groups=self.static_groups,
+                sym=self.sym,
+                percdamp=self.percdamp,
+                preproc_hessian=self.preproc_hessian,
             )
-            assigned.append(full_name)
-        return assigned
+        return handlers
 
-    def _unassign_runtime_tensors(self, tensor_names: List[str]) -> None:
-        if self._runtime_model is None:
-            return
-        for full_name in tensor_names:
-            module_name, leaf_name = full_name.rsplit(".", 1)
-            module = _get_child_module(self._runtime_model, module_name)
-            current = getattr(module, leaf_name)
-            meta_tensor = torch.empty_like(current, device="meta")
-            set_module_tensor_to_device(
-                self._runtime_model,
-                full_name,
-                device="meta",
-                value=meta_tensor,
+    def _process_layer_handlers(self, layer, targets, handlers, chunk) -> tuple[set[str], int]:
+        quantized_tensor_names: set[str] = set()
+        quantized_weights = 0
+        quant_results = []
+        for (
+            module_rel_name,
+            rel_weight_name,
+            rel_bias_name,
+            weight_tensor,
+            _bias_tensor,
+        ) in targets:
+            handler = handlers.get(module_rel_name)
+            if handler is None:
+                continue
+            scales, zeros, g_idx = handler.fasterquant(
+                layer_name=f"{layer.name}.{module_rel_name}"
+            )
+            metrics = getattr(handler, "last_metrics", {})
+            if metrics:
+                logger.info(
+                    f"[{self._TAG}] layer={layer.name}.{module_rel_name} "
+                    f"avg_loss={float(metrics.get('avg_loss', 0.0)):.6f} "
+                    f"norm_loss={float(metrics.get('norm_loss', 0.0)):.6f}"
+                )
+            quant_results.append(
+                (
+                    module_rel_name,
+                    rel_weight_name,
+                    rel_bias_name,
+                    weight_tensor,
+                    scales,
+                    zeros,
+                    g_idx,
+                    handler,
+                )
             )
 
-    @staticmethod
-    def _iter_calib_batches(calib_data: Any):
-        if calib_data is None:
-            return
-        for batch in calib_data:
-            yield batch
-
-    def _move_batch_to_device(self, batch: Dict[str, Any]) -> Dict[str, Any]:
-        if self._runtime_device is None:
-            raise RuntimeError(f"[{self._TAG}] runtime device is not initialized")
-        moved: Dict[str, Any] = {}
-        for key, value in batch.items():
-            if torch.is_tensor(value):
-                moved[key] = value.to(self._runtime_device)
+        pack_iter = tqdm(
+            quant_results,
+            total=len(quant_results),
+            desc=f"{self._TAG.lower()} pack c{chunk.chunk_index} {layer.name}",
+            leave=True,
+            disable=len(quant_results) <= 1,
+        )
+        for (
+            module_rel_name,
+            rel_weight_name,
+            rel_bias_name,
+            weight_tensor,
+            scales,
+            zeros,
+            g_idx,
+            handler,
+        ) in pack_iter:
+            if self.fake_quant:
+                layer.tensors[rel_weight_name] = (
+                    handler.layer.weight.detach().to(weight_tensor.dtype).cpu()
+                )
+                quantized_tensor_names.add(f"{layer.name}.{rel_weight_name}")
             else:
-                moved[key] = value
-        return moved
-
-    @staticmethod
-    def _sanitize_layer_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize per-layer kwargs to avoid cache growth during calibration."""
-        sanitized = dict(kwargs)
-        # Match v1 behavior: calibration path must not build/update KV cache.
-        sanitized["use_cache"] = False
-        if "past_key_values" in sanitized:
-            sanitized["past_key_values"] = None
-        return sanitized
-
-    def _capture_initial_inputs(self, chunk) -> None:
-        if self._runtime_model is None:
-            raise RuntimeError(f"[{self._TAG}] runtime model is not initialized")
-        if not chunk.layers:
-            raise ValueError(f"[{self._TAG}] first chunk must contain at least one layer")
-        if chunk.calib_data is None:
-            raise ValueError(f"[{self._TAG}] calibration data is required")
-
-        class _CaptureInputsStop(RuntimeError):
-            pass
-
-        first_layer = _get_child_module(self._runtime_model, chunk.layers[0].name)
-        captured: List[torch.Tensor] = []
-        layer_kwargs: Dict[str, Any] = {}
-
-        def hook_fn(module, args, kwargs):
-            _ = module
-            if not args:
-                raise _CaptureInputsStop()
-            captured.append(args[0].detach())
-            if not layer_kwargs:
-                for key, value in kwargs.items():
-                    if torch.is_tensor(value):
-                        layer_kwargs[key] = value.detach()
-                    else:
-                        layer_kwargs[key] = value
-            raise _CaptureInputsStop()
-
-        handle = first_layer.register_forward_pre_hook(hook_fn, with_kwargs=True)
-        sample_count = 0
-        total_batches = len(chunk.calib_data) if hasattr(chunk.calib_data, "__len__") else None
-        try:
-            with torch.no_grad():
-                batch_iter = tqdm(
-                    self._iter_calib_batches(chunk.calib_data),
-                    total=total_batches,
-                    desc=f"{self._TAG.lower()} capture first-layer",
-                    leave=True,
+                packed_tensors, packed_quant_names = self._pack_quant_linear_tensors(
+                    module_name=module_rel_name,
+                    linear_module=handler.layer,
+                    scales=scales,
+                    zeros=zeros,
+                    g_idx=g_idx,
                 )
-                for raw_batch in batch_iter:
-                    if not isinstance(raw_batch, dict):
-                        continue
-                    batch_no_label = dict(raw_batch)
-                    batch_no_label.pop("labels", None)
-                    batch = self._move_batch_to_device(batch_no_label)
-                    try:
-                        self._runtime_model(**batch)
-                    except _CaptureInputsStop:
-                        pass
-                    if captured:
-                        sample_count += int(captured[-1].shape[0])
-                        if sample_count >= self.max_calib_samples:
-                            break
-        finally:
-            handle.remove()
-
-        if not captured:
-            raise RuntimeError(f"[{self._TAG}] failed to capture first-layer inputs from calibration data")
-
-        inps = torch.cat(captured, dim=0)
-        inps = inps[: self.max_calib_samples]
-        self._inps = inps
-        self._outs = torch.zeros_like(inps)
-        self._layer_kwargs = self._sanitize_layer_kwargs(layer_kwargs)
-        self._calib_batch_size = max(int(captured[0].shape[0]), 1)
-
-    def _iter_layer_sample_ranges(self, total_samples: int):
-        step = max(int(self._calib_batch_size), 1)
-        for start in range(0, total_samples, step):
-            end = min(start + step, total_samples)
-            yield start, end
-
-    def _collect_statistics(
-        self,
-        layer_module: nn.Module,
-        handlers: Dict[str, GPTQModule],
-        *,
-        layer_name: str,
-        chunk_index: int,
-    ) -> None:
-        if self._inps is None:
-            raise RuntimeError(f"[{self._TAG}] missing captured inputs")
-        hooks = []
-        for handler in handlers.values():
-            hooks.append(
-                handler.layer.register_forward_hook(
-                    lambda module, inp, out, h=handler: h.add_batch(inp[0].data, _unwrap_output(out).data)
-                )
-            )
-        total_samples = int(self._inps.shape[0])
-        step = max(int(self._calib_batch_size), 1)
-        total_steps = (total_samples + step - 1) // step
-        with torch.no_grad():
-            sample_iter = tqdm(
-                self._iter_layer_sample_ranges(total_samples),
-                total=total_steps,
-                desc=f"{self._TAG.lower()} calib c{chunk_index} {layer_name}",
-                leave=True,
-                disable=total_steps <= 1,
-            )
-            for start, end in sample_iter:
-                layer_module(self._inps[start:end], **self._layer_kwargs)
-        for hook in hooks:
-            hook.remove()
-        for handler in handlers.values():
-            handler.preproc()
-
-    def _forward_layer_outputs(
-        self,
-        layer_module: nn.Module,
-        *,
-        layer_name: str,
-        chunk_index: int,
-    ) -> None:
-        if self._inps is None or self._outs is None:
-            raise RuntimeError(f"[{self._TAG}] missing captured inputs")
-        total_samples = int(self._inps.shape[0])
-        step = max(int(self._calib_batch_size), 1)
-        total_steps = (total_samples + step - 1) // step
-        with torch.no_grad():
-            sample_iter = tqdm(
-                self._iter_layer_sample_ranges(total_samples),
-                total=total_steps,
-                desc=f"{self._TAG.lower()} forward c{chunk_index} {layer_name}",
-                leave=True,
-                disable=total_steps <= 1,
-            )
-            for start, end in sample_iter:
-                out = layer_module(self._inps[start:end], **self._layer_kwargs)
-                self._outs[start:end] = _unwrap_output(out).detach()
-        self._inps, self._outs = self._outs, self._inps
-
-    def _validate_chunk_order(self, chunk) -> None:
-        if not chunk.layers:
-            return
-        indices = chunk.layer_indices
-        if self._next_expected_layer_index is None:
-            self._next_expected_layer_index = indices[0]
-        expected = self._next_expected_layer_index
-        for idx in indices:
-            if idx != expected:
-                raise ValueError(
-                    f"[{self._TAG}] chunk order mismatch: expected layer {expected}, got {idx}"
-                )
-            expected += 1
-        self._next_expected_layer_index = expected
+                layer.tensors.pop(rel_weight_name, None)
+                layer.tensors.pop(rel_bias_name, None)
+                for rel_name, tensor in packed_tensors.items():
+                    layer.tensors[rel_name] = tensor
+                for rel_quant_name in packed_quant_names:
+                    quantized_tensor_names.add(f"{layer.name}.{rel_quant_name}")
+            quantized_weights += 1
+        return quantized_tensor_names, quantized_weights
 
     def _update_quantization_metadata(self) -> None:
         if self._model_config is None:
@@ -1085,166 +640,3 @@ class GPTQAlgorithm(BaseQuantizationAlgorithm):
 
         self._mark_model_quantized()
         logger.info(f"[{self._TAG}] model quantization metadata updated")
-
-    def process_chunk(self, chunk) -> Any:
-        if self._runtime_model is None:
-            raise RuntimeError(f"[{self._TAG}] on_start must be called before process_chunk")
-        self._validate_chunk_order(chunk)
-        if self._runtime_device is None:
-            self._runtime_device = self._resolve_runtime_device(chunk)
-
-        skip_names = self._set_skip_from_chunk_metadata(chunk)
-
-        quantized_tensor_names: set[str] = set()
-        quantized_weights = 0
-
-        if self._inps is None:
-            if not chunk.is_first_chunk:
-                raise ValueError(
-                    f"[{self._TAG}] first processed chunk must include layer-0 to capture initial inputs"
-                )
-            pre_tensor_map: Dict[str, torch.Tensor] = {}
-            for module in chunk.pre_modules:
-                pre_tensor_map.update(
-                    self._collect_module_runtime_tensors(module.name, module.tensors)
-                )
-            pre_assigned = self._assign_runtime_tensors(pre_tensor_map)
-            try:
-                self._capture_initial_inputs(chunk)
-            finally:
-                self._unassign_runtime_tensors(pre_assigned)
-
-        layer_iter = tqdm(
-            chunk.layers,
-            total=chunk.layer_count,
-            desc=f"{self._TAG.lower()} chunk {chunk.chunk_index}",
-            leave=True,
-            disable=chunk.layer_count <= 1,
-        )
-        for layer in layer_iter:
-            layer_tensor_map = self._collect_module_runtime_tensors(layer.name, layer.tensors)
-            layer_assigned = self._assign_runtime_tensors(layer_tensor_map)
-            try:
-                layer_module = _get_child_module(self._runtime_model, layer.name)
-                targets = self._extract_linear_targets(layer, skip_names)
-                handlers: Dict[str, GPTQModule] = {}
-                for module_rel_name, *_ in targets:
-                    submodule = _get_child_module(layer_module, module_rel_name)
-                    if not isinstance(submodule, nn.Linear):
-                        continue
-                    handlers[module_rel_name] = GPTQModule(
-                        submodule,
-                        wbits=self.wbits,
-                        groupsize=self.groupsize,
-                        blocksize=self.blocksize,
-                        actorder=self.actorder,
-                        static_groups=self.static_groups,
-                        sym=self.sym,
-                        percdamp=self.percdamp,
-                        preproc_hessian=self.preproc_hessian,
-                    )
-
-                if handlers:
-                    self._collect_statistics(
-                        layer_module,
-                        handlers,
-                        layer_name=layer.name,
-                        chunk_index=chunk.chunk_index,
-                    )
-
-                quant_results = []
-                for (
-                    module_rel_name,
-                    rel_weight_name,
-                    rel_bias_name,
-                    weight_tensor,
-                    _bias_tensor,
-                ) in targets:
-                    handler = handlers.get(module_rel_name)
-                    if handler is None:
-                        continue
-                    scales, zeros, g_idx = handler.fasterquant(
-                        layer_name=f"{layer.name}.{module_rel_name}"
-                    )
-                    metrics = getattr(handler, "last_metrics", {})
-                    if metrics:
-                        logger.info(
-                            f"[{self._TAG}] layer={layer.name}.{module_rel_name} "
-                            f"avg_loss={float(metrics.get('avg_loss', 0.0)):.6f} "
-                            f"norm_loss={float(metrics.get('norm_loss', 0.0)):.6f}"
-                        )
-                    quant_results.append(
-                        (
-                            module_rel_name,
-                            rel_weight_name,
-                            rel_bias_name,
-                            weight_tensor,
-                            scales,
-                            zeros,
-                            g_idx,
-                            handler,
-                        )
-                    )
-
-                pack_iter = tqdm(
-                    quant_results,
-                    total=len(quant_results),
-                    desc=f"{self._TAG.lower()} pack c{chunk.chunk_index} {layer.name}",
-                    leave=True,
-                    disable=len(quant_results) <= 1,
-                )
-                for (
-                    module_rel_name,
-                    rel_weight_name,
-                    rel_bias_name,
-                    weight_tensor,
-                    scales,
-                    zeros,
-                    g_idx,
-                    handler,
-                ) in pack_iter:
-                    if self.fake_quant:
-                        layer.tensors[rel_weight_name] = (
-                            handler.layer.weight.detach().to(weight_tensor.dtype).cpu()
-                        )
-                        quantized_tensor_names.add(f"{layer.name}.{rel_weight_name}")
-                    else:
-                        packed_tensors, packed_quant_names = self._pack_quant_linear_tensors(
-                            module_name=module_rel_name,
-                            linear_module=handler.layer,
-                            scales=scales,
-                            zeros=zeros,
-                            g_idx=g_idx,
-                        )
-                        layer.tensors.pop(rel_weight_name, None)
-                        layer.tensors.pop(rel_bias_name, None)
-                        for rel_name, tensor in packed_tensors.items():
-                            layer.tensors[rel_name] = tensor
-                        for rel_quant_name in packed_quant_names:
-                            quantized_tensor_names.add(f"{layer.name}.{rel_quant_name}")
-                    quantized_weights += 1
-
-                for handler in handlers.values():
-                    handler.free()
-
-                if layer.index < self._total_layers - 1:
-                    self._forward_layer_outputs(
-                        layer_module,
-                        layer_name=layer.name,
-                        chunk_index=chunk.chunk_index,
-                    )
-            finally:
-                self._unassign_runtime_tensors(layer_assigned)
-
-        tensor_types = {name: "FLOAT" for name in chunk.all_tensors().keys()}
-        quantized_type = self._ascend_quant_type if bh.name == "npu" else "GPTQ"
-        for name in quantized_tensor_names:
-            if name in tensor_types:
-                tensor_types[name] = quantized_type
-        chunk.metadata["tensor_types"] = tensor_types
-
-        logger.info(
-            f"[{self._TAG}] chunk={chunk.chunk_index}, layers={chunk.layer_count}, "
-            f"quantized_weights={quantized_weights}"
-        )
-        return chunk

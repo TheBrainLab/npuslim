@@ -68,7 +68,7 @@ pipeline:
 ## Run Command
 
 ```bash
-python tools/run.py -c configs/compressor/gptq/qwen3_0_6b.yaml
+python tools/run.py -c configs/opt/gptq/opt_125m-w4a16.yaml
 ```
 
 ## Output Format

@@ -2,24 +2,25 @@
 
 metadata:
   name: "Qwen3_Quantization_Recipe"
-  description: "A recipe for quantizing Qwen3 models using GPTQ and SparseGPTQ algorithms, followed by speculative fusion."
+  description: "GPTQ W4A16 quantization for Qwen3-235B-A22B-Instruct-2507."
 
 resources:
   - id: qwen
     type: Qwen3Model
-    path: Qwen/Qwen3-8B
+    path: Qwen/Qwen3-235B-A22B-Instruct-2507
     device_map: cpu
+    model_hub: ms
 
   - id: calib_data
-    type: C4Dataset
+    type: TextDataset
+    data_path: dataset/sharegpt_gpt4_qwen/sharegpt_gpt4-qwen3_a22B_output.jsonl
     num_samples: 128
-    max_seq_length: 2048
+    max_seq_length: 4096
 
 recipe:
   - name: "GPTQ_Quantization"
     type: compressor
     model: "@qwen"
-    # data: "@calib_data"
     dataloader:
       dataset: "@calib_data"
       batch_size: 1
@@ -32,7 +33,7 @@ recipe:
     ignore_layers: []
     execution:
       mode: streaming
-      chunk_size: 1
+      chunk_size: 8
     saver:
       type: StreamingHuggingFaceSaver
       save_dir: "./outputs"

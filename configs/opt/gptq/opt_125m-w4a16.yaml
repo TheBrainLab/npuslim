@@ -1,0 +1,38 @@
+# config.yaml
+
+metadata:
+  name: "OPT_Quantization_Recipe"
+  description: "GPTQ W4A16 quantization for OPT-125M."
+
+resources:
+  - id: opt
+    type: OPTModel
+    path: facebook/opt-125m
+    device_map: cuda
+
+  - id: calib_data
+    type: C4Dataset
+    num_samples: 128
+    max_seq_length: 2048
+
+recipe:
+  - name: "GPTQ_Quantization"
+    type: compressor
+    model: "@opt"
+    # data: "@calib_data"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 1
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ
+      wbits: 4
+      groupsize: 128
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 4
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs"

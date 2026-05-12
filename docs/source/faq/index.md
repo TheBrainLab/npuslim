@@ -61,13 +61,13 @@ python -c "from npuslim.vllm_plugin import register; register(); print('OK')"
 2. Check model config:
 
 ```bash
-cat outputs/qwen3_int8_dyn/config.json | grep quantization_config
+cat outputs/opt/int8_dynamic/opt_125m-w8a8/config.json | grep quantization_config
 ```
 
 3. Ensure `-q` flag is passed to vLLM:
 
 ```bash
-bash deploy/run_vllm.sh --model-path outputs/qwen3_int8_dyn -q
+bash deploy/run_vllm.sh --model-path outputs/opt/int8_dynamic/opt_125m-w8a8 -q
 ```
 
 ### How do I evaluate quantization accuracy?
@@ -76,10 +76,10 @@ bash deploy/run_vllm.sh --model-path outputs/qwen3_int8_dyn -q
 
 ```bash
 # WikiText2
-python tools/eval_ppl_quip_style.py --model outputs/qwen3_int8_dyn
+python tools/eval_ppl_quip_style.py --model outputs/opt/int8_dynamic/opt_125m-w8a8
 
 # LM-Eval
-bash tools/eval/run_lmeval.sh outputs/qwen3_int8_dyn --tasks wikitext
+bash tools/eval/run_lmeval.sh outputs/opt/int8_dynamic/opt_125m-w8a8 --tasks wikitext
 ```
 
 Compare with the original FP16 model to measure degradation.

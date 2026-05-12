@@ -26,10 +26,10 @@ vLLM-ascend throughput measurements for quantized models.
 
 ```bash
 # Deploy vLLM server
-bash deploy/run_vllm.sh --model-path outputs/qwen3_int8_dyn -d 4,5 -t 2 -q
+bash deploy/run_vllm.sh --model-path outputs/opt/int8_dynamic/opt_125m-w8a8 -d 4,5 -t 2 -q
 
 # Run stress test
-bash tools/eval/evalscope_perf.sh outputs/qwen3_int8_dyn --parallel "1 16 32 64"
+bash tools/eval/evalscope_perf.sh outputs/opt/int8_dynamic/opt_125m-w8a8 --parallel "1 16 32 64"
 ```
 
 ## Notes

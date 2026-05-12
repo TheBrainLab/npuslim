@@ -1,0 +1,38 @@
+metadata:
+  name: "Qwen3_QuIP_Quantization_Recipe"
+  description: "QuIP 4-bit quantization for Qwen3-0.6B with incoherence processing"
+
+resources:
+  - id: qwen
+    type: Qwen3Model
+    path: Qwen/Qwen3-0.6B
+    device_map: cuda
+
+  - id: calib_data
+    type: C4Dataset
+    num_samples: 128
+    max_seq_length: 2048
+
+recipe:
+  - name: "QuIP_Quantization"
+    type: compressor
+    model: "@qwen"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 1
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: QuIP
+      wbits: 4
+      quant_func: rms
+      ldlq_method: ldlq
+      npasses: 0
+      incoh_processing: true
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 1
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs"

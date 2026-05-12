@@ -41,14 +41,14 @@ NPUSlim supports multiple post-training quantization (PTQ) algorithms. This page
 
 ```bash
 # INT8Dynamic
-python tools/run.py -c configs/compressor/int8_dyn/qwen3_0_6b.yaml
+python tools/run.py -c configs/opt/int8_dynamic/opt_125m-w8a8.yaml
 
 # GPTQ
-python tools/run.py -c configs/compressor/gptq/qwen3_0_6b.yaml
+python tools/run.py -c configs/opt/gptq/opt_125m-w4a16.yaml
 
 # QuIP
-python tools/run.py -c configs/compressor/quip/qwen3_0_6b-w4.yaml
+python tools/run.py -c configs/opt/quip/opt_125m-w4a16.yaml
 
 # SparseGPT
-python tools/run.py -c configs/compressor/sparsegpt/qwen3_0_6b.yaml
+python tools/run.py -c configs/opt/sparsegpt/opt_125m-s0p5.yaml
 ```

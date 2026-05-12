@@ -20,6 +20,11 @@ AlgorithmRegistry.register_lazy(
     ".quantization.sparsegpt.sparsegpt_algo",
     aliases=["sparsegpt", "sparse_gpt"],
 )
+AlgorithmRegistry.register_lazy(
+    "QuIP",
+    ".quantization.quip.quip_algo",
+    aliases=["quip"],
+)
 
 __all__ = [
     "BaseAlgorithm",

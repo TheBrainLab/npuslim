@@ -11,7 +11,7 @@ Deploy quantized models with vLLM-ascend for high-throughput inference.
 ## Quick Deploy
 
 ```bash
-bash deploy/run_vllm.sh --model-path outputs/qwen3_int8_dyn -d 4,5 -t 2 -q
+bash deploy/run_vllm.sh --model-path outputs/opt/int8_dynamic/opt_125m-w8a8 -d 4,5 -t 2 -q
 ```
 
 ### Parameters
@@ -59,7 +59,7 @@ Verify the model was quantized with a supported method:
 
 ```bash
 # Check model config
-cat outputs/qwen3_int8_dyn/config.json | grep quantization_config
+cat outputs/opt/int8_dynamic/opt_125m-w8a8/config.json | grep quantization_config
 ```
 
 The `quantization_config` should contain `"quant_method"` matching NPUSlim algorithms.
@@ -69,7 +69,7 @@ The `quantization_config` should contain `"quant_method"` matching NPUSlim algor
 Reduce tensor parallel size or use smaller models:
 
 ```bash
-bash deploy/run_vllm.sh --model-path outputs/qwen3_int8_dyn -d 4 -t 1 -q
+bash deploy/run_vllm.sh --model-path outputs/opt/int8_dynamic/opt_125m-w8a8 -d 4 -t 1 -q
 ```
 
 ## Performance Tuning

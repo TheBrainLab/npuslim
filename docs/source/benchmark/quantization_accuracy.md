@@ -19,10 +19,10 @@ Comparison of quantization accuracy across different algorithms and bit widths.
 
 ```bash
 # WikiText2 perplexity
-python tools/eval_ppl_quip_style.py --model outputs/qwen3_int8_dyn
+python tools/eval_ppl_quip_style.py --model outputs/opt/int8_dynamic/opt_125m-w8a8
 
 # C4 perplexity
-python tools/eval_ppl_quip_style.py --model outputs/qwen3_int8_dyn --dataset c4
+python tools/eval_ppl_quip_style.py --model outputs/opt/int8_dynamic/opt_125m-w8a8 --dataset c4
 ```
 
 ## Analysis

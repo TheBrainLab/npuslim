@@ -8,13 +8,13 @@
 export HF_ENDPOINT="https://hf-mirror.com"
 
 # GPU (INT8)
-python tools/run.py -c configs/qwen3/qwen3_8b-int8.yaml
+python tools/run.py -c configs/qwen3/int8_dynamic/qwen3_8b-w8a8.yaml
 
 # GPU (GPTQ)
-python tools/run.py -c configs/opt/opt_125m-gptq.yaml
+python tools/run.py -c configs/opt/gptq/opt_125m-w4a16.yaml
 
 # NPU (use device_map: npu in config)
-python tools/run.py -c configs/qwen3/qwen3_8b-int8.yaml
+python tools/run.py -c configs/qwen3/int8_dynamic/qwen3_8b-w8a8.yaml
 ```
 
 ### Deployment (vLLM)

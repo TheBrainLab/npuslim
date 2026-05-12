@@ -28,7 +28,7 @@ The `-e` flag installs in development mode, and `-v` enables verbose output.
 
 ### 1. Prepare Config
 
-Edit a config file in `configs/compressor/`, for example `int8_dyn/qwen3_0_6b.yaml`:
+Edit a config file in `configs/<model>/<algo>/`, for example `opt/int8_dynamic/opt_125m-w8a8.yaml`:
 
 ```yaml
 meta:
@@ -66,15 +66,15 @@ pipeline:
 ### 2. Run Quantization
 
 ```bash
-python tools/run.py -c configs/compressor/int8_dyn/qwen3_0_6b.yaml
+python tools/run.py -c configs/opt/int8_dynamic/opt_125m-w8a8.yaml
 ```
 
 ### 3. Check Output
 
-After completion, the quantized model will be saved to `./outputs/<model_name>/`.
+After completion, the quantized model will be saved under `./outputs/<model>/<algo>/<config_stem>/`.
 
 ```
-outputs/qwen3_int8_dyn/
+outputs/opt/int8_dynamic/opt_125m-w8a8/
 ├── config.json
 ├── tokenizer.json
 └── model.safetensors

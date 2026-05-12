@@ -61,7 +61,7 @@ pipeline:
 ## Run Command
 
 ```bash
-python tools/run.py -c configs/compressor/sparsegpt/qwen3_0_6b.yaml
+python tools/run.py -c configs/opt/sparsegpt/opt_125m-s0p5.yaml
 ```
 
 ## Output Format

@@ -35,13 +35,13 @@ Requires CANN environment with `ASCEND_HOME_PATH` set.
 ### Quantize a Model
 
 ```bash
-python tools/run.py -c configs/compressor/int8_dyn/qwen3_0_6b.yaml
+python tools/run.py -c configs/opt/int8_dynamic/opt_125m-w8a8.yaml
 ```
 
 ### Deploy with vLLM
 
 ```bash
-bash deploy/run_vllm.sh --model-path outputs/qwen3_int8_dyn -d 4,5 -t 2 -q
+bash deploy/run_vllm.sh --model-path outputs/opt/int8_dynamic/opt_125m-w8a8 -d 4,5 -t 2 -q
 ```
 
 ## Supported Models

@@ -25,21 +25,17 @@ Requires CANN environment with `ASCEND_HOME_PATH` set.
 # Use mirror if HuggingFace is inaccessible
 export HF_ENDPOINT="https://hf-mirror.com"
 
-# GPU
-python tools/run.py -c configs/compressor/int8_dyn/qwen3/qwen3_0_6b.yaml
+# INT8 dynamic
+python tools/run.py -c configs/opt/int8_dynamic/opt_125m-w8a8.yaml
 
-# NPU
-python tools/run.py -c configs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b.yaml
+# GPTQ
+python tools/run.py -c configs/opt/gptq/opt_125m-w4a16.yaml
 ```
 
 ### Deployment (vLLM)
 
 ```bash
-# GPU
-bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/qwen3_0_6b -d 0 -t 1
-
-# NPU
-bash tools/serve/deploy_vllm.sh outputs/compressor/int8_dyn/qwen3/ascend-qwen3_0_6b -d 0 -t 1 -q
+bash tools/serve/deploy_vllm.sh outputs/opt/int8_dynamic/opt_125m-w8a8 -d 0 -t 1
 ```
 
 ### Evaluation
@@ -95,7 +91,7 @@ Use `--help` to see all options for each script.
 
 ## Configuration
 
-Edit config files in `configs/compressor/<algo>/<model>/` to customize model path, quantization parameters, and pipeline tasks.
+Edit config files in `configs/<model>/<algo>/` to customize model path, quantization parameters, and pipeline tasks.
 
 ```yaml
 model:

@@ -99,7 +99,7 @@ class QuipHfQuantizer(HfQuantizer):
         Returns:
             Number of layers replaced
         """
-        from npuslim.compressor.quantizer.quip.quip_linear import QuIPLinear
+        from npuslim.algorithms.quantization.quip.quip_algo import QuIPLinear
 
         replaced = 0
         bits = self.quantization_config.bits

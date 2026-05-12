@@ -1,14 +1,12 @@
-# config.yaml
-
 metadata:
-  name: "Qwen3_Quantization_Recipe"
-  description: "A recipe for quantizing Qwen3 models using GPTQ and SparseGPTQ algorithms, followed by speculative fusion."
+  name: "OPT_QuIP_Quantization_Recipe"
+  description: "QuIP 4-bit quantization for OPT-125M with incoherence processing"
 
 resources:
-  - id: qwen
-    type: Qwen3Model
-    path: Qwen/Qwen3-0.6B
-    device_map: cpu
+  - id: opt
+    type: OPTModel
+    path: facebook/opt-125m
+    device_map: cuda
 
   - id: calib_data
     type: C4Dataset
@@ -16,23 +14,25 @@ resources:
     max_seq_length: 2048
 
 recipe:
-  - name: "GPTQ_Quantization"
+  - name: "QuIP_Quantization"
     type: compressor
-    model: "@qwen"
-    # data: "@calib_data"
+    model: "@opt"
     dataloader:
       dataset: "@calib_data"
       batch_size: 1
       shuffle: true
       pin_memory: true
     algorithm:
-      type: GPTQ
+      type: QuIP
       wbits: 4
-      groupsize: 128
+      quant_func: rms
+      ldlq_method: ldlq
+      npasses: 0
+      incoh_processing: true
     ignore_layers: []
     execution:
       mode: streaming
-      chunk_size: 1
+      chunk_size: 4
     saver:
       type: StreamingHuggingFaceSaver
       save_dir: "./outputs"

@@ -195,6 +195,12 @@ if [[ "$BACKEND" != "api" ]]; then
     export OPENBLAS_NUM_THREADS=1
 fi
 
+# vLLM defaults to fork workers, which is unsafe once the parent process
+# has already touched CUDA. Force spawn unless the user explicitly overrides it.
+if [[ "$BACKEND" == "vllm" && -z "${VLLM_WORKER_MULTIPROC_METHOD:-}" ]]; then
+    export VLLM_WORKER_MULTIPROC_METHOD=spawn
+fi
+
 # ------------------------------------------------------------------------------
 # Build Output Path
 # ------------------------------------------------------------------------------
@@ -269,6 +275,7 @@ log_info "Backend" "$BACKEND"
 if [[ "$BACKEND" == "vllm" ]]; then
     log_info "Device" "${DEVICE_TYPE^^} ($DEVICES)"
     log_info "TP Size" "$TP_SIZE"
+    log_info "MP Method" "${VLLM_WORKER_MULTIPROC_METHOD:-default}"
     [[ -n "$QUANT_METHOD" ]] && log_info "Quant" "$QUANT_METHOD"
 elif [[ "$BACKEND" == "hf" ]]; then
     log_info "Device" "${DEVICE_TYPE^^} ($DEVICES)"

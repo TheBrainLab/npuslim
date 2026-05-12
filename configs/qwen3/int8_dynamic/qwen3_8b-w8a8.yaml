@@ -2,7 +2,7 @@
 
 metadata:
   name: "Qwen3_Quantization_Recipe"
-  description: "A recipe for quantizing Qwen3 models using GPTQ and SparseGPTQ algorithms, followed by speculative fusion."
+  description: "INT8 dynamic quantization for Qwen3-8B."
 
 resources:
   - id: qwen3
