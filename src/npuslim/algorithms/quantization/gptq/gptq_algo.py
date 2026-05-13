@@ -436,6 +436,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         preproc_hessian: bool = True,
         fake_quant: bool = False,
         max_calib_samples: int = 128,
+        save_backend: Optional[str] = None,
         **kwargs,
     ):
         if w_bits is not None:
@@ -452,10 +453,19 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         self.percdamp = float(percdamp)
         self.preproc_hessian = bool(preproc_hessian)
         self.fake_quant = bool(fake_quant)
+        self._save_backend = save_backend
 
     @property
     def _ascend_quant_type(self) -> str:
         return f"W{self.wbits}A16"
+
+    @property
+    def target_backend(self) -> str:
+        """Backend governing the output packing format.
+
+        Falls back to the runtime backend when ``save_backend`` is not set.
+        """
+        return self._save_backend or bh.name
 
     def _log_start_params(self) -> None:
         logger.info(
@@ -479,7 +489,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
             outfeatures=linear_module.out_features,
             bias=linear_module.bias is not None,
             weight_dtype=linear_module.weight.dtype,
-            backend=bh.name,
+            backend=self.target_backend,
         )
         proxy = SimpleNamespace(
             weight=linear_module.weight.detach().cpu(),
@@ -489,7 +499,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
 
         tensors: Dict[str, torch.Tensor] = {}
         quantized_names: List[str] = []
-        if bh.name == "npu":
+        if self.target_backend == "npu":
             tensors[f"{module_name}.weight"] = quant_linear.weight.cpu()
             tensors[f"{module_name}.weight_scale"] = quant_linear.weight_scale.cpu()
             tensors[f"{module_name}.weight_offset"] = quant_linear.weight_offset.cpu()
@@ -616,7 +626,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         if self._model_config is None:
             return
 
-        if bh.name == "npu":
+        if self.target_backend == "npu":
             self._model_config.ascend_quant_config = {
                 "model_quant_type": self._ascend_quant_type,
                 "group_size": self.groupsize,

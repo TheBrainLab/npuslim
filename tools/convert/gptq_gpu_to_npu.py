@@ -76,7 +76,7 @@ from transformers import AutoConfig, AutoModelForCausalLM
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from npuslim.compressor.quantizer.gptq.gptq_linear import GPTQQuantLinear
+from npuslim.algorithms.quantization.gptq.gptq_algo import GPTQQuantLinear
 
 
 def load_quant_config(model_path: str) -> Dict[str, Any]:
@@ -309,34 +309,24 @@ def convert_layer_to_ascend(
     )
 
     # Create new layer in Ascend format
-    # We need to mock the NPU backend for GPTQQuantLinear to use Ascend format
-    from npuslim.utils.backend import bh
+    new_layer = GPTQQuantLinear(
+        bits=bits,
+        group_size=group_size,
+        infeatures=infeatures,
+        outfeatures=outfeatures,
+        bias=hasattr(module, 'bias') and module.bias is not None,
+        weight_dtype=scales.dtype,
+        backend="npu",
+    )
 
-    # Temporarily override backend to NPU for Ascend format
-    original_backend = bh.name
-    bh.name = "npu"
+    # Copy packed weights
+    new_layer.weight = nn.Parameter(packed_weight, requires_grad=False)
+    new_layer.weight_scale = nn.Parameter(weight_scale, requires_grad=False)
+    new_layer.weight_offset = nn.Parameter(weight_offset, requires_grad=False)
 
-    try:
-        new_layer = GPTQQuantLinear(
-            bits=bits,
-            group_size=group_size,
-            infeatures=infeatures,
-            outfeatures=outfeatures,
-            bias=hasattr(module, 'bias') and module.bias is not None,
-            weight_dtype=scales.dtype,
-        )
-
-        # Copy packed weights
-        new_layer.weight = nn.Parameter(packed_weight, requires_grad=False)
-        new_layer.weight_scale = nn.Parameter(weight_scale, requires_grad=False)
-        new_layer.weight_offset = nn.Parameter(weight_offset, requires_grad=False)
-
-        # Copy bias if present
-        if new_layer.bias is not None and hasattr(module, 'bias') and module.bias is not None:
-            new_layer.bias.data = module.bias.data.clone()
-
-    finally:
-        bh.name = original_backend
+    # Copy bias if present
+    if new_layer.bias is not None and hasattr(module, 'bias') and module.bias is not None:
+        new_layer.bias.data = module.bias.data.clone()
 
     return new_layer
 
@@ -423,49 +413,40 @@ def load_gptq_model(model_path: str, device: str = "cpu"):
 
     logger.info(f"Found {len(gptq_layer_names)} GPTQ layers to replace")
 
-    # Temporarily set backend to non-NPU to ensure GPTQQuantLinear creates
-    # GPU format buffers (qweight, qzeros, scales, g_idx) instead of NPU format
-    # (weight, weight_scale, weight_offset)
-    from npuslim.utils.backend import bh
-    original_backend = bh.name
-    bh.name = "cpu"
+    # Replace Linear layers with GPTQQuantLinear (GPU format)
+    for layer_name in gptq_layer_names:
+        # Navigate to the parent module
+        *parent_path, leaf_name = layer_name.split(".")
+        parent = model
+        for part in parent_path:
+            parent = getattr(parent, part)
 
-    try:
-        # Replace Linear layers with GPTQQuantLinear
-        for layer_name in gptq_layer_names:
-            # Navigate to the parent module
-            *parent_path, leaf_name = layer_name.split(".")
-            parent = model
-            for part in parent_path:
-                parent = getattr(parent, part)
+        old_layer = getattr(parent, leaf_name)
 
-            old_layer = getattr(parent, leaf_name)
+        # Create GPTQQuantLinear with same dimensions
+        infeatures = old_layer.in_features
+        outfeatures = old_layer.out_features
+        has_bias = old_layer.bias is not None
 
-            # Create GPTQQuantLinear with same dimensions
-            infeatures = old_layer.in_features
-            outfeatures = old_layer.out_features
-            has_bias = old_layer.bias is not None
+        # Detect weight dtype from config
+        weight_dtype = torch.float16
+        if hasattr(config, 'dtype'):
+            if config.dtype == "bfloat16":
+                weight_dtype = torch.bfloat16
+            elif config.dtype == "float32":
+                weight_dtype = torch.float32
 
-            # Detect weight dtype from config
-            weight_dtype = torch.float16
-            if hasattr(config, 'dtype'):
-                if config.dtype == "bfloat16":
-                    weight_dtype = torch.bfloat16
-                elif config.dtype == "float32":
-                    weight_dtype = torch.float32
+        new_layer = GPTQQuantLinear(
+            bits=bits,
+            group_size=group_size,
+            infeatures=infeatures,
+            outfeatures=outfeatures,
+            bias=has_bias,
+            weight_dtype=weight_dtype,
+            backend="cpu",
+        )
 
-            new_layer = GPTQQuantLinear(
-                bits=bits,
-                group_size=group_size,
-                infeatures=infeatures,
-                outfeatures=outfeatures,
-                bias=has_bias,
-                weight_dtype=weight_dtype,
-            )
-
-            setattr(parent, leaf_name, new_layer)
-    finally:
-        bh.name = original_backend
+        setattr(parent, leaf_name, new_layer)
 
     # Load state dict from safetensors files
     safetensors_files = sorted(Path(model_path).glob("model-*.safetensors"))
