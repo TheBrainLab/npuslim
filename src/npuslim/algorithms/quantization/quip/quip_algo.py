@@ -593,11 +593,13 @@ class QuIPModule(BaseHessianModule):
         self.postproc()
 
         result = self._collect_quant_params(w_int)
+        self.last_metrics = {
+            "rows": self.rows,
+            "columns": self.columns,
+            "hess_err": hess_err / max(self.nsamples, 1),
+            "norm_loss": norm_loss,
+        }
         self.free()
-        logger.info(
-            f"[QuIP] shape=[{self.rows},{self.columns}] "
-            f"hess_err={hess_err / max(self.nsamples, 1):.6f} norm_loss={norm_loss:.6f}"
-        )
         return result
 
     def _collect_quant_params(self, w_int: torch.Tensor) -> Dict[str, Any]:
@@ -981,6 +983,15 @@ class QuIPAlgorithm(BaseHessianAlgorithm):
             if handler is None:
                 continue
             result = handler.fasterquant(layer_name=f"{layer.name}.{module_rel_name}")
+            metrics = getattr(handler, "last_metrics", {})
+            if metrics:
+                full_name = f"{layer.name}.{module_rel_name}"
+                logger.info(
+                    f"[{self._TAG}] {full_name:<50s} | "
+                    f"shape=[{int(metrics.get('rows', 0)):>5},{int(metrics.get('columns', 0)):>5}] | "
+                    f"hess_err={float(metrics.get('hess_err', 0.0)):<12.6f} | "
+                    f"norm_loss={float(metrics.get('norm_loss', 0.0)):<12.6f}"
+                )
             quant_results.append((module_rel_name, rel_weight_name, rel_bias_name, result, handler))
 
         pack_iter = tqdm(

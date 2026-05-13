@@ -5,10 +5,10 @@ from abc import ABC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import torch
 from accelerate import init_empty_weights
 from loguru import logger
 from npuslim.core.backend import bh
+
 
 def get_hub_class(model_hub: str, class_name: str):
     """

@@ -18,7 +18,6 @@ from npuslim.algorithms.quantization.hessian.hessian_common import (
     _unwrap_output,
 )
 from npuslim.core.backend import bh
-from npuslim.models.base_model import get_hub_class
 
 
 class BaseHessianAlgorithm(BaseQuantizationAlgorithm):

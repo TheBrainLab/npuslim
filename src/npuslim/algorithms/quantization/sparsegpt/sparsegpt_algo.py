@@ -189,7 +189,7 @@ class SparseGPTModule(BaseHessianModule):
         self.postproc()
         self.free()
 
-        return {"avg_loss": avg_loss, "norm_loss": norm_loss}
+        return {"rows": self.rows, "columns": self.columns, "avg_loss": avg_loss, "norm_loss": norm_loss}
 
 
 @AlgorithmRegistry.register("SparseGPT", aliases=["sparsegpt", "sparse_gpt"])
@@ -265,10 +265,12 @@ class SparseGPTAlgorithm(BaseHessianAlgorithm):
                 handler.layer.weight.detach().to(weight_tensor.dtype).cpu()
             )
             pruned_weights += 1
+            full_name = f"{layer.name}.{module_rel_name}"
             logger.info(
-                f"[{self._TAG}] layer={layer.name}.{module_rel_name} "
-                f"avg_loss={float(metrics.get('avg_loss', 0.0)):.6f} "
-                f"norm_loss={float(metrics.get('norm_loss', 0.0)):.6f}"
+                f"[{self._TAG}] {full_name:<50s} | "
+                f"shape=[{int(metrics.get('rows', 0)):>5},{int(metrics.get('columns', 0)):>5}] | "
+                f"avg_loss={float(metrics.get('avg_loss', 0.0)):<12.6f} | "
+                f"norm_loss={float(metrics.get('norm_loss', 0.0)):<12.6f}"
             )
         return set(), pruned_weights
 

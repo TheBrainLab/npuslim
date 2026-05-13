@@ -20,7 +20,7 @@ recipe:
     ignore_layers: []
     execution:
       mode: streaming
-      chunk_size: 2
+      chunk_size: 4
     saver:
       type: StreamingHuggingFaceSaver
       save_dir: "./outputs"

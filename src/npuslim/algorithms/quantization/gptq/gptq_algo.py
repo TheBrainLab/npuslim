@@ -193,6 +193,8 @@ class GPTQModule(BaseHessianModule):
         avg_loss = float(torch.sum(losses).item() / max(int(self.nsamples), 1))
         norm_loss = float(torch.norm(q_reshaped - w_orig).item())
         self.last_metrics = {
+            "rows": self.rows,
+            "columns": self.columns,
             "avg_loss": avg_loss,
             "norm_loss": norm_loss,
             "nsamples": float(self.nsamples),
@@ -565,10 +567,12 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
             )
             metrics = getattr(handler, "last_metrics", {})
             if metrics:
+                full_name = f"{layer.name}.{module_rel_name}"
                 logger.info(
-                    f"[{self._TAG}] layer={layer.name}.{module_rel_name} "
-                    f"avg_loss={float(metrics.get('avg_loss', 0.0)):.6f} "
-                    f"norm_loss={float(metrics.get('norm_loss', 0.0)):.6f}"
+                    f"[{self._TAG}] {full_name:<50s} | "
+                    f"shape=[{int(metrics.get('rows', 0)):>5},{int(metrics.get('columns', 0)):>5}] | "
+                    f"avg_loss={float(metrics.get('avg_loss', 0.0)):<12.6f} | "
+                    f"norm_loss={float(metrics.get('norm_loss', 0.0)):<12.6f}"
                 )
             quant_results.append(
                 (
