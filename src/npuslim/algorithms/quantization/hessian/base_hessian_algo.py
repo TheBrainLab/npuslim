@@ -118,9 +118,9 @@ class BaseHessianAlgorithm(BaseQuantizationAlgorithm):
         if self._model_config is None:
             raise ValueError(f"[{self._TAG}] model_config is required to build empty runtime model")
 
-        auto_model_cls = get_hub_class(
-            getattr(self._model_obj, "model_hub", "hf"),
-            "AutoModelForCausalLM",
+        auto_model_cls = self._model_obj._resolve_first_available_class(
+            self._model_obj.get_model_loader_candidates(),
+            kind="model",
         )
         model_kwargs = dict(getattr(self._model_obj, "model_kwargs", {}) or {})
         trust_remote_code = bool(model_kwargs.get("trust_remote_code", False))
