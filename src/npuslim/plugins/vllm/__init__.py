@@ -5,9 +5,7 @@ Patches vLLM core modules (e.g., model_executor/models) for NPUSlim compatibilit
 
 from pathlib import Path
 
-from vllm.logger import init_logger
-
-logger = init_logger(__name__)
+from npuslim.plugins.logging import patch_logger
 
 
 def register():
@@ -22,6 +20,6 @@ def register():
         discover_modules("npuslim.plugins.vllm", plugin_dir)
         # Apply all registered patches
         apply_all_patches()
-        logger.info("NPUSlim registered with vLLM core")
+        patch_logger.info("Registered NPUSlim with vLLM core")
     except ImportError as e:
-        logger.warning(f"Could not register NPUSlim with vLLM core: {e}")
+        patch_logger.warning(f"Could not register NPUSlim with vLLM core: {e}")

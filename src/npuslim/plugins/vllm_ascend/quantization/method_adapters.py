@@ -26,12 +26,10 @@ For RowParallelLinear (o_proj, down_proj), per-group params depend on input_size
 so input_dim=1 must be set for proper tensor parallel sharding.
 """
 
-from vllm.logger import init_logger
 from vllm.model_executor.layers.linear import RowParallelLinear
 
+from npuslim.plugins.logging import patch_logger
 from npuslim.plugins.registry import register_patch
-
-logger = init_logger(__name__)
 
 
 @register_patch("vllm_ascend.quantization.method_adapters")
@@ -76,6 +74,7 @@ def patch_create_weights(module):
                         param.input_dim = 1
 
     module.AscendLinearMethod.create_weights = patched_create_weights
-    logger.info(
-        "Patched AscendLinearMethod.create_weights to support per-group input_dim parameters"
+    patch_logger.info(
+        "Patched AscendLinearMethod.create_weights to support per-group "
+        "input_dim parameters"
     )

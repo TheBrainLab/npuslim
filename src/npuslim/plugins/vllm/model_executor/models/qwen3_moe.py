@@ -15,9 +15,10 @@ from typing import Any, Callable
 import torch
 from vllm.logger import init_logger
 
+from npuslim.plugins.logging import patch_logger
 from npuslim.plugins.registry import register_patch
 
-logger = init_logger(__name__)
+target_logger = init_logger(__name__)
 
 
 def _is_w4a16_quantized(params_dict: dict) -> bool:
@@ -198,7 +199,7 @@ def patch_qwen3_moe_load_weights(module):
                                 param_found = True
                                 break
                             except Exception as e:
-                                logger.debug(
+                                target_logger.debug(
                                     f"Failed to load {name_with_suffix}: {e}"
                                 )
 
@@ -237,7 +238,7 @@ def patch_qwen3_moe_load_weights(module):
                                     param_found = True
                                     break
                                 except Exception as e:
-                                    logger.debug(
+                                    target_logger.debug(
                                         f"Failed to load {name_with_aux}: {e}"
                                     )
 
@@ -259,7 +260,7 @@ def patch_qwen3_moe_load_weights(module):
                         ".kv_scale", ".attn.kv_scale"
                     )
                     if remapped_kv_scale_name not in params_dict:
-                        logger.warning_once(
+                        target_logger.warning_once(
                             "Found kv scale in checkpoint (e.g. %s), "
                             "but not found expected name in model (e.g. %s). "
                             "kv-scale is not loaded.",
@@ -280,4 +281,4 @@ def patch_qwen3_moe_load_weights(module):
         return loaded_params
 
     module.Qwen3MoeModel.load_weights = patched_load_weights
-    logger.info("Patched Qwen3MoeModel.load_weights for W4A16 MoE support")
+    patch_logger.info("Patched Qwen3MoeModel.load_weights for W4A16 MoE support")

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from loguru import logger
+from npuslim.plugins.logging import patch_logger
 
 
 def register():
@@ -24,6 +24,6 @@ def register():
         plugin_dir = str(Path(__file__).parent)
         discover_modules("npuslim.plugins.speculators", plugin_dir)
         apply_all_patches()
-        logger.info("NPUSlim registered with speculators")
+        patch_logger.info("Registered NPUSlim with speculators")
     except ImportError as e:
-        logger.warning(f"Could not register NPUSlim with speculators: {e}")
+        patch_logger.warning(f"Could not register NPUSlim with speculators: {e}")

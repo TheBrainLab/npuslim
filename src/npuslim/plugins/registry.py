@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from loguru import logger
+from npuslim.plugins.logging import patch_logger
 
 # Global registry: target_module -> list of patch functions
 _PATCH_REGISTRY: dict[str, list[Callable]] = {}
@@ -74,9 +74,9 @@ def discover_modules(base_package: str, base_dir: str):
 
         try:
             importlib.import_module(module_name)
-            logger.debug(f"Discovered module: {module_name}")
+            patch_logger.debug(f"Discovered module: {module_name}")
         except ImportError as e:
-            logger.warning(f"Failed to import module {module_name}: {e}")
+            patch_logger.warning(f"Failed to import module {module_name}: {e}")
 
     _DISCOVERED_MODULES.add(cache_key)
 
@@ -99,18 +99,21 @@ def apply_all_patches():
             for patch_func in patches:
                 try:
                     patch_func(module)
-                    logger.debug(f"Applied patch: {patch_func.__name__} -> {target}")
+                    patch_logger.debug(
+                        f"Applied patch: {patch_func.__name__} -> {target}"
+                    )
                     applied += 1
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to apply patch {patch_func.__name__} to {target}: {e}"
+                    patch_logger.warning(
+                        f"Failed to apply patch {patch_func.__name__} "
+                        f"to {target}: {e}"
                     )
             _APPLIED_PATCHES.add(patch_key)
         except ImportError:
-            logger.debug(f"Target module not found, skipping: {target}")
+            patch_logger.debug(f"Target module not found, skipping: {target}")
 
     if applied > 0:
-        logger.info(f"Applied {applied} patch(es)")
+        patch_logger.info(f"Applied {applied} patch(es)")
     return applied
 
 

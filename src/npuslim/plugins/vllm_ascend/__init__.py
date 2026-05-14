@@ -5,9 +5,7 @@ Registers NPUSlim quantization methods with vLLM-Ascend for NPU deployment.
 
 from pathlib import Path
 
-from vllm.logger import init_logger
-
-logger = init_logger(__name__)
+from npuslim.plugins.logging import patch_logger
 
 
 def register():
@@ -30,7 +28,7 @@ def register():
         # Apply all registered patches
         apply_all_patches()
 
-        logger.info("NPUSlim registered with vLLM-Ascend")
+        patch_logger.info("Registered NPUSlim with vLLM-Ascend")
 
     except ImportError as e:
-        logger.warning(f"Could not register NPUSlim with vLLM-Ascend: {e}")
+        patch_logger.warning(f"Could not register NPUSlim with vLLM-Ascend: {e}")
