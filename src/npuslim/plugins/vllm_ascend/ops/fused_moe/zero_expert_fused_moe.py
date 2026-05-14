@@ -20,11 +20,16 @@ from vllm_ascend.ops.fused_moe.experts_selector import (
 )
 from vllm_ascend.ops.fused_moe.fused_moe import AscendFusedMoE
 
+from npuslim.plugins.registry import package_version_range, register_patch
+
 if TYPE_CHECKING:
     import torch
 
 
-@CustomOp.register_oot(name="ZeroExpertFusedMoE")
+@register_patch(
+    registrar=CustomOp.register_oot(name="ZeroExpertFusedMoE"),
+    condition=package_version_range("vllm_ascend", max_version="0.18.1"),
+)
 class AscendZeroExpertFusedMoE(ZeroExpertFusedMoE, AscendFusedMoE):
     """Ascend replacement for upstream ``ZeroExpertFusedMoE``.
 

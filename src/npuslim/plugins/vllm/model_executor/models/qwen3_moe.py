@@ -16,7 +16,7 @@ import torch
 from vllm.logger import init_logger
 
 from npuslim.plugins.logging import patch_logger
-from npuslim.plugins.registry import register_patch
+from npuslim.plugins.registry import package_version_range, register_patch
 
 target_logger = init_logger(__name__)
 
@@ -42,7 +42,10 @@ def _get_w4a16_aux_suffixes() -> list[str]:
     return ["_scale", "_shape", "_offset"]
 
 
-@register_patch("vllm.model_executor.models.qwen3_moe")
+@register_patch(
+    target="vllm.model_executor.models.qwen3_moe",
+    condition=package_version_range("vllm", max_version="0.18.1"),
+)
 def patch_qwen3_moe_load_weights(module):
     """Patch Qwen3MoeModel.load_weights to handle W4A16 quantization."""
 

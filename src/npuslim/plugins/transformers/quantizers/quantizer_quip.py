@@ -13,8 +13,13 @@ from transformers.quantizers import register_quantization_config, register_quant
 from transformers.quantizers.base import HfQuantizer
 from transformers.utils.quantization_config import QuantizationConfigMixin
 
+from npuslim.plugins.registry import package_version_range, register_patch
 
-@register_quantization_config("quip")
+
+@register_patch(
+    registrar=register_quantization_config("quip"),
+    condition=package_version_range("transformers", max_version="4.58.0"),
+)
 @dataclass
 class QuipConfig(QuantizationConfigMixin):
     """
@@ -43,7 +48,10 @@ class QuipConfig(QuantizationConfigMixin):
         }
 
 
-@register_quantizer("quip")
+@register_patch(
+    registrar=register_quantizer("quip"),
+    condition=package_version_range("transformers", max_version="4.58.0"),
+)
 class QuipHfQuantizer(HfQuantizer):
     """
     HuggingFace quantizer for QuIP.
