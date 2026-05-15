@@ -104,6 +104,7 @@ BATCH_SIZE="auto"
 OUTPUT_DIR="outputs/benchmark/lmeval"
 LIMIT=""
 LOG_SAMPLES=false
+OFFLINE=false
 
 # Hardware options (vllm/hf backends)
 DEVICES="0"
@@ -160,6 +161,7 @@ while [[ $# -gt 0 ]]; do
         --model-name) MODEL_NAME="$2"; shift 2 ;;
         --chat) API_CHAT=true; shift 1 ;;
         --apply-chat-template) APPLY_CHAT_TEMPLATE=true; shift 1 ;;
+        --offline) OFFLINE=true; shift 1 ;;
         -h|--help) usage; exit 0 ;;
         *) POSITIONAL_ARGS+=("$1"); shift ;;
     esac
@@ -338,6 +340,12 @@ echo ""
 # In vllm/hf modes, we need the plugin system to work
 if [[ "$BACKEND" == "api" ]]; then
     export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+fi
+
+# Offline mode: use cached datasets/models only, no network access
+if [[ "$OFFLINE" == true ]]; then
+    export HF_DATASETS_OFFLINE=1
+    export TRANSFORMERS_OFFLINE=1
 fi
 
 # Build optional arguments (avoid set -e issues with conditional command substitution)
