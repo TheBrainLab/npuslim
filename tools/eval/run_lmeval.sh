@@ -63,6 +63,11 @@ API Backend Options:
   --url URL                   API endpoint URL (default: http://127.0.0.1:\$PORT/v1/completions)
   --port PORT                 Server port (default: 8080)
   --model-name NAME           Model name sent to API (default: MODEL_PATH)
+  --chat                      Use /v1/chat/completions endpoint with local-chat-completions model
+                              Required for generative tasks (e.g. mmlu_generative) on chat-tuned models
+  --apply-chat-template       Apply model's chat template via HuggingFace tokenizer
+                              Works with all backends. Note: incompatible with loglikelihood-based
+                              tasks (e.g. mmlu) -- use --chat + mmlu_generative instead
 
 Authentication (for remote APIs):
   Set OPENAI_API_KEY environment variable before running:
@@ -116,6 +121,8 @@ DEVICE_TYPE=""
 API_URL=""
 API_PORT=8080
 MODEL_NAME=""
+API_CHAT=false
+APPLY_CHAT_TEMPLATE=false
 
 POSITIONAL_ARGS=()
 
@@ -151,6 +158,8 @@ while [[ $# -gt 0 ]]; do
         --url) API_URL="$2"; shift 2 ;;
         --port) API_PORT="$2"; shift 2 ;;
         --model-name) MODEL_NAME="$2"; shift 2 ;;
+        --chat) API_CHAT=true; shift 1 ;;
+        --apply-chat-template) APPLY_CHAT_TEMPLATE=true; shift 1 ;;
         -h|--help) usage; exit 0 ;;
         *) POSITIONAL_ARGS+=("$1"); shift ;;
     esac
@@ -220,14 +229,28 @@ if [[ "$BACKEND" == "api" ]]; then
     # ---------------------------
     # Build URL if not provided
     if [[ -z "$API_URL" ]]; then
-        API_URL="http://127.0.0.1:${API_PORT}/v1/completions"
+        if [[ "$API_CHAT" == true ]]; then
+            API_URL="http://127.0.0.1:${API_PORT}/v1/chat/completions"
+        else
+            API_URL="http://127.0.0.1:${API_PORT}/v1/completions"
+        fi
     fi
 
     MODEL_ARGS+=",base_url=${API_URL}"
-    MODEL_ARGS+=",tokenized_requests=False"
+    # tokenized_requests must be True when using --apply-chat-template,
+    # otherwise apply_chat_template returns JsonChatStr which breaks _encode_pair
+    if [[ "$APPLY_CHAT_TEMPLATE" == true ]]; then
+        MODEL_ARGS+=",tokenized_requests=True"
+    else
+        MODEL_ARGS+=",tokenized_requests=False"
+    fi
     MODEL_ARGS+=",max_length=${MAX_MODEL_LEN}"
     MODEL_ARGS+=",trust_remote_code=True"
-    LM_EVAL_MODEL="local-completions"
+    if [[ "$API_CHAT" == true ]]; then
+        LM_EVAL_MODEL="local-chat-completions"
+    else
+        LM_EVAL_MODEL="local-completions"
+    fi
 
 elif [[ "$BACKEND" == "vllm" ]]; then
     # ---------------------------
@@ -287,6 +310,7 @@ log_info "Fewshot" "$FEWSHOT"
 log_info "Output" "$OUTPUT_FILE"
 [[ -n "$LIMIT" ]] && log_info "Limit" "$LIMIT samples per task"
 [[ "$LOG_SAMPLES" == true ]] && log_info "Log Samples" "enabled"
+[[ "$APPLY_CHAT_TEMPLATE" == true ]] && log_info "Chat Template" "enabled"
 
 # ------------------------------------------------------------------------------
 # Verify Dependencies
@@ -320,6 +344,7 @@ fi
 OPTIONAL_ARGS=()
 [[ -n "$LIMIT" ]] && OPTIONAL_ARGS+=(--limit "$LIMIT")
 [[ "$LOG_SAMPLES" == true ]] && OPTIONAL_ARGS+=(--log_samples)
+[[ "$APPLY_CHAT_TEMPLATE" == true ]] && OPTIONAL_ARGS+=(--apply_chat_template)
 
 PYTHONUNBUFFERED=1 lm_eval \
     --model "$LM_EVAL_MODEL" \
