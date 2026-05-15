@@ -93,6 +93,24 @@ def quantize_with_scale_zero(
     return scale * (q - zero)
 
 
+# NOTE: Currently unused — kept as a fallback for NPU cholesky_inverse.
+# See compute_hinv() for the active NPU path, which offloads to CPU instead.
+def npu_cholesky_inverse(L: torch.Tensor, upper: bool = False) -> torch.Tensor:
+    n = L.size(-1)
+    eye = torch.eye(n, dtype=L.dtype, device=L.device)
+
+    if upper:
+        # U^T U = A  =>  solve U^T Y = I, then solve U X = Y
+        y = torch.linalg.solve_triangular(L.transpose(-1, -2), eye, upper=False)
+        x = torch.linalg.solve_triangular(L, y, upper=True)
+    else:
+        # L L^T = A  =>  solve L Y = I, then solve L^T X = Y
+        y = torch.linalg.solve_triangular(L, eye, upper=False)
+        x = torch.linalg.solve_triangular(L.transpose(-1, -2), y, upper=True)
+
+    return x
+
+
 class BaseHessianModule:
     """Hessian accumulator shared by GPTQ, QuIP, and SparseGPT modules."""
 
@@ -168,6 +186,9 @@ class BaseHessianModule:
                     inv_l_cpu = torch.cholesky_inverse(l_cpu)
                     hinv_cpu = torch.linalg.cholesky(inv_l_cpu, upper=True)
                     hinv = hinv_cpu.to(self.dev)
+                    # chol = torch.linalg.cholesky(h_try)
+                    # inv_chol = npu_cholesky_inverse(chol)
+                    # hinv = torch.linalg.cholesky(inv_chol, upper=True)
                 else:
                     chol = torch.linalg.cholesky(h_try)
                     inv_chol = torch.cholesky_inverse(chol)

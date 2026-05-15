@@ -11,6 +11,7 @@ dependencies = [
     "rich",
     "loguru",
     "datasets",
+    "accelerate",
     "transformers<5.0.0",
 ]
 

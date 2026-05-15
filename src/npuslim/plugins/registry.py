@@ -54,6 +54,10 @@ _DISCOVERED_MODULES: set[str] = set()
 _APPLIED_PATCHES: set[str] = set()
 
 
+def _is_valid_module_parts(parts: tuple[str, ...]) -> bool:
+    return all(part.isidentifier() for part in parts)
+
+
 def _object_name(obj: Any) -> str:
     return getattr(obj, "__name__", repr(obj))
 
@@ -193,14 +197,14 @@ def register_patch(
         if registrar is not None:
             should_apply, reason = _evaluate_condition(condition, obj)
             if not should_apply:
-                patch_logger.debug(
+                patch_logger.info(
                     f"Skipped registrar: {_object_name(obj)} "
                     f"({_skip_reason(reason)})"
                 )
                 return obj
 
             registered_obj = registrar(obj)
-            patch_logger.debug(f"Applied registrar: {_object_name(obj)}")
+            patch_logger.success(f"Applied registrar: {_object_name(obj)}")
             return registered_obj
 
         assert target is not None
@@ -235,11 +239,14 @@ def discover_modules(base_package: str, base_dir: str):
         # Convert path to module name
         rel_path = py_file.relative_to(base_path)
         parts = rel_path.with_suffix("").parts
+        if not _is_valid_module_parts(parts):
+            patch_logger.info(f"Skipped non-module file during discovery: {py_file}")
+            continue
         module_name = f"{base_package}." + ".".join(parts)
 
         try:
             importlib.import_module(module_name)
-            patch_logger.debug(f"Discovered module: {module_name}")
+            patch_logger.info(f"Discovered module: {module_name}")
         except ImportError as e:
             patch_logger.warning(f"Failed to import module {module_name}: {e}")
 
@@ -267,14 +274,14 @@ def apply_all_patches():
                         patch_spec.condition, module
                     )
                     if not should_apply:
-                        patch_logger.debug(
+                        patch_logger.info(
                             f"Skipped patch: {patch_spec.func.__name__} -> "
                             f"{target} ({_skip_reason(reason)})"
                         )
                         continue
 
                     patch_spec.func(module)
-                    patch_logger.debug(
+                    patch_logger.success(
                         f"Applied patch: {patch_spec.func.__name__} -> {target}"
                     )
                     applied += 1
@@ -285,10 +292,10 @@ def apply_all_patches():
                     )
             _APPLIED_PATCHES.add(patch_key)
         except ImportError:
-            patch_logger.debug(f"Target module not found, skipping: {target}")
+            patch_logger.info(f"Target module not found, skipping: {target}")
 
     if applied > 0:
-        patch_logger.info(f"Applied {applied} patch(es)")
+        patch_logger.success(f"Applied {applied} patch(es)")
     return applied
 
 

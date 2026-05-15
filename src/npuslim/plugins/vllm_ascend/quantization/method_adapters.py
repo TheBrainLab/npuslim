@@ -29,10 +29,13 @@ so input_dim=1 must be set for proper tensor parallel sharding.
 from vllm.model_executor.layers.linear import RowParallelLinear
 
 from npuslim.plugins.logging import patch_logger
-from npuslim.plugins.registry import register_patch
+from npuslim.plugins.registry import package_version_range, register_patch
 
 
-@register_patch(target="vllm_ascend.quantization.method_adapters")
+@register_patch(
+    target="vllm_ascend.quantization.method_adapters",
+    condition=package_version_range("vllm_ascend", max_version="0.18.1"),
+)
 def patch_create_weights(module):
     """Patch AscendLinearMethod.create_weights to fix per-group param dimensions.
 
