@@ -1,9 +1,0 @@
-torch
-torchvision
-torchaudio
-transformers
-datasets
-vllm
-evalscope
-lm-eval
-
