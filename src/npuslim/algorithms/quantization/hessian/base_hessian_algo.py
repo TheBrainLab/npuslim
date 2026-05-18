@@ -59,7 +59,7 @@ class BaseHessianAlgorithm(BaseQuantizationAlgorithm):
 
     def _finalize_chunk_metadata(self, chunk, quantized_tensor_names: set[str]) -> None:
         tensor_types = {name: "FLOAT" for name in chunk.all_tensors().keys()}
-        quantized_type = self._ascend_quant_type if bh.name == "npu" else self._quantized_type_label
+        quantized_type = self._ascend_quant_type if self.target_backend == "npu" else self._quantized_type_label
         for name in quantized_tensor_names:
             if name in tensor_types:
                 tensor_types[name] = quantized_type

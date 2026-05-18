@@ -461,14 +461,6 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
     def _ascend_quant_type(self) -> str:
         return f"W{self.wbits}A16"
 
-    @property
-    def target_backend(self) -> str:
-        """Backend governing the output packing format.
-
-        Falls back to the runtime backend when ``save_backend`` is not set.
-        """
-        return self._save_backend or bh.name
-
     def _log_start_params(self) -> None:
         logger.info(
             f"[{self._TAG}] start: "

@@ -12,7 +12,8 @@ Design:
 from __future__ import annotations
 
 import math
-from typing import Dict
+from enum import Enum, auto
+from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -77,6 +78,180 @@ def _validate_sparsegpt_params(
         )
 
 
+# ---- 2:4 sparse packing utilities for Ascend NPU ----
+
+_K_TILE_INDEX = 8
+
+
+def _pack_sparse24(weight_int8: torch.Tensor):
+    """Pack a 2:4 sparse int8 weight into densified values + tiled index.
+
+    Args:
+        weight_int8: [outfeatures, infeatures] int8 tensor with exact 2:4 sparsity.
+
+    Returns:
+        b_dense: [outfeatures, infeatures // 2] int8 tensor.
+        index_tiled: 1D uint8 tensor in tiled format for AscendC.
+    """
+    N, K = weight_int8.shape
+    assert K % 4 == 0, f"K must be divisible by 4, got {K}"
+    num_groups = K // 4
+
+    w = weight_int8.reshape(N, num_groups, 4)
+
+    nz = w != 0
+
+    pos = torch.arange(4, device=w.device, dtype=torch.float32).reshape(1, 1, 4)
+    pos_expanded = pos.expand(N, num_groups, 4).clone()
+    pos_expanded[~nz] = 100.0
+
+    sorted_pos, _ = pos_expanded.sort(dim=-1)
+    p1 = sorted_pos[:, :, 0].long().clamp(0, 3)
+    p2 = sorted_pos[:, :, 1].long().clamp(0, 3)
+
+    idx1 = p1
+    idx2 = (p2 - 1).clamp(0, 2)
+
+    val1 = w.gather(2, p1.unsqueeze(-1)).squeeze(-1)
+    val2 = w.gather(2, p2.unsqueeze(-1)).squeeze(-1)
+
+    b_dense = torch.stack([val1, val2], dim=-1).reshape(N, K // 2).to(torch.int8)
+
+    idx_pairs = torch.stack([idx1, idx2], dim=-1).reshape(N, num_groups * 2)
+    idx_groups = idx_pairs.reshape(N, num_groups * 2 // 4, 4)
+    shifts = torch.arange(4, device=w.device).reshape(1, 1, 4) * 2
+    index_bytes = (idx_groups << shifts).sum(dim=-1).to(torch.uint8)
+
+    index_tiled = _tile_index(index_bytes)
+    return b_dense.contiguous(), index_tiled
+
+
+def _tile_index(index_matrix: torch.Tensor, k_tile_index: int = _K_TILE_INDEX) -> torch.Tensor:
+    """Convert [N, K//8] index matrix to tiled format for AscendC.
+
+    Layout: each K_tile's index is stored as a contiguous [N_padded, k_tile_index]
+    block, with blocks concatenated sequentially. N is padded to a multiple of 16.
+    """
+    N, K8 = index_matrix.shape
+    pad_n = math.ceil(N / 16) * 16
+
+    padded = torch.zeros(pad_n, K8, dtype=torch.uint8, device=index_matrix.device)
+    padded[:N, :K8] = index_matrix
+
+    num_tiles = math.ceil(K8 / k_tile_index)
+    chunks = []
+    for t in range(num_tiles):
+        start = t * k_tile_index
+        end = min(start + k_tile_index, K8)
+        chunk = padded[:, start:end]
+        if chunk.shape[1] < k_tile_index:
+            chunk = torch.nn.functional.pad(chunk, (0, k_tile_index - chunk.shape[1]))
+        chunks.append(chunk.reshape(-1))
+
+    return torch.cat(chunks)
+
+
+class AscendAscendSparse24Linear(nn.Module):
+    """2:4 structured sparse linear layer for Ascend NPU.
+
+    Stores densified non-zero values, per-channel quantization scales,
+    and tiled index for the AscendC sparse_matmul_4to2 operator.
+    """
+
+    def __init__(
+        self,
+        infeatures: int,
+        outfeatures: int,
+        bias: bool = False,
+        weight_dtype: torch.dtype = torch.float16,
+    ):
+        super().__init__()
+        self.infeatures = int(infeatures)
+        self.outfeatures = int(outfeatures)
+
+        if self.infeatures % 4 != 0:
+            raise ValueError(
+                f"AscendSparse24Linear requires infeatures divisible by 4, got {self.infeatures}"
+            )
+
+        self.register_buffer(
+            "weight",
+            torch.zeros(self.outfeatures, self.infeatures // 2, dtype=torch.int8),
+        )
+        self.register_buffer(
+            "weight_scale",
+            torch.zeros(self.outfeatures, dtype=weight_dtype),
+        )
+
+        pad_n = math.ceil(self.outfeatures / 16) * 16
+        k8 = self.infeatures // 8
+        num_tiles = math.ceil(k8 / _K_TILE_INDEX)
+        index_size = num_tiles * pad_n * _K_TILE_INDEX
+        self.register_buffer(
+            "weight_index",
+            torch.zeros(index_size, dtype=torch.uint8),
+        )
+
+        if bias:
+            self.register_buffer("bias", torch.zeros(self.outfeatures, dtype=weight_dtype))
+        else:
+            self.bias = None
+
+    @torch.no_grad()
+    def pack(self, linear_weight: torch.Tensor, bias: Optional[torch.Tensor] = None) -> None:
+        """Pack a 2:4 sparse weight into densified + tiled index format.
+
+        Quantizes float weights to int8 (per-channel symmetric) before packing.
+
+        Args:
+            linear_weight: [outfeatures, infeatures] float tensor with 2:4 sparsity.
+            bias: Optional bias tensor [outfeatures].
+        """
+        w = linear_weight.detach().float()
+
+        max_val = w.abs().amax(dim=1, keepdim=True).clamp(min=1e-8)
+        scale = max_val / 127.0
+        w_int8 = (w / scale).round().clamp(-128, 127).to(torch.int8)
+
+        b_dense, index_tiled = _pack_sparse24(w_int8)
+
+        self.weight.copy_(b_dense)
+        self.weight_scale.copy_(scale.squeeze(1).to(self.weight_scale.dtype))
+        self.weight_index.copy_(index_tiled)
+
+        if bias is not None and self.bias is not None:
+            self.bias.copy_(bias.detach().to(dtype=self.bias.dtype))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute y = x @ W^T via AscendC sparse matmul.
+
+        Args:
+            x: [..., infeatures] float tensor.
+
+        Returns:
+            [..., outfeatures] float tensor.
+        """
+        from npuslim.ops.sparse_matmul import sparse_matmul_4to2
+
+        orig_shape = x.shape[:-1]
+        x_2d = x.reshape(-1, self.infeatures)
+
+        max_val = x_2d.abs().amax(dim=1, keepdim=True).clamp(min=1e-8)
+        x_scale = max_val / 127.0
+        x_int8 = (x_2d / x_scale).round().clamp(-128, 127).to(torch.int8)
+
+        # [M, N] int32
+        c_int32 = sparse_matmul_4to2(x_int8, self.weight, self.weight_index)
+
+        # Dequantize: int32 -> float, absorbing both x_scale and weight_scale
+        c_float = c_int32.float() * (x_scale * self.weight_scale.unsqueeze(0))
+        out = c_float.reshape(*orig_shape, self.outfeatures)
+
+        if self.bias is not None:
+            out = out + self.bias
+        return out
+
+
 class SparseGPTModule(BaseHessianModule):
     """Per-linear SparseGPT pruning module.
 
@@ -88,20 +263,13 @@ class SparseGPTModule(BaseHessianModule):
         self,
         layer: nn.Module,
         *,
-        sparsity: float = 0.5,
+        sparsity: float = 0.0,
         prunen: int = 0,
         prunem: int = 0,
         blocksize: int = 128,
         percdamp: float = 0.01,
         preproc_hessian: bool = True,
     ):
-        _validate_sparsegpt_params(
-            sparsity=float(sparsity),
-            prunen=int(prunen),
-            prunem=int(prunem),
-            blocksize=int(blocksize),
-            percdamp=float(percdamp),
-        )
         super().__init__(
             layer=layer,
             percdamp=percdamp,
@@ -192,6 +360,27 @@ class SparseGPTModule(BaseHessianModule):
         return {"rows": self.rows, "columns": self.columns, "avg_loss": avg_loss, "norm_loss": norm_loss}
 
 
+class _SparseMode(Enum):
+    """Platform x sparsity-type matrix for SparseGPT."""
+
+    GPU_UNSTRUCTURED = auto()
+    GPU_STRUCTURED = auto()
+    NPU_UNSTRUCTURED = auto()
+    NPU_STRUCTURED = auto()
+
+    @staticmethod
+    def resolve(target_backend: str, prunen: int, prunem: int) -> _SparseMode:
+        on_npu = target_backend == "npu"
+        structured = prunen > 0 and prunem > 0
+        if on_npu and structured:
+            return _SparseMode.NPU_STRUCTURED
+        if on_npu:
+            return _SparseMode.NPU_UNSTRUCTURED
+        if structured:
+            return _SparseMode.GPU_STRUCTURED
+        return _SparseMode.GPU_UNSTRUCTURED
+
+
 @AlgorithmRegistry.register("SparseGPT", aliases=["sparsegpt", "sparse_gpt"])
 class SparseGPTAlgorithm(BaseHessianAlgorithm):
     """Chunk-wise SparseGPT pruning algorithm."""
@@ -201,13 +390,15 @@ class SparseGPTAlgorithm(BaseHessianAlgorithm):
 
     def __init__(
         self,
-        sparsity: float = 0.5,
+        sparsity: float = 0.0,
         prunen: int = 0,
         prunem: int = 0,
         blocksize: int = 128,
         percdamp: float = 0.01,
         preproc_hessian: bool = True,
+        fake_quant: bool = False,
         max_calib_samples: int = 128,
+        save_backend: Optional[str] = None,
         **kwargs,
     ):
         _validate_sparsegpt_params(
@@ -224,6 +415,26 @@ class SparseGPTAlgorithm(BaseHessianAlgorithm):
         self.blocksize = int(blocksize)
         self.percdamp = float(percdamp)
         self.preproc_hessian = bool(preproc_hessian)
+        self.fake_quant = bool(fake_quant)
+        self._save_backend = save_backend
+
+        self._sparse_mode = _SparseMode.resolve(self.target_backend, self.prunen, self.prunem)
+        logger.info(f"[{self._TAG}] {self._sparse_mode.name}, fake_quant={self.fake_quant}")
+
+    @property
+    def _use_sparse24_packing(self) -> bool:
+        if self._sparse_mode is _SparseMode.NPU_STRUCTURED and not self.fake_quant:
+            if not (self.prunen == 2 and self.prunem == 4):
+                raise ValueError(
+                    f"[{self._TAG}] only 2:4 structured sparsity is supported for "
+                    f"sparse24 packing, got N:M={self.prunen}:{self.prunem}"
+                )
+            return True
+        return False
+
+    @property
+    def _ascend_quant_type(self) -> str:
+        return "Sparse24" if self._use_sparse24_packing else ""
 
     def _log_start_params(self) -> None:
         sparsity_desc = (
@@ -233,8 +444,47 @@ class SparseGPTAlgorithm(BaseHessianAlgorithm):
         )
         logger.info(
             f"[{self._TAG}] start: {sparsity_desc}, "
-            f"blocksize={self.blocksize}, percdamp={self.percdamp}"
+            f"blocksize={self.blocksize}, percdamp={self.percdamp}, "
+            f"sparse_mode={self._sparse_mode.name}, fake_quant={self.fake_quant}"
         )
+
+    # ---- per-mode tensor saving ----
+
+    def _save_fake_quant_weight(self, layer, handler, rel_weight_name, weight_tensor) -> str:
+        """Save pruned weight as-is."""
+        layer.tensors[rel_weight_name] = (
+            handler.layer.weight.detach().to(weight_tensor.dtype).cpu()
+        )
+        return f"{layer.name}.{rel_weight_name}"
+
+    def _save_sparse24_weight(self, layer, handler, module_rel_name, rel_weight_name, rel_bias_name) -> set[str]:
+        """Pack pruned weight into 2:4 sparse format for Ascend NPU."""
+        sparse_linear = AscendSparse24Linear(
+            infeatures=handler.layer.in_features,
+            outfeatures=handler.layer.out_features,
+            bias=handler.layer.bias is not None,
+            weight_dtype=handler.layer.weight.dtype,
+        )
+        bias_tensor = (
+            handler.layer.bias.detach().cpu() if handler.layer.bias is not None else None
+        )
+        sparse_linear.pack(handler.layer.weight.detach().cpu(), bias=bias_tensor)
+
+        layer.tensors.pop(rel_weight_name, None)
+        layer.tensors.pop(rel_bias_name, None)
+
+        packed_names: set[str] = set()
+        for buf_name in ("weight", "weight_scale", "weight_index"):
+            key = f"{module_rel_name}.{buf_name}"
+            layer.tensors[key] = getattr(sparse_linear, buf_name).cpu()
+            packed_names.add(f"{layer.name}.{key}")
+
+        if sparse_linear.bias is not None:
+            layer.tensors[f"{module_rel_name}.bias"] = sparse_linear.bias.cpu()
+
+        return packed_names
+
+    # ---- BaseHessianAlgorithm hooks ----
 
     def _create_handlers(self, layer_module: nn.Module, targets) -> Dict[str, SparseGPTModule]:
         handlers: Dict[str, SparseGPTModule] = {}
@@ -255,15 +505,24 @@ class SparseGPTAlgorithm(BaseHessianAlgorithm):
 
     def _process_layer_handlers(self, layer, targets, handlers, chunk) -> tuple[set[str], int]:
         _ = chunk
+        quantized_tensor_names: set[str] = set()
         pruned_weights = 0
-        for module_rel_name, rel_weight_name, _bias_name, weight_tensor, _bias in targets:
+
+        for module_rel_name, rel_weight_name, rel_bias_name, weight_tensor, _bias in targets:
             handler = handlers.get(module_rel_name)
             if handler is None:
                 continue
             metrics = handler.fasterprune(layer_name=f"{layer.name}.{module_rel_name}")
-            layer.tensors[rel_weight_name] = (
-                handler.layer.weight.detach().to(weight_tensor.dtype).cpu()
-            )
+
+            if self._use_sparse24_packing:
+                names = self._save_sparse24_weight(
+                    layer, handler, module_rel_name, rel_weight_name, rel_bias_name,
+                )
+                quantized_tensor_names.update(names)
+            else:
+                name = self._save_fake_quant_weight(layer, handler, rel_weight_name, weight_tensor)
+                quantized_tensor_names.add(name)
+
             pruned_weights += 1
             full_name = f"{layer.name}.{module_rel_name}"
             logger.info(
@@ -272,12 +531,34 @@ class SparseGPTAlgorithm(BaseHessianAlgorithm):
                 f"avg_loss={float(metrics.get('avg_loss', 0.0)):<12.6f} | "
                 f"norm_loss={float(metrics.get('norm_loss', 0.0)):<12.6f}"
             )
-        return set(), pruned_weights
+        return quantized_tensor_names, pruned_weights
 
     def _update_quantization_metadata(self) -> None:
-        pass
+        if not self._use_sparse24_packing:
+            return
+        if self._model_config is None:
+            return
+
+        self._model_config.ascend_quant_config = {
+            "model_quant_type": "Sparse24",
+            "quant_layer_types": ["AscendSparse24Linear"],
+            "sparsity_type": "2:4",
+        }
+        if hasattr(self._model_config, "quantization_config"):
+            try:
+                delattr(self._model_config, "quantization_config")
+            except Exception:
+                pass
+
+        self._mark_model_quantized()
+        logger.info(f"[{self._TAG}] model quantization metadata updated")
 
     def _finalize_chunk_metadata(self, chunk, quantized_tensor_names: set[str]) -> None:
-        _ = chunk
-        _ = quantized_tensor_names
-        pass
+        if not quantized_tensor_names:
+            return
+        tensor_types = {name: "FLOAT" for name in chunk.all_tensors().keys()}
+        quantized_type = self._ascend_quant_type if self.target_backend == "npu" else self._quantized_type_label
+        for name in quantized_tensor_names:
+            if name in tensor_types:
+                tensor_types[name] = quantized_type
+        chunk.metadata["tensor_types"] = tensor_types

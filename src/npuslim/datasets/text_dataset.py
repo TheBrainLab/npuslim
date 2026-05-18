@@ -100,7 +100,10 @@ class TextDataset(BaseDataset):
         logger.info(f"Loaded TextDataset from {self.data_path}: {len(self.data)} samples")
 
     def _build_text(self, messages: List[Dict[str, Any]]) -> str:
-        supports_chat_template = hasattr(self.processor, "apply_chat_template")
+        supports_chat_template = (
+            hasattr(self.processor, "apply_chat_template")
+            and getattr(self.processor, "chat_template", None) is not None
+        )
         if supports_chat_template:
             text = self.processor.apply_chat_template(
                 messages,
