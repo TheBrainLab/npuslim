@@ -97,7 +97,7 @@ def _index_nd_to_tiled(index_matrix, k_tile_index=8):
 
 def main():
     np.random.seed(42)
-    M, N, K = 128, 768, 128
+    M, N, K = 2048, 1024, 3072
 
     a_np = np.random.randint(-5, 5, (M, K), dtype=np.int8)
     b_np = _gen_sparse_matrix_b(N, K)

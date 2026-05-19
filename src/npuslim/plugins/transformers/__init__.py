@@ -23,5 +23,6 @@ def register():
 
 # Import for direct access
 from .quantizers.quantizer_quip import QuipConfig, QuipHfQuantizer
+from .quantizers.quantizer_sparse24 import Sparse24Config, Sparse24HfQuantizer
 
-__all__ = ["QuipConfig", "QuipHfQuantizer"]
+__all__ = ["QuipConfig", "QuipHfQuantizer", "Sparse24Config", "Sparse24HfQuantizer"]

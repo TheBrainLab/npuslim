@@ -42,12 +42,14 @@ Evaluation Options:
   --limit N                   Limit number of samples per task (default: all)
   --log-samples               Save model outputs for debugging
 
-vLLM Backend Options:
+Model & Hardware Options (vllm/api backends):
   -d, --devices DEVICES       Device IDs (default: 0)
   -t, --tp SIZE               Tensor parallel size (default: 1)
+  --max-model-len LEN         Max model length (default: 4096)
+
+vLLM Backend Options:
   --hccl-port PORT            HCCL base port for NPU (default: 60000)
   --gpu-memory UTIL           GPU memory utilization (default: 0.8)
-  --max-model-len LEN         Max model length (default: 4096)
   -q, --quantization [TYPE]   Quantization method (auto-set on NPU)
   -ep, --enable-expert-parallel
                               Enable expert parallelism for MoE models

@@ -12,7 +12,7 @@ NPU-oriented model compression & quantization framework for large language model
 ## Installation
 
 ```bash
-pip install -e .
+pip install -e . -v --no-build-isolation
 ```
 
 Requires CANN environment with `ASCEND_HOME_PATH` set.

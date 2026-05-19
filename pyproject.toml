@@ -56,3 +56,4 @@ npuslim = "npuslim.plugins:register"
 
 [project.entry-points."transformers.quantizers"]
 quip = "npuslim.plugins.transformers.quantizers.quantizer_quip:QuipHfQuantizer"
+sparse24 = "npuslim.plugins.transformers.quantizers.quantizer_sparse24:Sparse24HfQuantizer"

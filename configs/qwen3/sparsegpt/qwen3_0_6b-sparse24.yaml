@@ -1,0 +1,40 @@
+metadata:
+  name: "OPT_SparseGPT_Sparse24_Recipe"
+  description: "SparseGPT 2:4 structured pruning for OPT-125M on NPU with sparse24 packing."
+
+resources:
+  - id: qwen3
+    type: Qwen3Model
+    path: Qwen/Qwen3-0.6B
+    model_hub: hf
+    device_map: cpu
+
+  - id: calib_data
+    type: TextDataset
+    data_path: dataset/sharegpt_gpt4_qwen/sharegpt_gpt4-qwen3_a22B_output.jsonl
+    num_samples: 128
+    max_seq_length: 4096
+
+recipe:
+  - name: "SparseGPT_Sparse24_Pruning"
+    type: compressor
+    model: "@qwen3"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 1
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: SparseGPT
+      prunen: 2
+      prunem: 4
+      blocksize: 128
+      percdamp: 0.01
+      fake_quant: false
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 4
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs"

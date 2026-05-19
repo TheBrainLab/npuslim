@@ -151,7 +151,7 @@ def _tile_index(index_matrix: torch.Tensor, k_tile_index: int = _K_TILE_INDEX) -
     return torch.cat(chunks)
 
 
-class AscendAscendSparse24Linear(nn.Module):
+class AscendSparse24Linear(nn.Module):
     """2:4 structured sparse linear layer for Ascend NPU.
 
     Stores densified non-zero values, per-channel quantization scales,
@@ -245,7 +245,7 @@ class AscendAscendSparse24Linear(nn.Module):
 
         # Dequantize: int32 -> float, absorbing both x_scale and weight_scale
         c_float = c_int32.float() * (x_scale * self.weight_scale.unsqueeze(0))
-        out = c_float.reshape(*orig_shape, self.outfeatures)
+        out = c_float.to(x.dtype).reshape(*orig_shape, self.outfeatures)
 
         if self.bias is not None:
             out = out + self.bias

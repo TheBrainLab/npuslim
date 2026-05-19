@@ -42,6 +42,16 @@ PatchCondition = Callable[[Any], PatchConditionResult]
 Registrar = Callable[[Any], Any]
 
 
+def always_enable(_subject: Any = None) -> bool:
+    """Patch condition that always returns True."""
+    return True
+
+
+def always_disable(_subject: Any = None) -> bool:
+    """Patch condition that always returns False."""
+    return False
+
+
 @dataclass(frozen=True)
 class PatchSpec:
     func: Callable

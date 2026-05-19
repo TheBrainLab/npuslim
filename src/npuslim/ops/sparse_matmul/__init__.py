@@ -14,31 +14,25 @@ The caller is responsible for 4:2 sparse compression of B
 hardware-accelerated sparse matmul kernel.
 """
 
-import os
 import ctypes
+import os
 
 _LIB = None
 _LIB_LOADED = False
-_torch = None
 
 
-def _ensure_lib():
-    """Load libsparse_matmul.so and import torch. Returns True on success."""
-    global _LIB, _LIB_LOADED, _torch
+def _load_lib():
+    """Attempt to load libsparse_matmul.so. Idempotent."""
+    global _LIB, _LIB_LOADED
     if _LIB_LOADED:
-        return _LIB is not None
-
+        return
     _LIB_LOADED = True
 
-    so_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libsparse_matmul.so")
+    so_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "libsparse_matmul.so"
+    )
     if not os.path.isfile(so_path):
-        return False
-
-    try:
-        import torch
-        _torch = torch
-    except ImportError:
-        return False
+        return
 
     try:
         _LIB = ctypes.CDLL(so_path)
@@ -53,21 +47,16 @@ def _ensure_lib():
             ctypes.c_int64,   # k
             ctypes.c_void_p,  # stream
         ]
-        return True
     except OSError:
-        return False
+        pass
 
 
-_op_registered = False
+# Eagerly load at import time so Dynamo never hits filesystem ops.
+_load_lib()
 
 
 def _register_custom_op():
     """Register ``npu::sparse_matmul_4to2`` via torch.library."""
-    global _op_registered
-    if _op_registered:
-        return
-    _op_registered = True
-
     import torch
 
     @torch.library.custom_op("npu::sparse_matmul_4to2", mutates_args=())
@@ -96,6 +85,15 @@ def _register_custom_op():
             raise RuntimeError(f"sparse matmul kernel launch failed (ret={ret})")
         return c
 
+    @_sparse_matmul_4to2.register_fake
+    def _(a, b_dense, index):
+        return torch.empty(a.shape[0], b_dense.shape[0], dtype=torch.int32, device=a.device)
+
+
+# Eagerly register if library is available.
+if _LIB is not None:
+    _register_custom_op()
+
 
 def sparse_matmul_4to2(a, b_dense, index):
     """Compute C = A @ B_sparse via the AscendC 4:2 sparse matmul kernel.
@@ -108,11 +106,9 @@ def sparse_matmul_4to2(a, b_dense, index):
     Returns:
         [M, N] int32 NPU tensor.
     """
-    if not _ensure_lib():
+    if _LIB is None:
         raise RuntimeError(
-            "sparse_matmul_4to2 unavailable: libsparse_matmul.so not found "
-            "or torch not installed"
+            "sparse_matmul_4to2 unavailable: libsparse_matmul.so not found"
         )
-    _register_custom_op()
-    # Direct function call (also accessible as torch.ops.npu.sparse_matmul_4to2)
-    return _torch.ops.npu.sparse_matmul_4to2(a, b_dense, index)
+    import torch
+    return torch.ops.npu.sparse_matmul_4to2(a, b_dense, index)
