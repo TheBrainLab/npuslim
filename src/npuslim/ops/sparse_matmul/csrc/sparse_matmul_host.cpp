@@ -30,7 +30,6 @@ extern "C" int run_sparse_matmul(
     int64_t m, int64_t n, int64_t k,
     void* stream)
 {
-    // Generate tiling
     MatmulHost::MatmulCaseParams params{
         GetCoreNum(),
         static_cast<int32_t>(m),
@@ -38,9 +37,11 @@ extern "C" int run_sparse_matmul(
         static_cast<int32_t>(k),
         /*isBias=*/0, /*isATrans=*/false, /*isBTrans=*/true
     };
-    TCubeTiling tilingData = MatmulHost::GenerateTiling(params);
+    TCubeTiling tilingData {};
+    if (!MatmulHost::GenerateTiling(params, tilingData)) {
+        return -1;
+    }
 
-    // Upload tiling to device
     size_t tilingSize = sizeof(TCubeTiling);
     void* tilingHost = nullptr;
     void* tilingDevice = nullptr;
@@ -56,18 +57,22 @@ extern "C" int run_sparse_matmul(
     ret = aclrtMemcpy(tilingDevice, tilingSize, tilingHost, tilingSize, ACL_MEMCPY_HOST_TO_DEVICE);
     if (ret != ACL_SUCCESS) { aclrtFree(tilingDevice); aclrtFreeHost(tilingHost); return -1; }
 
-    // Allocate workspace
     size_t workspaceSize = GetSysWorkSpaceSize();
     void* workspaceDev = nullptr;
     ret = aclrtMalloc(&workspaceDev, workspaceSize, ACL_MEM_MALLOC_HUGE_FIRST);
     if (ret != ACL_SUCCESS) { aclrtFree(tilingDevice); aclrtFreeHost(tilingHost); return -1; }
 
-    // Launch kernel
-    aclrtlaunch_matmul_sparse_custom(
+    ret = aclrtlaunch_matmul_sparse_custom(
         static_cast<uint32_t>(tilingData.usedCoreNum),
         static_cast<aclrtStream>(stream),
         a_dev, b_dev, /*bias=*/nullptr, index_dev,
         c_dev, workspaceDev, tilingDevice);
+    if (ret != ACL_SUCCESS) {
+        aclrtFree(workspaceDev);
+        aclrtFree(tilingDevice);
+        aclrtFreeHost(tilingHost);
+        return -1;
+    }
 
     aclrtFree(workspaceDev);
     aclrtFree(tilingDevice);

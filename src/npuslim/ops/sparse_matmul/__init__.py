@@ -65,9 +65,22 @@ def _register_custom_op():
         b_dense: torch.Tensor,
         index: torch.Tensor,
     ) -> torch.Tensor:
+        if a.ndim != 2 or b_dense.ndim != 2:
+            raise ValueError(
+                "sparse_matmul_4to2 expects 2D tensors: "
+                f"got a.ndim={a.ndim}, b_dense.ndim={b_dense.ndim}"
+            )
+
         m = a.shape[0]
         k = a.shape[1]
         n = b_dense.shape[0]
+        if k % 4 != 0:
+            raise ValueError(f"sparse_matmul_4to2 requires K % 4 == 0, got K={k}")
+        if b_dense.shape[1] * 2 != k:
+            raise ValueError(
+                "sparse_matmul_4to2 expects b_dense.shape == [N, K//2], "
+                f"got b_dense.shape={tuple(b_dense.shape)} for K={k}"
+            )
 
         c = torch.zeros(m, n, dtype=torch.int32, device=a.device)
 
@@ -82,7 +95,10 @@ def _register_custom_op():
             ctypes.c_void_p(0),
         )
         if ret != 0:
-            raise RuntimeError(f"sparse matmul kernel launch failed (ret={ret})")
+            raise RuntimeError(
+                "sparse matmul kernel launch failed "
+                f"(ret={ret}, M={m}, N={n}, K={k})"
+            )
         return c
 
     @_sparse_matmul_4to2.register_fake

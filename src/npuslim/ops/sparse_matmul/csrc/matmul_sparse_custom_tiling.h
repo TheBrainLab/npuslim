@@ -29,9 +29,10 @@ struct MatmulCaseParams
 /**
   * @brief Generate matmul tiling.
   * @param testCaseParams: Testcase parameters.
-  * @retval Generated Tiling data.
+  * @param tilingData: Output tiling data.
+  * @retval true if tiling was generated successfully, false otherwise.
   */
-TCubeTiling GenerateTiling(const MatmulCaseParams& testCaseParams);
+bool GenerateTiling(const MatmulCaseParams& testCaseParams, TCubeTiling& tilingData);
 
 } // namespace MatmulHost
 #endif // EXAMPLES_MATRIX_MATMUL_SPARSE_OP_HOST_MATMUL_SPARSE_CUSTOM_TILING_H
