@@ -891,7 +891,7 @@ class QuIPAlgorithm(BaseHessianAlgorithm):
 
     @property
     def _ascend_quant_type(self) -> str:
-        return f"W{self.wbits}A16"
+        return "FLOAT" if self.fake_quant else f"W{self.wbits}A16"
 
     def _log_start_params(self) -> None:
         logger.info(

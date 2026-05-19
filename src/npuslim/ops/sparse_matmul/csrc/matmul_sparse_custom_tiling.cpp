@@ -72,6 +72,24 @@ struct TilingCacheEntry {
     TCubeTiling tilingData;
 };
 
+bool IsIndexLayoutCompatible(const MatmulCaseParams& testCaseParams, const TCubeTiling& tilingData)
+{
+    // weight_index is stored as a K-tiled layout:
+    //   [tile0(N_padded x k_tile), tile1(N_padded x k_tile), ...]
+    //
+    // That layout is contiguous for the full N dimension only. The current
+    // kernel offsets `index` as if each N shard were also laid out
+    // contiguously, which is false once tiling splits the output-channel (N)
+    // dimension across multiple cores. In that case each core reads the wrong
+    // index blocks and the sparse matmul can return corrupted values or crash.
+    //
+    // Until the kernel/runtime path learns how to gather per-core tiled index
+    // slices correctly, only accept tilings that keep the full N dimension on
+    // a single shard.
+    (void)testCaseParams;
+    return tilingData.singleCoreN >= tilingData.N;
+}
+
 TilingCacheKey MakeCacheKey(const MatmulCaseParams& testCaseParams)
 {
     return TilingCacheKey{
@@ -217,7 +235,8 @@ bool GenerateTiling(const MatmulCaseParams& testCaseParams, TCubeTiling& tilingD
     }
 
     for (const auto& attempt : BuildAttempts(testCaseParams)) {
-        if (TryGenerateTiling(testCaseParams, attempt, tilingData)) {
+        if (TryGenerateTiling(testCaseParams, attempt, tilingData) &&
+            IsIndexLayoutCompatible(testCaseParams, tilingData)) {
             std::lock_guard<std::mutex> lock(GetTilingCacheMutex());
             GetTilingCache()[cacheKey] = TilingCacheEntry{true, tilingData};
             return true;

@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 @register_patch(
     registrar=CustomOp.register_oot(name="ZeroExpertFusedMoE"),
-    condition=package_version_range("vllm_ascend", max_version="0.18.1"),
+    condition=package_version_range("vllm_ascend", max_version="0.20.1"),
 )
 class AscendZeroExpertFusedMoE(ZeroExpertFusedMoE, AscendFusedMoE):
     """Ascend replacement for upstream ``ZeroExpertFusedMoE``.

@@ -98,24 +98,43 @@ def _pack_sparse24(weight_int8: torch.Tensor):
     num_groups = K // 4
 
     w = weight_int8.reshape(N, num_groups, 4)
-
     nz = w != 0
+    nz_count = nz.sum(dim=-1)
 
     pos = torch.arange(4, device=w.device, dtype=torch.float32).reshape(1, 1, 4)
     pos_expanded = pos.expand(N, num_groups, 4).clone()
     pos_expanded[~nz] = 100.0
-
     sorted_pos, _ = pos_expanded.sort(dim=-1)
-    p1 = sorted_pos[:, :, 0].long().clamp(0, 3)
-    p2 = sorted_pos[:, :, 1].long().clamp(0, 3)
 
-    idx1 = p1
-    idx2 = (p2 - 1).clamp(0, 2)
+    first_pos = sorted_pos[:, :, 0].long().clamp(0, 3)
+    second_pos = sorted_pos[:, :, 1].long().clamp(0, 3)
 
-    val1 = w.gather(2, p1.unsqueeze(-1)).squeeze(-1)
-    val2 = w.gather(2, p2.unsqueeze(-1)).squeeze(-1)
+    idx1 = torch.zeros((N, num_groups), dtype=torch.long, device=w.device)
+    idx2 = torch.zeros((N, num_groups), dtype=torch.long, device=w.device)
+    val1 = torch.zeros((N, num_groups), dtype=torch.int8, device=w.device)
+    val2 = torch.zeros((N, num_groups), dtype=torch.int8, device=w.device)
 
-    b_dense = torch.stack([val1, val2], dim=-1).reshape(N, K // 2).to(torch.int8)
+    # Exact 2:4 case: keep the first two non-zeros in ascending position order.
+    multi_mask = nz_count >= 2
+    if multi_mask.any():
+        idx1[multi_mask] = first_pos[multi_mask]
+        idx2[multi_mask] = (second_pos[multi_mask] - 1).clamp(0, 2)
+        val1[multi_mask] = w.gather(2, first_pos.unsqueeze(-1)).squeeze(-1)[multi_mask]
+        val2[multi_mask] = w.gather(2, second_pos.unsqueeze(-1)).squeeze(-1)[multi_mask]
+
+    # Quantization can round one kept weight to zero, leaving only one non-zero
+    # in a 4-tuple. Match the kernel-side reference encoding from the operator
+    # test: keep the single value in slot 0 and encode the second slot with a
+    # sentinel-compatible index.
+    single_mask = nz_count == 1
+    if single_mask.any():
+        single_pos = first_pos[single_mask]
+        single_val = w.gather(2, first_pos.unsqueeze(-1)).squeeze(-1)[single_mask]
+        idx1[single_mask] = torch.where(single_pos < 3, single_pos, torch.zeros_like(single_pos))
+        idx2[single_mask] = torch.where(single_pos < 3, torch.zeros_like(single_pos), torch.full_like(single_pos, 2))
+        val1[single_mask] = single_val
+
+    b_dense = torch.stack([val1, val2], dim=-1).reshape(N, K // 2)
 
     idx_pairs = torch.stack([idx1, idx2], dim=-1).reshape(N, num_groups * 2)
     idx_groups = idx_pairs.reshape(N, num_groups * 2 // 4, 4)
@@ -434,7 +453,7 @@ class SparseGPTAlgorithm(BaseHessianAlgorithm):
 
     @property
     def _ascend_quant_type(self) -> str:
-        return "Sparse24" if self._use_sparse24_packing else ""
+        return "Sparse24" if self._use_sparse24_packing else "FLOAT"
 
     def _log_start_params(self) -> None:
         sparsity_desc = (

@@ -73,6 +73,16 @@ extern "C" int run_sparse_matmul(
         aclrtFreeHost(tilingHost);
         return -1;
     }
+    // The tiling/workspace buffers are owned by this host wrapper.
+    // We must not free them before the launched kernel on this stream has
+    // finished consuming them, otherwise we trigger a use-after-free race.
+    ret = aclrtSynchronizeStream(static_cast<aclrtStream>(stream));
+    if (ret != ACL_SUCCESS) {
+        aclrtFree(workspaceDev);
+        aclrtFree(tilingDevice);
+        aclrtFreeHost(tilingHost);
+        return -1;
+    }
 
     aclrtFree(workspaceDev);
     aclrtFree(tilingDevice);

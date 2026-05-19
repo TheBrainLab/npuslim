@@ -1,7 +1,8 @@
 """Patches for vllm_ascend/quantization/method_adapters.py
 
 This module patches AscendLinearMethod.create_weights to fix the per-group
-parameter dimension bug in original vllm-ascend.
+parameter dimension bug in original vllm-ascend and to propagate quant-method
+parameter attributes onto created Parameters.
 
 Bug in upstream (vllm_ascend/quantization/method_adapters.py:105-116):
 ```python
@@ -34,7 +35,7 @@ from npuslim.plugins.registry import package_version_range, register_patch
 
 @register_patch(
     target="vllm_ascend.quantization.method_adapters",
-    condition=package_version_range("vllm_ascend", max_version="0.18.1"),
+    condition=package_version_range("vllm_ascend", max_version="0.20.1"),
 )
 def patch_create_weights(module):
     """Patch AscendLinearMethod.create_weights to fix per-group param dimensions.
@@ -71,13 +72,26 @@ def patch_create_weights(module):
         # The original code only sets this for *_second params, but regular
         # weight_scale/weight_offset also need it for proper TP sharding.
         if isinstance(layer, RowParallelLinear):
-            for name, param in layer.named_parameters():
+            for name, param in layer.named_parameters(recurse=False):
                 if name in ("weight_scale", "weight_offset"):
-                    if not hasattr(param, "input_dim") or param.input_dim is None:
+                    if (
+                        param.ndim > 1
+                        and param.shape[1] > 1
+                        and (not hasattr(param, "input_dim") or param.input_dim is None)
+                    ):
                         param.input_dim = 1
+
+        get_param_extra_attrs = getattr(
+            self.quant_method, "get_param_extra_attrs", None
+        )
+        if callable(get_param_extra_attrs):
+            for name, param in layer.named_parameters(recurse=False):
+                extra_attrs = get_param_extra_attrs(name)
+                if extra_attrs:
+                    module.set_weight_attrs(param, extra_attrs)
 
     module.AscendLinearMethod.create_weights = patched_create_weights
     patch_logger.info(
         "Patched AscendLinearMethod.create_weights to support per-group "
-        "input_dim parameters"
+        "input_dim parameters and quant-method parameter attrs"
     )

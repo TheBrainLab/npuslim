@@ -31,7 +31,8 @@ recipe:
       blocksize: 128
       percdamp: 0.01
       fake_quant: false
-    ignore_layers: []
+    ignore_layers:
+      - model.layers.*.mlp.down_proj
     execution:
       mode: streaming
       chunk_size: 4

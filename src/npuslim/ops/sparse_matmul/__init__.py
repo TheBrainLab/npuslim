@@ -82,6 +82,7 @@ def _register_custom_op():
                 f"got b_dense.shape={tuple(b_dense.shape)} for K={k}"
             )
 
+        current_stream = torch.npu.current_stream(device=a.device)
         c = torch.zeros(m, n, dtype=torch.int32, device=a.device)
 
         ret = _LIB.run_sparse_matmul(
@@ -92,7 +93,7 @@ def _register_custom_op():
             ctypes.c_int64(m),
             ctypes.c_int64(n),
             ctypes.c_int64(k),
-            ctypes.c_void_p(0),
+            current_stream._as_parameter_,
         )
         if ret != 0:
             raise RuntimeError(

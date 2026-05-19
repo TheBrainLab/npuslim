@@ -44,7 +44,7 @@ def _get_w4a16_aux_suffixes() -> list[str]:
 
 @register_patch(
     target="vllm.model_executor.models.qwen3_moe",
-    condition=package_version_range("vllm", max_version="0.18.1"),
+    condition=package_version_range("vllm", max_version="0.20.1"),
 )
 def patch_qwen3_moe_load_weights(module):
     """Patch Qwen3MoeModel.load_weights to handle W4A16 quantization."""

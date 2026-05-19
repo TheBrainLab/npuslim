@@ -1,8 +1,9 @@
 """Sparse24 2:4 structured sparse linear scheme for Ascend NPU.
 
-Registered with vllm-ascend via @register_scheme("Sparse24", "linear").
-Loads densified sparse weights + tiled index from NPUSlim SparseGPT output
-and uses the AscendC sparse_matmul_4to2 kernel for inference.
+Registered with vllm-ascend via a version-gated registrar wrapper around
+@register_scheme("Sparse24", "linear"). Loads densified sparse weights +
+tiled index from NPUSlim SparseGPT output and uses the AscendC
+sparse_matmul_4to2 kernel for inference.
 """
 
 import math
@@ -14,11 +15,19 @@ from vllm_ascend.quantization.methods.base import AscendLinearScheme
 from vllm_ascend.quantization.methods.registry import register_scheme
 
 from npuslim.ops.sparse_matmul import sparse_matmul_4to2
+from npuslim.plugins.registry import package_version_range, register_patch
+from npuslim.plugins.vllm.model_executor.layers._stacked_sparse24 import (
+    STACKED_WEIGHT_LOADER_ATTR,
+    load_stacked_sparse24_weight_index,
+)
 
 _K_TILE_INDEX = 8
 
 
-@register_scheme("Sparse24", "linear")
+@register_patch(
+    registrar=register_scheme("Sparse24", "linear"),
+    condition=package_version_range("vllm_ascend", max_version="0.20.1"),
+)
 class AscendSparse24LinearMethod(AscendLinearScheme):
     """Linear scheme for 2:4 structured sparse weights on Ascend NPU.
 
@@ -70,6 +79,16 @@ class AscendSparse24LinearMethod(AscendLinearScheme):
             "weight_index": torch.zeros(index_size, dtype=torch.uint8),
         }
 
+    def get_param_extra_attrs(self, param_name: str) -> dict[str, Any]:
+        if param_name == "weight_index":
+            return {
+                STACKED_WEIGHT_LOADER_ATTR: load_stacked_sparse24_weight_index,
+            }
+        return {}
+
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        pass
+
     def apply(
         self,
         layer: torch.nn.Module,
@@ -85,7 +104,6 @@ class AscendSparse24LinearMethod(AscendLinearScheme):
         x_int8 = (x_2d / x_scale).round().clamp(-128, 127).to(torch.int8)
 
         c_int32 = sparse_matmul_4to2(x_int8, layer.weight, layer.weight_index)
-
         out = c_int32.float() * (x_scale * layer.weight_scale.unsqueeze(0))
         out = out.to(x.dtype).reshape(*orig_shape, layer.weight.shape[0])
 

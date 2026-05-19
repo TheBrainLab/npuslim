@@ -3,7 +3,7 @@ metadata:
   description: "SparseGPT 2:4 structured pruning for Qwen3-0.6B on NPU with sparse24 packing."
 
 resources:
-  - id: qwen3
+  - id: qwen3B
     type: Qwen3Model
     path: Qwen/Qwen3-0.6B
     model_hub: hf
@@ -30,8 +30,9 @@ recipe:
       prunem: 4
       blocksize: 128
       percdamp: 0.01
-      fake_quant: false
-    ignore_layers: []
+      fake_quant: true
+    ignore_layers:
+      - model.layers.*.mlp.down_proj
     execution:
       mode: streaming
       chunk_size: 4

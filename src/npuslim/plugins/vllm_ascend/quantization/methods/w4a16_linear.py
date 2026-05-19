@@ -1,7 +1,8 @@
 """W4A16 Linear quantization scheme for Ascend NPU.
 
-This scheme is registered with vllm-ascend via @register_scheme decorator.
-Aligned with NPUSlim's column-wise (input dimension) packing format.
+Registered with vllm-ascend via a version-gated registrar wrapper around
+@register_scheme. Aligned with NPUSlim's column-wise (input dimension)
+packing format.
 """
 
 import torch
@@ -11,6 +12,8 @@ from typing import Any
 from vllm_ascend.quantization.methods.base import AscendLinearScheme
 from vllm_ascend.quantization.methods.registry import register_scheme
 from vllm_ascend.utils import maybe_trans_nz
+
+from npuslim.plugins.registry import package_version_range, register_patch
 
 
 # Try to import upstream unpack_from_int32 utility
@@ -61,7 +64,10 @@ except ImportError:
         return (unpacked - offset).to(torch.int8)
 
 
-@register_scheme("W4A16", "linear")
+@register_patch(
+    registrar=register_scheme("W4A16", "linear"),
+    condition=package_version_range("vllm_ascend", max_version="0.20.1"),
+)
 class AscendW4A16LinearMethod(AscendLinearScheme):
     """Linear method for Ascend W4A16.
 
