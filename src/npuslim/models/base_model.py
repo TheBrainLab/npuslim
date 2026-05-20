@@ -275,6 +275,3 @@ class BaseLLMModel(ABC):
             raise RuntimeError("Forward requires full model runtime. Call prepare_full_model().")
         return self.model(*args, **kwargs)
 
-    def adapt_gptq_runtime_model(self, runtime_model):
-        """Optional model-specific GPTQ runtime adaptation hook."""
-        return runtime_model

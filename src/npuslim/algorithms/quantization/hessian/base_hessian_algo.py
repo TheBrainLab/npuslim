@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn as nn
-from accelerate import init_empty_weights
 from accelerate.utils import set_module_tensor_to_device
 from loguru import logger
 from tqdm import tqdm
@@ -108,35 +107,7 @@ class BaseHessianAlgorithm(BaseQuantizationAlgorithm):
         logger.info(f"[{self._TAG}] finish")
 
     def _build_runtime_model(self) -> nn.Module:
-        if self._model_obj is not None and hasattr(self._model_obj, "prepare_empty_model"):
-            model = self._model_obj.prepare_empty_model()
-            if model is not None:
-                model.eval()
-                return model
-
-        if self._model_config is None:
-            raise ValueError(f"[{self._TAG}] model_config is required to build empty runtime model")
-
-        auto_model_cls = self._model_obj._resolve_first_available_class(
-            self._model_obj.get_model_loader_candidates(),
-            kind="model",
-        )
-        model_kwargs = dict(getattr(self._model_obj, "model_kwargs", {}) or {})
-        trust_remote_code = bool(model_kwargs.get("trust_remote_code", False))
-        extra_kwargs: Dict[str, Any] = {}
-        if "attn_implementation" in model_kwargs:
-            extra_kwargs["attn_implementation"] = model_kwargs["attn_implementation"]
-        if "torch_dtype" in model_kwargs:
-            extra_kwargs["torch_dtype"] = model_kwargs["torch_dtype"]
-
-        with init_empty_weights():
-            model = auto_model_cls.from_config(
-                self._model_config,
-                trust_remote_code=trust_remote_code,
-                **extra_kwargs,
-            )
-        model.eval()
-        return model
+        return self._model_obj.prepare_empty_model()
 
     def _extract_linear_targets(self, layer, skip_names: List[str]):
         targets = []
