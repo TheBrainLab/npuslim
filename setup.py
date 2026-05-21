@@ -13,6 +13,12 @@ OPS_DIR = os.path.join("src", TARGET_PKG_NAME, "ops")
 
 def _build_custom_ops():
     """Discover and build all ops/*/build.py via subprocess."""
+    if os.environ.get("NPUSLIM_SKIP_OPS"):
+        print("\n--- Custom Operator Build ---")
+        print("  Skipped (NPUSLIM_SKIP_OPS is set)")
+        print("------------------------------\n")
+        return
+
     if not os.path.isdir(OPS_DIR):
         return
 

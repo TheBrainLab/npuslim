@@ -30,7 +30,7 @@ CUSTOM_THEME = Theme(
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Chat with vLLM API")
-    parser.add_argument("--url", default="http://127.0.0.1:8080/v1")
+    parser.add_argument("--url", default="http://127.0.0.1:8090/v1")
     parser.add_argument("--model", default="/mnt/xufan_400T/models/LongCat-Flash-Chat")
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.0)

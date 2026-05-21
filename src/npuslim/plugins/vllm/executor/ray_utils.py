@@ -15,13 +15,13 @@ fail during attention backend initialization.
 from __future__ import annotations
 
 from npuslim.plugins.logging import patch_logger
-from npuslim.plugins.registry import package_version_range, register_patch
+from npuslim.plugins.registry import always_disable, package_version_range, register_patch
 
 
 @register_patch(
     target="vllm.v1.executor.ray_utils",
-    condition=package_version_range("vllm", min_version="0.18.1"),
-    # condition=lambda _: (False, "temporarily disabled"),
+    condition=package_version_range("vllm", max_version="0.20.1"),
+    # condition=always_disable,
 )
 def patch_ray_worker_adjust_rank(module) -> None:
     """Keep ``global_rank`` aligned with reordered Ray worker ranks."""

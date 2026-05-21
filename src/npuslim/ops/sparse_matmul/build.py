@@ -47,7 +47,9 @@ def build(verbose=False):
     print(f"[sparse_matmul] Building for {soc_version} (CANN: {ascend_home})")
 
     # --- CMake configure + build ---
-    os.makedirs(build_dir, exist_ok=True)
+    if os.path.isdir(build_dir):
+        shutil.rmtree(build_dir)
+    os.makedirs(build_dir)
 
     cmake_cmd = [
         "cmake",

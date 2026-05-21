@@ -241,6 +241,14 @@ if [[ "$BACKEND" == "api" ]]; then
     fi
 
     MODEL_ARGS+=",base_url=${API_URL}"
+    # When --model-name differs from --model-path, separate API model ID from tokenizer:
+    #   pretrained = API model name (sent in requests)
+    #   tokenizer  = local path (for tokenization)
+    if [[ -n "$MODEL_NAME" && "$MODEL_NAME" != "$MODEL_PATH" ]]; then
+        MODEL_ARGS="pretrained=${MODEL_NAME}"
+        MODEL_ARGS+=",tokenizer=${MODEL_PATH}"
+        MODEL_ARGS+=",base_url=${API_URL}"
+    fi
     # tokenized_requests must be True when using --apply-chat-template,
     # otherwise apply_chat_template returns JsonChatStr which breaks _encode_pair
     if [[ "$APPLY_CHAT_TEMPLATE" == true ]]; then
