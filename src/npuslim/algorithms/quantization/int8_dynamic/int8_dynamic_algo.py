@@ -18,7 +18,6 @@ import torch
 from loguru import logger
 
 from npuslim.algorithms.quantization.base_quant_algo import BaseQuantizationAlgorithm
-from npuslim.core.backend import bh
 from npuslim.core import AlgorithmRegistry
 
 if TYPE_CHECKING:
@@ -310,7 +309,7 @@ class INT8DynamicAlgorithm(BaseQuantizationAlgorithm):
         w_strategy = self._extract_strategy(self.cfg.w_quant_method, "channel")
         a_strategy = self._extract_strategy(self.cfg.a_quant_method, "token")
 
-        if bh.name == "npu":
+        if self.target_backend == "npu":
             model_config.ascend_quant_config = {
                 "model_quant_type": self._ASCEND_QUANT_TYPE,
                 "group_size": self.cfg.group_size if w_strategy == "group" else -1,

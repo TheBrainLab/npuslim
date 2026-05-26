@@ -389,7 +389,7 @@ def _round_ldlq(w: torch.Tensor, H: torch.Tensor, config: LDLQConfig) -> torch.T
                 wp, Hp, nbits=config.nbits, npasses=config.npasses,
                 unbiased=config.unbiased, blocksize=config.blocksize,
             )
-            ip = torch.argsort(p.float()) if bh.name == "npu" else torch.argsort(p)
+            ip = torch.argsort(p.float()) if bh.has_npu else torch.argsort(p)
             return wp_hat[:, ip]
         return target_fn(
             w.float(), H, nbits=config.nbits, n_greedy_passes=config.npasses,
@@ -1025,7 +1025,7 @@ class QuIPAlgorithm(BaseHessianAlgorithm):
     def _update_quantization_metadata(self) -> None:
         if self._model_config is None:
             return
-        if bh.name == "npu":
+        if self.target_backend == "npu":
             self._model_config.ascend_quant_config = {
                 "model_quant_type": self._ascend_quant_type,
                 "group_size": self.groupsize,

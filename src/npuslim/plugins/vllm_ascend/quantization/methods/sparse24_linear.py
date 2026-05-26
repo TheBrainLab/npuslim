@@ -49,11 +49,6 @@ class AscendSparse24LinearMethod(AscendLinearScheme):
         self._input_size = input_size
         self._output_size = output_size
 
-        pad_n = math.ceil(output_size / 16) * 16
-        k8 = input_size // 8
-        num_tiles = math.ceil(k8 / _K_TILE_INDEX)
-        index_size = num_tiles * pad_n * _K_TILE_INDEX
-
         return {
             "weight": torch.empty(
                 output_size, input_size // 2, dtype=torch.int8

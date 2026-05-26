@@ -180,7 +180,7 @@ class BaseHessianModule:
                     diag_idx = torch.arange(self.columns, device=self.dev)
                     h_try[diag_idx, diag_idx] += damp
 
-                if bh.name == "npu":
+                if bh.has_npu:
                     h_cpu = h_try.to("cpu")
                     l_cpu = torch.linalg.cholesky(h_cpu)
                     inv_l_cpu = torch.cholesky_inverse(l_cpu)

@@ -40,7 +40,7 @@ class BaseQuantizationAlgorithm(BaseAlgorithm):
 
         Falls back to the runtime backend when ``_save_backend`` is not set.
         """
-        return self._save_backend or bh.name
+        return self._save_backend or bh.detected_name
 
     @staticmethod
     def should_skip_name(full_name: str, skip_layer_names: Iterable[str]) -> bool:

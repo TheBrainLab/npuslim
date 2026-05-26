@@ -20,7 +20,7 @@ def _module_available(module_name: str) -> bool:
 def _load_backend_name() -> str:
     from npuslim.core.backend import bh
 
-    return bh.name
+    return bh.detected_name
 
 
 def _register_plugin(package_name: str) -> None:

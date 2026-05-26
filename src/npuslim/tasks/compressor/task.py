@@ -208,7 +208,7 @@ class CompressorTask(BaseTask):
                     if saver is not None:
                         saver.add_tensors(
                             chunk.all_tensors(),
-                            tensor_types=self._resolve_chunk_tensor_types(chunk, npu_strict=(bh.name == "npu")),
+                            tensor_types=self._resolve_chunk_tensor_types(chunk, npu_strict=bh.has_npu),
                         )
 
                     loader.unload_chunk(0)
@@ -224,7 +224,7 @@ class CompressorTask(BaseTask):
                     if saver is not None:
                         saver.add_tensors(
                             chunk.all_tensors(),
-                            tensor_types=self._resolve_chunk_tensor_types(chunk, npu_strict=(bh.name == "npu")),
+                            tensor_types=self._resolve_chunk_tensor_types(chunk, npu_strict=bh.has_npu),
                         )
 
                     loader.unload_chunk(chunk_idx)

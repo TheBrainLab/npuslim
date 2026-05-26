@@ -99,7 +99,7 @@ class GPTQModule(BaseHessianModule):
             w = w[:, perm]
             hessian = hessian[perm][:, perm]
             invperm = (
-                torch.argsort(perm.float()) if bh.name == "npu" else torch.argsort(perm)
+                torch.argsort(perm.float()) if bh.has_npu else torch.argsort(perm)
             )
         else:
             perm = torch.arange(self.columns, device=w.device)

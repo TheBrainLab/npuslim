@@ -158,7 +158,7 @@ class StreamingHuggingFaceSaver(BaseSaver):
         tensor_type: Optional[str] = None,
     ) -> None:
         """Add tensor to buffer, auto-flush if threshold exceeded."""
-        if bh.name == "npu" and self.require_tensor_types_on_npu and not tensor_type:
+        if bh.has_npu and self.require_tensor_types_on_npu and not tensor_type:
             raise ValueError(
                 f"[HFSaver] NPU mode requires explicit tensor_type for '{name}'."
             )
