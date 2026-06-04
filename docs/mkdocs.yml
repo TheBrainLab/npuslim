@@ -1,0 +1,75 @@
+site_name: NPUSlim v2 文档
+theme:
+  name: material
+  language: zh
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: 切换到暗色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: 切换到亮色模式
+
+docs_dir: .
+site_dir: ../site
+
+nav:
+  - 首页: index.md
+  - 快速上手: getting-started.md
+  - 设计思想:
+    - 流式管线架构: design/streaming-pipeline.md
+    - 可扩展性设计: design/extensibility.md
+  - 使用指南:
+    - 配置体系: guide/configuration.md
+    - 校准数据: guide/calibration.md
+    - 模型适配: guide/model-support.md
+    - 量化算法:
+      - 算法总览: guide/quantization/overview.md
+      - GPTQ: guide/quantization/gptq.md
+      - INT8 动态量化: guide/quantization/int8-dynamic.md
+      - QuIP: guide/quantization/quip.md
+      - SparseGPT: guide/quantization/sparsegpt.md
+  - 内部机制:
+    - 完整执行流程: internals/execution-flow.md
+    - 后端抽象: internals/backend.md
+    - 流式保存: internals/streaming-saver.md
+    - 自定义算子: internals/custom-ops.md
+    - Hook 系统: internals/hooks.md
+    - 分布式执行: internals/distributed.md
+  - 部署与评估:
+    - 模型部署: deployment/serving.md
+    - 模型评估: deployment/evaluation.md
+  - 插件生态:
+    - 插件架构: plugins/plugin-architecture.md
+    - vLLM 集成: plugins/vllm-integration.md
+    - Ascend NPU 集成: plugins/ascend-integration.md
+    - Transformers 集成: plugins/transformers-integration.md
+  - 参考资料:
+    - CLI 工具参考: reference/cli-reference.md
+    - 配置文件样例: reference/config-examples.md
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - admonition
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true

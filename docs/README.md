@@ -1,110 +1,36 @@
-# NPUSlim Documentation
+# NPUSlim v2 Documentation
 
-This directory contains the Sphinx documentation for NPUSlim.
+MkDocs Material documentation for NPUSlim. Source files are Markdown, built into static HTML.
 
-## Quick Start
-
-```bash
-# Build both Chinese and English versions
-make clean && make all-html
-```
-
-Output: `build/html/zh_CN/` and `build/html/en/`
-
-## Build Commands
-
-| Command | Description |
-|---------|-------------|
-| `make clean` | Clean build directory |
-| `make gettext` | Generate .pot template files |
-| `make html-zh` | Build Chinese version only |
-| `make html-en` | Build English version only |
-| `make all-html` | Build both zh_CN and en versions |
-
-## Full Build Workflow
-
-When source files are modified, run the complete workflow:
+## Build
 
 ```bash
-# Step 1: Generate .pot templates from source
-make gettext
+# Install dependencies
+pip install -r requirements.txt
 
-# Step 2: Sync .pot to .po files (update/add entries)
-bash sync_i18n.sh
-
-# Step 3: Translate .po files (manual step)
-# Edit files in locales/zh_CN/LC_MESSAGES/
-# Fill in msgstr "" with Chinese translations
-
-# Step 4: Rebuild HTML
-make clean && make all-html
+# Build static HTML to ../site/
+mkdocs build -f mkdocs.yml
 ```
 
-## Translation Guide
-
-### File Structure
-
-```
-locales/
-└── zh_CN/
-    └── LC_MESSAGES/
-        ├── about.po
-        ├── index.po
-        ├── benchmark/
-        │   ├── index.po
-        │   └── ...
-        ├── reference/
-        │   └── ...
-        └── tutorials/
-            └── ...
-```
-
-### Translation Format
-
-Edit `.po` files and fill in `msgstr`:
-
-```po
-msgid "About"
-msgstr "关于"
-
-msgid "Overview"
-msgstr "概述"
-
-msgid "Features"
-msgstr "特性"
-```
-
-### Check Translation Progress
+## Live Preview
 
 ```bash
-# Count untranslated entries
-find locales/zh_CN/LC_MESSAGES -name "*.po" -exec sh -c 'echo "=== {} ==="; grep -c "^msgstr \"\"" "$1"' _ {} \;
+# Start dev server with hot-reload at http://127.0.0.1:8000
+mkdocs serve -f mkdocs.yml
 ```
 
-## Prerequisites
-
-```bash
-pip install sphinx sphinx-intl myst-parser furo
-```
-
-## Directory Structure
+## Directory Layout
 
 ```
 docs/
-├── Makefile           # Build commands
-├── sync_i18n.sh       # Translation sync script
-├── source/            # Source .md files
-│   ├── conf.py        # Sphinx config
-│   ├── index.md
-│   ├── about.md
-│   ├── benchmark/
-│   ├── reference/
-│   ├── tutorials/
-│   └── faq/
-├── locales/           # Translation files
-│   └── zh_CN/
-└── build/             # Output directory
-    └── html/
-        ├── zh_CN/
-        └── en/
+├── mkdocs.yml          # MkDocs configuration
+├── requirements.txt    # Python build dependencies
+├── index.md            # Homepage
+├── getting-started.md  # Quick start guide
+├── design/             # Architecture & design docs
+├── guide/              # Usage guides (config, calibration, quantization)
+├── internals/          # Internal mechanisms
+├── deployment/         # Serving & evaluation
+├── plugins/            # Plugin ecosystem
+└── reference/          # CLI & config reference
 ```
