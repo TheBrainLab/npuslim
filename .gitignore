@@ -194,5 +194,8 @@ tags
 # Cursor IDE files
 .cursor/
 
+# Serena AI assistant
+.serena/
+
 # NPU intermediate files
 extra-info/
