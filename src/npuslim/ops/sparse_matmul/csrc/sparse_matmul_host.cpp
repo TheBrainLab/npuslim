@@ -5,6 +5,8 @@
 #include "kernel_tiling/kernel_tiling.h"
 #include "matmul_sparse_custom_tiling.h"
 
+#include "torch_npu/csrc/framework/OpCommand.h"
+
 extern "C" uint32_t aclrtlaunch_matmul_sparse_custom(
     uint32_t blockDim, aclrtStream stream,
     void* a, void* b, void* bias, void* index,
@@ -28,8 +30,13 @@ extern "C" int run_sparse_matmul(
     void* index_dev,   // [N_padded, K/8] uint8 NZ-format, device ptr
     void* c_dev,       // [M, N] int32, device ptr (output)
     int64_t m, int64_t n, int64_t k,
+    void* workspace_dev,
+    int64_t workspace_size,
+    void* tiling_dev,
+    int64_t tiling_size,
     void* stream)
 {
+    aclrtStream aclStream = static_cast<aclrtStream>(stream);
     MatmulHost::MatmulCaseParams params{
         GetCoreNum(),
         static_cast<int32_t>(m),
@@ -41,51 +48,34 @@ extern "C" int run_sparse_matmul(
     if (!MatmulHost::GenerateTiling(params, tilingData)) {
         return -1;
     }
-
-    size_t tilingSize = sizeof(TCubeTiling);
-    void* tilingHost = nullptr;
-    void* tilingDevice = nullptr;
-    aclError ret;
-
-    ret = aclrtMallocHost(&tilingHost, tilingSize);
-    if (ret != ACL_SUCCESS) return -1;
-    memcpy(tilingHost, &tilingData, tilingSize);
-
-    ret = aclrtMalloc(&tilingDevice, tilingSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    if (ret != ACL_SUCCESS) { aclrtFreeHost(tilingHost); return -1; }
-
-    ret = aclrtMemcpy(tilingDevice, tilingSize, tilingHost, tilingSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    if (ret != ACL_SUCCESS) { aclrtFree(tilingDevice); aclrtFreeHost(tilingHost); return -1; }
-
-    size_t workspaceSize = GetSysWorkSpaceSize();
-    void* workspaceDev = nullptr;
-    ret = aclrtMalloc(&workspaceDev, workspaceSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    if (ret != ACL_SUCCESS) { aclrtFree(tilingDevice); aclrtFreeHost(tilingHost); return -1; }
-
-    ret = aclrtlaunch_matmul_sparse_custom(
-        static_cast<uint32_t>(tilingData.usedCoreNum),
-        static_cast<aclrtStream>(stream),
-        a_dev, b_dev, /*bias=*/nullptr, index_dev,
-        c_dev, workspaceDev, tilingDevice);
-    if (ret != ACL_SUCCESS) {
-        aclrtFree(workspaceDev);
-        aclrtFree(tilingDevice);
-        aclrtFreeHost(tilingHost);
+    if (tiling_dev == nullptr ||
+        tiling_size < static_cast<int64_t>(sizeof(TCubeTiling))) {
         return -1;
     }
-    // The tiling/workspace buffers are owned by this host wrapper.
-    // We must not free them before the launched kernel on this stream has
-    // finished consuming them, otherwise we trigger a use-after-free race.
-    ret = aclrtSynchronizeStream(static_cast<aclrtStream>(stream));
+    if (workspace_dev == nullptr ||
+        workspace_size < static_cast<int64_t>(GetSysWorkSpaceSize())) {
+        return -1;
+    }
+    aclError ret = aclrtMemcpy(
+        tiling_dev,
+        static_cast<size_t>(tiling_size),
+        &tilingData,
+        sizeof(TCubeTiling),
+        ACL_MEMCPY_HOST_TO_DEVICE);
     if (ret != ACL_SUCCESS) {
-        aclrtFree(workspaceDev);
-        aclrtFree(tilingDevice);
-        aclrtFreeHost(tilingHost);
         return -1;
     }
 
-    aclrtFree(workspaceDev);
-    aclrtFree(tilingDevice);
-    aclrtFreeHost(tilingHost);
+    at_npu::native::OpCommand::RunOpApiV2(
+        "npuslim::sparse_matmul_4to2",
+        [=]() -> int {
+            aclError launchRet = aclrtlaunch_matmul_sparse_custom(
+                static_cast<uint32_t>(tilingData.usedCoreNum),
+                aclStream,
+                a_dev, b_dev, /*bias=*/nullptr, index_dev,
+                c_dev, workspace_dev, tiling_dev);
+            return launchRet == ACL_SUCCESS ? 0 : -1;
+        },
+        /*sync=*/false);
     return 0;
 }

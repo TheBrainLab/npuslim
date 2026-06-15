@@ -44,7 +44,12 @@ def build(verbose=False):
         )
         return False
 
+    import torch
+    import torch_npu
+    torch_npu_home = os.path.dirname(os.path.abspath(torch_npu.__file__))
+
     print(f"[sparse_matmul] Building for {soc_version} (CANN: {ascend_home})")
+    print("[sparse_matmul] TaskQueue bridge: enabled")
 
     # --- CMake configure + build ---
     if os.path.isdir(build_dir):
@@ -56,6 +61,9 @@ def build(verbose=False):
         "-DRUN_MODE=npu",
         f"-DSOC_VERSION={soc_version}",
         f"-DASCEND_CANN_PACKAGE_PATH={ascend_home}",
+        f"-DNPUSLIM_CXX11_ABI={int(bool(torch._C._GLIBCXX_USE_CXX11_ABI))}",
+        f"-DCMAKE_PREFIX_PATH={torch.utils.cmake_prefix_path}",
+        f"-DTORCH_NPU_HOME={torch_npu_home}",
         "..",
     ]
     make_cmd = ["make", f"-j{os.cpu_count() or 4}"]

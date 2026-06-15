@@ -19,6 +19,10 @@ import os
 
 _LIB = None
 _LIB_LOADED = False
+_TILING_SIZE = 200
+_WORKSPACE_SIZE = 16777216
+_KEEPALIVE = []
+_KEEPALIVE_LIMIT = 8
 
 
 def _load_lib():
@@ -45,6 +49,10 @@ def _load_lib():
             ctypes.c_int64,   # m
             ctypes.c_int64,   # n
             ctypes.c_int64,   # k
+            ctypes.c_void_p,  # workspace_dev
+            ctypes.c_int64,   # workspace_size
+            ctypes.c_void_p,  # tiling_dev
+            ctypes.c_int64,   # tiling_size
             ctypes.c_void_p,  # stream
         ]
     except OSError:
@@ -84,6 +92,12 @@ def _register_custom_op():
 
         current_stream = torch.npu.current_stream(device=a.device)
         c = torch.zeros(m, n, dtype=torch.int32, device=a.device)
+        workspace = torch.empty(_WORKSPACE_SIZE, dtype=torch.uint8, device=a.device)
+        tiling = torch.empty(_TILING_SIZE, dtype=torch.uint8, device=a.device)
+        c._npuslim_sparse_matmul_workspace = (workspace, tiling)
+        _KEEPALIVE.append(c)
+        if len(_KEEPALIVE) > _KEEPALIVE_LIMIT:
+            del _KEEPALIVE[:-_KEEPALIVE_LIMIT]
 
         ret = _LIB.run_sparse_matmul(
             ctypes.c_void_p(a.data_ptr()),
@@ -93,6 +107,10 @@ def _register_custom_op():
             ctypes.c_int64(m),
             ctypes.c_int64(n),
             ctypes.c_int64(k),
+            ctypes.c_void_p(workspace.data_ptr()),
+            ctypes.c_int64(_WORKSPACE_SIZE),
+            ctypes.c_void_p(tiling.data_ptr()),
+            ctypes.c_int64(_TILING_SIZE),
             current_stream._as_parameter_,
         )
         if ret != 0:
