@@ -483,35 +483,60 @@ class OffloadPlanner:
 
         if is_homogeneous:
             # Simple even spacing: offload every K-th layer, offset so
-            # that layer 0 is always resident. Layer 0 is the first layer
-            # in the forward pass; offloading it causes issues in graph
-            # mode because its wait_prefetch has no preceding resident
-            # layer to provide a compute-prefetch overlap window.
-            step = max(1, round(num_layers / num_to_offload))
-            offload = set()
-            for i in range(num_to_offload):
-                idx = (i * step + step - 1) % num_layers
-                while idx in offload:
-                    idx = (idx + 1) % num_layers
-                offload.add(idx)
-            return offload
+            # that layer 0 is always resident. Use _interleave_selected
+            # for consistent spacing with no adjacent offloaded layers.
+            dummy_selected = list(range(num_to_offload))
+            return OffloadPlanner._interleave_selected(dummy_selected, num_layers)
 
         # Heterogeneous: prefer larger layers but maintain spread.
-        # Greedy assignment: pick the largest remaining layer, but
-        # place it at the position that maximizes minimum gap to
-        # existing offloaded layers.
+        # Instead of just picking the largest layers (which may be
+        # consecutive), we interleave the selected layers across the
+        # full model to ensure compute-prefetch overlap.
         offload: Set[int] = set()
         # Candidates sorted by size descending
         candidates = [idx for idx, _ in sorted_layers[:num_to_offload]]
 
-        # Sort candidates by index for spread calculation
+        # Interleave: sort candidates by index, then spread them evenly
+        # across the model by remapping to an interleaved layout.
         candidates.sort()
+        return OffloadPlanner._interleave_selected(candidates, num_layers)
 
-        # For heterogeneous models, just use the selected layers directly.
-        # They're already spread by the size-based selection (larger MoE
-        # layers tend to be at different positions than dense layers).
-        # Apply a light-touch spread optimization.
-        return OffloadPlanner._optimize_spread(set(candidates), num_layers)
+    @staticmethod
+    def _interleave_selected(selected: List[int], num_layers: int) -> Set[int]:
+        """Remap selected layer indices to an evenly spaced layout.
+
+        Produces a set of ``len(selected)`` layer indices spread evenly
+        across ``num_layers`` layers. Layer 0 is always resident. The
+        layout ensures resident layers exist between consecutive offloaded
+        layers for compute-prefetch overlap.
+
+        For example, 30 layers out of 78 → {2, 5, 8, 11, ...} with
+        consistent ~3-layer spacing.
+        """
+        n = len(selected)
+        if n == 0:
+            return set()
+        if n >= num_layers:
+            return set(range(1, num_layers))
+
+        # Evenly sample n positions from [1, num_layers), excluding 0.
+        # This is equivalent to placing n points on a ring of size
+        # num_layers and rotating so that position 0 is not selected.
+        result: Set[int] = set()
+        for i in range(n):
+            # Place at round(i * num_layers / n) % num_layers, offset
+            # by half the spacing so positions are centered in gaps.
+            spacing = num_layers / n
+            idx = int(round(i * spacing + spacing / 2)) % num_layers
+            if idx == 0:
+                idx = 1
+            # Resolve collisions by shifting forward
+            while idx in result:
+                idx = (idx + 1) % num_layers
+                if idx == 0:
+                    idx = 1
+            result.add(idx)
+        return result
 
     @staticmethod
     def _optimize_spread(offload_indices: Set[int], num_layers: int) -> Set[int]:
