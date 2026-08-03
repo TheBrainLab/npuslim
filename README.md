@@ -8,6 +8,7 @@ NPU-oriented model compression & quantization framework for large language model
 - Model support: Qwen3, OPT
 - vLLM-ascend deployment integration
 - Performance evaluation with lm-eval and evalscope
+- Experimental overlap-aware OPD utilities for quantized student recovery
 
 ## Installation
 
@@ -71,6 +72,14 @@ bash tools/eval/run_stress_test.sh outputs/model
 | `tools/serve/deploy_vllm.sh` | Deploy vLLM inference server |
 | `tools/eval/run_lmeval.sh` | Run lm-evaluation-harness (backends: vllm, hf, api) |
 | `tools/eval/run_stress_test.sh` | Run stress test via API (requires running server) |
+| `tools/opd/run_choice_benchmarks.sh` | Run the seven OPD choice-style benchmarks |
+| `tools/opd/replay_choice_fusion.py` | Replay overlap-aware expert fusion on candidate-score files |
+
+### OPD Experiments
+
+See `docs/opd-experiments.md` for the Qwen3 30B-to-4B W4A16 and
+235B-to-30B W4A16 experiment summaries, benchmark commands, and candidate-score
+fusion replay format.
 
 ### Common Options
 
