@@ -60,6 +60,7 @@ class CompressorTask(BaseTask):
             block_name=block_name,
             pre_module_names=pre_module_names,
             post_module_names=post_module_names,
+            num_layers=getattr(self._model_obj, "num_transformer_layers", None),
         )
 
     @staticmethod
@@ -229,17 +230,71 @@ class CompressorTask(BaseTask):
 
                     loader.unload_chunk(chunk_idx)
 
+            # MTP layer quantization (after regular layers, before backfill)
+            mtp_names = list(getattr(self._model_obj, "mtp_layer_names", []))
+            quantize_mtp = getattr(algo, "_quantize_mtp", False)
+            save_mtp_debug = getattr(algo, "_save_mtp_debug", False)
+            # Only process MTP when explicitly requested (quantize or save debug).
+            # Otherwise the MTP layer is left to the backfill path, which saves
+            # the original per-expert 2D FLOAT checkpoint format unchanged.
+            process_mtp = mtp_names and saver is not None and (quantize_mtp or save_mtp_debug)
+            if process_mtp:
+                if quantize_mtp:
+                    logger.info(f"[CompressorTask] MTP quantization enabled for: {mtp_names}")
+                else:
+                    logger.info(f"[CompressorTask] MTP debug-only mode (save_mtp_debug=True, no quantization): {mtp_names}")
+                mtp_chunk = self._load_mtp_chunk(loader, mtp_names, resolved_skip_layer_names)
+                if mtp_chunk is not None:
+                    touched_original_keys.update(mtp_chunk.all_tensors().keys())
+                    mtp_chunk = algo.process_mtp_chunk(mtp_chunk)
+                    saver.add_tensors(
+                        mtp_chunk.all_tensors(),
+                        tensor_types=self._resolve_chunk_tensor_types(mtp_chunk, npu_strict=bh.has_npu),
+                    )
+                    loader.unload_chunk(999)  # Release shard handles
+            elif mtp_names and saver is not None:
+                # MTP layers are not being quantized or debug-saved.
+                # Do NOT mark them as touched -- let the backfill path below
+                # load them from checkpoint and save as FLOAT, so they are
+                # present in the output shards and index files.
+                logger.info(
+                    f"[CompressorTask] MTP layers {mtp_names} will be saved as-is "
+                    f"(per-expert 2D FLOAT, quantize_mtp=False, save_mtp_debug=False) "
+                    f"via backfill"
+                )
+
             if saver is not None:
                 missing_original_keys = sorted(all_original_keys - touched_original_keys)
                 if missing_original_keys:
+                    # Categorize missing keys by layer for better visibility
+                    layer_counts: dict[str, int] = {}
+                    for k in missing_original_keys:
+                        parts = k.split(".")
+                        if len(parts) >= 3 and parts[0] == "model" and parts[1] == "layers":
+                            layer_key = f"layer {parts[2]}"
+                        else:
+                            layer_key = ".".join(parts[:2]) if len(parts) >= 2 else parts[0]
+                        layer_counts[layer_key] = layer_counts.get(layer_key, 0) + 1
+                    layer_summary = ", ".join(f"{k}={v}" for k, v in sorted(layer_counts.items()))
                     logger.warning(
-                        f"[CompressorTask] Backfilling {len(missing_original_keys)} untouched original tensors"
+                        f"[CompressorTask] Backfilling {len(missing_original_keys)} untouched original tensors "
+                        f"({layer_summary})"
                     )
+                    logger.info(f"[CompressorTask] Backfill: loading {len(missing_original_keys)} tensors from checkpoint")
                     missing_tensors = loader.load_tensors(missing_original_keys)
+                    logger.info(
+                        f"[CompressorTask] Backfill: loaded {len(missing_tensors)} tensors, "
+                        f"saving as FLOAT to output shards"
+                    )
                     saver.add_tensors(
                         missing_tensors,
                         tensor_types={name: "FLOAT" for name in missing_original_keys},
                     )
+                    logger.success(
+                        f"[CompressorTask] Backfill: completed, {len(missing_tensors)} tensors saved as FLOAT"
+                    )
+                else:
+                    logger.info("[CompressorTask] Backfill: no untouched tensors, nothing to backfill")
         finally:
             try:
                 algo.on_finish()
@@ -267,6 +322,46 @@ class CompressorTask(BaseTask):
             "chunks_processed": chunk_count,
             "output_dir": str(output_dir) if output_dir else None,
         }
+
+    def _load_mtp_chunk(self, loader: ChunkLoader, mtp_names: List[str], skip_layer_names: List[str]):
+        """Load MTP layer tensors from checkpoint into a ChunkContext."""
+        from npuslim.tasks.compressor.context import ChunkContext, LayerInfo
+
+        all_tensor_names = loader.get_all_tensor_names()
+        layers: List[LayerInfo] = []
+
+        for mtp_name in mtp_names:
+            # Find tensors belonging to this MTP layer
+            mtp_tensor_names = [t for t in all_tensor_names if t.startswith(f"{mtp_name}.")]
+            if not mtp_tensor_names:
+                logger.warning(f"[CompressorTask] No tensors found for MTP layer: {mtp_name}")
+                continue
+
+            mtp_tensors = loader.load_tensors(mtp_tensor_names)
+
+            # Convert to relative names (strip layer prefix)
+            layer_prefix = f"{mtp_name}."
+            layer_tensors = {}
+            for full_name, tensor in mtp_tensors.items():
+                rel_name = full_name[len(layer_prefix):] if full_name.startswith(layer_prefix) else full_name
+                layer_tensors[rel_name] = tensor
+
+            layer_idx = int(mtp_name.split(".")[-1])
+            layers.append(LayerInfo(name=mtp_name, index=layer_idx, tensors=layer_tensors))
+            logger.info(f"[CompressorTask] Loaded MTP layer: {mtp_name} ({len(layer_tensors)} tensors)")
+
+        if not layers:
+            return None
+
+        chunk = ChunkContext(
+            chunk_index=999,
+            layers=layers,
+            pre_modules=[],
+            post_modules=[],
+        )
+        chunk.calib_data = self._calib_data
+        chunk.metadata["skip_layer_names"] = list(skip_layer_names)
+        return chunk
 
     @staticmethod
     def _resolve_chunk_tensor_types(

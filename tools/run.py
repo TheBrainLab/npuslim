@@ -3,10 +3,35 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from npuslim import SlimEngine
 from npuslim.core.bootstrap import bootstrap_from_path
+
+# 自动检测 HF_ENDPOINT 环境变量，如果设了镜像，就把分页 Link 头里的 huggingface.co 替换成镜像地址，避免网络问题
+def _patch_hf_pagination_for_mirror():
+    """Rewrite Link header URLs to use HF_ENDPOINT mirror for paginated API calls."""
+    endpoint = os.environ.get("HF_ENDPOINT", "").rstrip("/")
+    if not endpoint or "huggingface.co" in endpoint:
+        return
+    try:
+        import huggingface_hub.utils._pagination as _pagination
+
+        _original = _pagination._get_next_page
+
+        def _patched(response):
+            url = _original(response)
+            if url and "huggingface.co" in url:
+                return url.replace("https://huggingface.co", endpoint)
+            return url
+
+        _pagination._get_next_page = _patched
+    except (ImportError, AttributeError):
+        pass
+
+
+_patch_hf_pagination_for_mirror()
 
 
 def parse_args():

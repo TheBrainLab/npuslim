@@ -113,6 +113,18 @@ class BaseLLMModel(ABC):
 
         self.prepare_metadata()
 
+    @property
+    def num_transformer_layers(self) -> Optional[int]:
+        """Number of transformer decoder layers from config.
+
+        Checkpoint may contain extra layers beyond this count (e.g. NextN
+        prediction layers) that are NOT part of the model.layers ModuleList.
+        ChunkLoader uses this to avoid treating them as regular transformer layers.
+        """
+        if self.config is None:
+            return None
+        return getattr(self.config, "num_hidden_layers", None)
+
     def get_model_loader_candidates(self) -> List[str]:
         """Ordered model loader class candidates."""
         return ["AutoModelForCausalLM"]
@@ -166,6 +178,61 @@ class BaseLLMModel(ABC):
                 )
         return self.path_str
 
+    def _load_tokenizer_from_v5_checkpoint(self, source: str):
+        """Load a tokenizer saved with transformers v5 (TokenizersBackend) on v4.x.
+
+        v5 checkpoints store ``tokenizer_class: "TokenizersBackend"`` and
+        ``extra_special_tokens`` as a list, both incompatible with v4.x.
+        This falls back to ``PreTrainedTokenizerFast`` loading the
+        ``tokenizer.json`` directly, adapting the v5-only config keys.
+        """
+        import json
+
+        from transformers import PreTrainedTokenizerFast
+
+        source_path = Path(source)
+        tokenizer_json = source_path / "tokenizer.json"
+        if not tokenizer_json.exists():
+            raise FileNotFoundError(
+                f"tokenizer.json not found at '{tokenizer_json}'. Cannot fall back "
+                f"to PreTrainedTokenizerFast for v5-style checkpoint."
+            )
+
+        init_kwargs: Dict[str, Any] = {}
+        config_path = source_path / "tokenizer_config.json"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            # Skip v5-only keys that v4.x cannot handle.
+            skip_keys = {
+                "tokenizer_class",
+                "backend",
+                "extra_special_tokens",
+                "model_specific_special_tokens",
+            }
+            for key, value in cfg.items():
+                if key in skip_keys:
+                    continue
+                init_kwargs[key] = value
+            # v5 stores extra_special_tokens as a list; v4.x expects a dict for
+            # that field, so merge them into additional_special_tokens instead.
+            extra = cfg.get("extra_special_tokens", [])
+            if extra:
+                existing = list(init_kwargs.get("additional_special_tokens", []))
+                merged = existing + [t for t in extra if t not in existing]
+                init_kwargs["additional_special_tokens"] = merged
+
+        # Explicit kwargs override config-file defaults.
+        for key, value in self.tokenizer_kwargs.items():
+            if key == "use_fast":
+                continue
+            init_kwargs[key] = value
+
+        return PreTrainedTokenizerFast(
+            tokenizer_file=str(tokenizer_json),
+            **init_kwargs,
+        )
+
     def prepare_metadata(self, pretrained_source: Optional[str] = None) -> None:
         source = pretrained_source or self._resolve_pretrained_source()
         tokenizer_cls = self._resolve_first_available_class(
@@ -176,10 +243,20 @@ class BaseLLMModel(ABC):
         logger.info(
             f"Loading tokenizer metadata from: '{source}' with kwargs: {self.tokenizer_kwargs}"
         )
-        self.tokenizer = tokenizer_cls.from_pretrained(
-            pretrained_model_name_or_path=source,
-            **self.tokenizer_kwargs,
-        )
+        try:
+            self.tokenizer = tokenizer_cls.from_pretrained(
+                pretrained_model_name_or_path=source,
+                **self.tokenizer_kwargs,
+            )
+        except ValueError as exc:
+            if "TokenizersBackend" not in str(exc):
+                raise
+            logger.warning(
+                "AutoTokenizer cannot resolve v5-style 'TokenizersBackend' tokenizer "
+                f"class on transformers 4.x. Falling back to PreTrainedTokenizerFast "
+                f"from tokenizer.json. Original error: {exc}"
+            )
+            self.tokenizer = self._load_tokenizer_from_v5_checkpoint(source)
 
         processor_candidates = self.get_processor_loader_candidates()
         if processor_candidates:

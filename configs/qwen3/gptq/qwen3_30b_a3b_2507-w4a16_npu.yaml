@@ -1,0 +1,40 @@
+# config.yaml
+
+metadata:
+  name: "Qwen3_Quantization_Recipe"
+  description: "GPTQ W4A16 quantization for Qwen3-30B-A3B-Instruct-2507."
+
+resources:
+  - id: qwen
+    type: Qwen3Model
+    path: /data/yult/llm_inference/models/Qwen3-30B-A3B-Instruct-2507 #Qwen/Qwen3-30B-A3B-Instruct-2507
+    device_map: cpu
+    model_hub: ms
+
+  - id: calib_data
+    type: TextDataset
+    data_path: dataset/sharegpt_gpt4_qwen/sharegpt_gpt4-qwen3_a22B_output.jsonl
+    num_samples: 128
+    max_seq_length: 4096
+
+recipe:
+  - name: "GPTQ_Quantization"
+    type: compressor
+    model: "@qwen"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 1
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ
+      wbits: 4
+      groupsize: 128
+      save_backend: npu
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 8
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_npu"

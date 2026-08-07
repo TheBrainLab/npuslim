@@ -1,0 +1,40 @@
+# config.yaml
+
+metadata:
+  name: "Qwen3_Quantization_Recipe"
+  description: "GPTQ W4A16 quantization for Qwen3-0.6B."
+
+resources:
+  - id: qwen
+    type: Qwen3Model
+    path: /data/yult/llm_inference/models/Qwen3-0.6B #Qwen/Qwen3-0.6B
+    device_map: cpu
+
+  - id: calib_data
+    type: C4Dataset
+    data_path: dataset/c4/c4-train.00000.json.gz
+    num_samples: 128
+    max_seq_length: 2048
+
+recipe:
+  - name: "GPTQ_Quantization"
+    type: compressor
+    model: "@qwen"
+    # data: "@calib_data"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 1
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ
+      wbits: 4
+      groupsize: 128
+      save_backend: npu
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 4
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_npu"

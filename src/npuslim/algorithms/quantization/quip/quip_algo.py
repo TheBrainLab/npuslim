@@ -978,7 +978,8 @@ class QuIPAlgorithm(BaseHessianAlgorithm):
         quantized_tensor_names: set[str] = set()
         quantized_weights = 0
         quant_results = []
-        for module_rel_name, rel_weight_name, rel_bias_name, _weight_tensor, _bias_tensor in targets:
+        for module_rel_name, rel_weight_name, rel_bias_name, _weight_tensor, _bias_tensor, *rest in targets:
+            is_3d = rest[0] if rest else False
             handler = handlers.get(module_rel_name)
             if handler is None:
                 continue

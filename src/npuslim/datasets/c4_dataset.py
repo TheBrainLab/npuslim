@@ -12,8 +12,9 @@ from npuslim.core import DatasetRegistry
 class C4Dataset(BaseDataset):
     """C4 dataset for calibration, matching original QuIP/GPTQ behavior."""
 
-    def __init__(self, *args, seed: int = 0, **kwargs):
+    def __init__(self, *args, seed: int = 0, data_path: str | None = None, **kwargs):
         self.seed = seed
+        self.data_path = data_path
         super().__init__(*args, **kwargs)
         self._load_data()
 
@@ -38,6 +39,23 @@ class C4Dataset(BaseDataset):
                 deduped.append(root)
                 seen.add(root)
         return deduped
+
+    def _try_local_file(self):
+        """Load C4 data from a local JSON.GZ file specified by data_path."""
+        from datasets import load_dataset
+        from loguru import logger
+
+        if not self.data_path:
+            return None
+
+        path = Path(self.data_path)
+        if not path.exists():
+            logger.warning(f"C4 data_path not found: {path}")
+            return None
+
+        logger.info(f"Loading C4 from local file: {path}")
+        ds = load_dataset("json", data_files=str(path), split="train")
+        return iter(ds)
 
     def _try_remote_or_standard_cache(self):
         from datasets import load_dataset
@@ -98,7 +116,10 @@ class C4Dataset(BaseDataset):
     def _load_data(self):
         from loguru import logger
 
-        traindata, errors = self._try_remote_or_standard_cache()
+        traindata = self._try_local_file()
+
+        if traindata is None:
+            traindata, errors = self._try_remote_or_standard_cache()
         if traindata is None:
             traindata = self._try_local_arrow_cache()
 

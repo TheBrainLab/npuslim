@@ -38,6 +38,7 @@ class ChunkLoader:
         block_name: str = "model.layers",
         pre_module_names: Optional[List[str]] = None,
         post_module_names: Optional[List[str]] = None,
+        num_layers: Optional[int] = None,
     ):
         self.model_path = Path(model_path)
         self.path_str = str(model_path)
@@ -48,6 +49,7 @@ class ChunkLoader:
         self.block_name = block_name
         self.pre_module_names = [name for name in (pre_module_names or []) if name]
         self.post_module_names = [name for name in (post_module_names or []) if name]
+        self.num_layers = int(num_layers) if num_layers is not None else None
 
         # Resolved state
         self._resolved_dir: Optional[Path] = None
@@ -189,6 +191,9 @@ class ChunkLoader:
             if not match:
                 continue
             layer_idx = int(match.group(1))
+            # Skip layers beyond config's num_hidden_layers (e.g. NextN prediction layers)
+            if self.num_layers is not None and layer_idx >= self.num_layers:
+                continue
             layer_tensor_map.setdefault(layer_idx, []).append(tensor_name)
 
         self._layer_tensor_map = layer_tensor_map

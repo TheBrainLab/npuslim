@@ -6,7 +6,9 @@ Extracted from gptq_algo.py as the canonical source. Used by GPTQ, QuIP, and Spa
 from __future__ import annotations
 
 import math
-from typing import Any, Tuple
+from typing import Any, Optional, Tuple
+
+from loguru import logger
 
 import torch
 import torch.nn as nn
@@ -120,9 +122,11 @@ class BaseHessianModule:
         *,
         percdamp: float = 0.01,
         preproc_hessian: bool = False,
+        hessian_device: Optional[torch.device] = None,
     ):
         self.layer = layer
         self.dev = self.layer.weight.device
+        self._hdev = hessian_device if hessian_device is not None else self.dev
         w = layer.weight.data.clone().float()
         if isinstance(self.layer, nn.Conv2d):
             w = w.flatten(1)
@@ -131,12 +135,14 @@ class BaseHessianModule:
 
         self.rows = w.shape[0]
         self.columns = w.shape[1]
-        self.H = torch.zeros((self.columns, self.columns), device=self.dev)
+        self.H = torch.zeros((self.columns, self.columns), device=self._hdev)
         self.nsamples = 0
         self.preproc_done = False
 
         self.percdamp = float(percdamp)
         self.preproc_hessian = bool(preproc_hessian)
+        self._dead_mask: Optional[torch.Tensor] = None
+        self._hinv_fallback: Optional[str] = None
 
     def add_batch(self, inp: torch.Tensor, out: torch.Tensor) -> None:
         _ = out
@@ -163,19 +169,21 @@ class BaseHessianModule:
         self.H *= self.nsamples / (self.nsamples + batch)
         self.nsamples += batch
         inp = math.sqrt(2 / self.nsamples) * inp
-        self.H += inp.matmul(inp.t())
+        contrib = inp.matmul(inp.t())
+        self.H += contrib.to(self._hdev)
 
     def compute_hinv(self, hessian: torch.Tensor) -> torch.Tensor:
-        step = 0.01
+        hessian = hessian.to(self.dev)
+        step = 0.1
         current_percdamp = 0.0 if self.preproc_hessian else float(self.percdamp)
         hinv = None
 
-        while current_percdamp < 1.0:
+        while current_percdamp < 10.0:
             try:
                 h_try = hessian.clone()
                 if current_percdamp > 0:
                     damp = current_percdamp * torch.mean(torch.diag(h_try))
-                    if damp == 0:
+                    if damp.item() == 0:
                         damp = 1e-5
                     diag_idx = torch.arange(self.columns, device=self.dev)
                     h_try[diag_idx, diag_idx] += damp
@@ -201,21 +209,30 @@ class BaseHessianModule:
                     current_percdamp += step
 
         if hinv is None:
-            raise RuntimeError("Hessian inversion failed even with max damping.")
+            logger.warning(f"[GPTQ] Cholesky failed after max damping, using pseudo-inverse")
+            self._hinv_fallback = "pinv"
+            try:
+                hinv = torch.linalg.pinv(hessian.to("cpu")).to(self.dev)
+            except Exception:
+                logger.warning(f"[GPTQ] Pseudo-inverse also failed, using identity (no quantization)")
+                self._hinv_fallback = "identity"
+                hinv = torch.eye(self.columns, device=self.dev)
+        else:
+            self._hinv_fallback = None
         return hinv
 
     def preproc(self) -> None:
         if self.preproc_hessian:
-            w = self.layer.weight.data.clone()
             h = self.H.data.clone()
             dead = torch.diag(h) == 0
             h[dead, dead] = 1
-            w[:, dead] = 0
             damp = self.percdamp * torch.mean(torch.diag(h))
-            diag = torch.arange(self.columns, device=self.dev)
+            diag = torch.arange(self.columns, device=self._hdev)
             h[diag, diag] += damp
-            self.layer.weight.data = w.to(self.layer.weight.data.dtype)
             self.H.data = h.to(self.H.data.dtype)
+            # Store dead mask for fasterquant to apply; do NOT mutate the
+            # original weight tensor so failed quantizers can fall back cleanly.
+            self._dead_mask = dead.to(self.dev)
         self.preproc_done = True
 
     def postproc(self) -> None:

@@ -30,6 +30,10 @@ python tools/run.py -c configs/opt/int8_dynamic/opt_125m-w8a8.yaml
 
 # GPTQ
 python tools/run.py -c configs/opt/gptq/opt_125m-w4a16.yaml
+
+# GLM-5 GPTQ
+python tools/run.py -c configs/glm5/gptq/glm5-w4a16_npu.yaml
+CUDA_VISIBLE_DEVICES=7 nohup python tools/run.py -c configs/glm5/gptq/glm5-w4a16_npu.yaml > ./logs/run_glm5.2_0805.log 2>&1 &
 ```
 
 ### Deployment (vLLM)

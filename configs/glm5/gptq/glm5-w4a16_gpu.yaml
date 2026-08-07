@@ -1,0 +1,43 @@
+metadata:
+  name: "GLM5_GPTQ_Quantization_Recipe_GPU"
+  description: "Quantize GLM-5 (GlmMoeDsa) with GPTQ W4A16 (GPU format)"
+
+resources:
+  - id: glm5
+    type: GLM5
+    path: /data/yult/llm_inference/models/GLM-5.2-bf16/snapshots/master/
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    device_map: cuda
+
+  - id: calib_data
+    type: C4Dataset
+    data_path: dataset/c4/c4-train.00000.json.gz
+    num_samples: 64
+    max_seq_length: 1024
+
+recipe:
+  - name: "GPTQ_Quantization"
+    type: compressor
+    model: "@glm5"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 4
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ
+      wbits: 4
+      groupsize: 128
+      # No save_backend -> auto-detect GPU format (qweight/qzeros/scales/g_idx)
+      expert_chunk_size: 8
+      max_calib_samples: 64
+      blocksize: 256
+      actorder: false
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 1
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_gpu"

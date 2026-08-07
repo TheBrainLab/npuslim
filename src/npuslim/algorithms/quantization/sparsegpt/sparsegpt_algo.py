@@ -527,7 +527,8 @@ class SparseGPTAlgorithm(BaseHessianAlgorithm):
         quantized_tensor_names: set[str] = set()
         pruned_weights = 0
 
-        for module_rel_name, rel_weight_name, rel_bias_name, weight_tensor, _bias in targets:
+        for module_rel_name, rel_weight_name, rel_bias_name, weight_tensor, _bias, *rest in targets:
+            is_3d = rest[0] if rest else False
             handler = handlers.get(module_rel_name)
             if handler is None:
                 continue

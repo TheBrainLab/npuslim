@@ -1,0 +1,45 @@
+metadata:
+  name: "GLM5_GPTQ_Quantization_Recipe"
+  description: "Quantize GLM-5 (GlmMoeDsa) with GPTQ W4A16"
+
+resources:
+  - id: glm5
+    type: GLM5
+    path: /data/yult/llm_inference/models/GLM-5.2-bf16/snapshots/master/
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    device_map: cpu
+
+  - id: calib_data
+    type: C4Dataset
+    data_path: dataset/c4/c4-train.00000.json.gz
+    num_samples: 128 #增大样本量，更低概率发生hessian退化的问题          # 128 -> 64（Hessian 收敛快，64 足够）
+    max_seq_length: 1024     # 2048 -> 1024（C4 文本不需要长序列）
+
+recipe:
+  - name: "GPTQ_Quantization"
+    type: compressor
+    model: "@glm5"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 4         # 1 -> 4（更好 GPU 利用率，减少 Python 循环）
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ
+      wbits: 4
+      groupsize: 128
+      save_backend: npu
+      expert_chunk_size: 8 #8 #CH加速，创建 num_experts/CH 个 BatchedGPTQModule （每个覆盖 CH=8 个 expert）
+      max_calib_samples: 128    # 与 num_samples 一致
+      blocksize: 256        # 128 -> 256（减半 fasterquant Python 迭代）
+      actorder: false       # true -> false（preproc_hessian 已处理 dead column）
+      quantize_mtp: false    # 启用 MTP 层量化 # outputs_npu/glm5/gptq/glm5-w4a16_npu_0723 false
+      save_mtp_debug: false   # 保存 layer 77 输出到 ./mtp_debug_inputs/ 供离线调试
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 1 #4
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_npu"
