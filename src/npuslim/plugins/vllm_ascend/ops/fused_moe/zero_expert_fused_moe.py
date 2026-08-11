@@ -68,7 +68,7 @@ _EP_COMM_TYPES = frozenset({
 
 @register_patch(
     registrar=CustomOp.register_oot(name="ZeroExpertFusedMoE"),
-    condition=package_version_range("vllm_ascend", max_version="0.20.1"),
+    condition=package_version_range("vllm_ascend", min_version="0.1.0"),
 )
 class AscendZeroExpertFusedMoE(ZeroExpertFusedMoE, AscendFusedMoE):
     """Ascend replacement for upstream ``ZeroExpertFusedMoE``.

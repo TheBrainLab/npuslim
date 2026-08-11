@@ -31,6 +31,12 @@ recipe:
       wbits: 4
       groupsize: 128
       save_backend: npu
+      # expert_chunk_size 控制 MoE 3D 参数的量化路径：
+      #   =1: per-expert GPTQModule，每个 expert 独立做 actorder（desc_act），精度更好但更慢
+      #   >1: BatchedGPTQModule 批量量化 CH 个 expert，速度快，但无法独立重排列，actorder 被禁用
+      # 当前 8 为 batched 路径；如需 actorder 请改为 1。
+      # CH=8时推理慢很多，对 CH=8 打包权重可能是按 chunk 全量计算 处理——Qwen3-30B-A3B 每 token 激活 8/64 专家，CH=8 时若激活跨 8 个 chunk 就得全量算，产生大量冗余 （GLM-5 走 glm_moe_dsa 原生路径 + npuslim 的 deepseek_v2_packed_mapping patch（把 packed expert 参数映射展开，MoE kernel 按需取 chunk 内激活专家的 slice），冗余小）
+      expert_chunk_size: 1
     ignore_layers: []
     execution:
       mode: streaming

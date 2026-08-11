@@ -421,8 +421,8 @@ class GPTQModule(BaseHessianModule):
 
     def fasterquant(self, **kwargs) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         _ = kwargs
-        w_orig = self.layer.weight.data.float().clone()
-        w = self.layer.weight.data.clone().float()
+        w_orig = self.layer.weight.data.float().clone().to(self.dev)
+        w = self.layer.weight.data.clone().float().to(self.dev)
         if isinstance(self.layer, nn.Conv2d):
             w = w.flatten(1)
         if _is_transformers_conv1d(self.layer):
@@ -994,6 +994,99 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
             return 1  # GPU GPTQ: output is dim 1
         return 0  # NPU Ascend: output is dim 0
 
+    def _split_moe_gate_up_proj(
+        self, layer, quantized_tensor_names: set[str]
+    ) -> tuple[set[str], int]:
+        """Split per-expert gate_up_proj into separate gate_proj + up_proj.
+
+        Produces per-expert 2D naming (experts.0.gate_proj.weight) instead of
+        fused naming (experts.gate_up_proj.weight), compatible with vLLM's
+        expert_params_mapping for both W8A8 and W4A16 on Ascend NPU.
+
+        down_proj is already per-expert 2D and needs no splitting.
+        """
+        fusion_map = getattr(self._model_obj, "moe_expert_fusion_map", {})
+        if not fusion_map:
+            return quantized_tensor_names, 0
+
+        # Build component-to-fused mapping
+        component_to_fused: dict[str, str] = {}
+        for fused_name, (components, _) in fusion_map.items():
+            for comp in components:
+                component_to_fused[comp] = fused_name
+            component_to_fused[fused_name] = fused_name
+
+        # Find per-expert fused tensors (e.g. gate_up_proj) that need splitting
+        to_split: dict[tuple, tuple[torch.Tensor, list[str]]] = {}
+        to_remove: list[str] = []
+
+        for rel_name, tensor in layer.tensors.items():
+            match = self._EXPERT_PACKED_RE.match(rel_name)
+            if not match:
+                continue
+            prefix = match.group(1)
+            expert_idx = int(match.group(2))
+            component = match.group(3)
+            suffix = match.group(4)
+
+            if component not in component_to_fused:
+                continue
+            fused_name = component_to_fused[component]
+            fusion_components, _ = fusion_map[fused_name]
+            # Only split multi-component fusions (gate_up_proj = gate + up)
+            if len(fusion_components) <= 1:
+                continue
+
+            to_split[(prefix, expert_idx, fused_name, suffix)] = (
+                tensor,
+                fusion_components,
+            )
+            to_remove.append(rel_name)
+
+        if not to_split:
+            return quantized_tensor_names, 0
+
+        new_tensors: dict[str, torch.Tensor] = {}
+        new_quantized_names: set[str] = set()
+        split_count = 0
+
+        for (prefix, expert_idx, fused_name, suffix), (
+            tensor,
+            components,
+        ) in to_split.items():
+            cat_dim = self._get_cat_dim(suffix)
+            if cat_dim == -1:
+                # g_idx: 1D, identical for all components - just copy
+                for comp in components:
+                    new_name = (
+                        f"{prefix}.experts.{expert_idx}.{comp}.{suffix}"
+                    )
+                    new_tensors[new_name] = tensor.clone()
+                    new_quantized_names.add(f"{layer.name}.{new_name}")
+                    split_count += 1
+            else:
+                # Split along cat_dim (dim=0 for NPU, dim=1 for GPU)
+                chunks = torch.chunk(tensor, len(components), dim=cat_dim)
+                for i, comp in enumerate(components):
+                    new_name = (
+                        f"{prefix}.experts.{expert_idx}.{comp}.{suffix}"
+                    )
+                    new_tensors[new_name] = chunks[i].clone()
+                    new_quantized_names.add(f"{layer.name}.{new_name}")
+                    split_count += 1
+
+        # Remove old fused per-expert names
+        for rel_name in to_remove:
+            layer.tensors.pop(rel_name, None)
+            quantized_tensor_names.discard(f"{layer.name}.{rel_name}")
+
+        # Add new split names
+        for rel_name, tensor in new_tensors.items():
+            layer.tensors[rel_name] = tensor
+            quantized_tensor_names.add(f"{layer.name}.{rel_name}")
+
+        return quantized_tensor_names, split_count
+
     def _refuse_moe_expert_tensors(
         self, layer, quantized_tensor_names: set[str]
     ) -> tuple[set[str], int]:
@@ -1258,8 +1351,9 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                     quantized_tensor_names.add(f"{layer.name}.{rel_quant_name}")
             quantized_weights += 1
 
-        # Re-fuse per-expert packed tensors into 3D format for vLLM compatibility
-        quantized_tensor_names, _ = self._refuse_moe_expert_tensors(layer, quantized_tensor_names)
+        # Split per-expert gate_up_proj into gate_proj + up_proj for vLLM
+        # expert_params_mapping compatibility (per-expert 2D format)
+        quantized_tensor_names, _ = self._split_moe_gate_up_proj(layer, quantized_tensor_names)
         return quantized_tensor_names, quantized_weights
 
     def _update_quantization_metadata(self) -> None:

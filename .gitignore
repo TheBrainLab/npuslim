@@ -152,6 +152,7 @@ proc_data
 kernel_meta
 runs
 outputs
+outputs_npu
 debug
 debugs/
 /runs_old
@@ -199,3 +200,11 @@ tags
 
 # NPU intermediate files
 extra-info/
+
+# debug files
+mtp_debug_inputs_real
+workspace
+
+# calibration data (large) and local backups
+dataset/c4/
+*.bak

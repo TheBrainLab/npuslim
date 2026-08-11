@@ -37,7 +37,7 @@ def _get_child_module(root: Any, dotted_name: str) -> Any:
     if not dotted_name:
         return module
     for part in dotted_name.split("."):
-        if part.isdigit():
+        if part.isdigit() and isinstance(module, (list, tuple, nn.ModuleList)):
             module = module[int(part)]
         else:
             module = getattr(module, part)

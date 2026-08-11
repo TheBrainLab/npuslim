@@ -28,6 +28,17 @@ class Glm5SlimModel(BaseLLMModel):
         self.post_transformer_module_names = ["model.norm", "lm_head"]
         # MoE router gate should not be quantized
         self.skip_layer_names.append("model.layers.*.mlp.gate")
+        # vLLM-Ascend 要求以下层必须保持 FLOAT（保持 bf16、量化描述写 FLOAT）：
+        # - kv_b_proj:   sfa_v1.py / mla_v1.py 断言 kv_b_proj.quant_method 必须是
+        #                UnquantizedLinearMethod（MLA 权重直接 reshape/transpose）
+        # - indexer.wk / indexer.weights_proj: vLLM Indexer 对 wk_weights_proj 硬编码
+        #                quant_config=None，W4A16 打包权重无法按期望形状加载
+        # 跳过量化后由 saver 自动写入 FLOAT 描述并保留 bf16 权重（hf_saver.add_tensor）。
+        self.skip_layer_names.extend([
+            "model.layers.*.self_attn.kv_b_proj",
+            "model.layers.*.self_attn.indexer.wk",
+            "model.layers.*.self_attn.indexer.weights_proj",
+        ])
 
     @property
     def mtp_layer_count(self) -> int:

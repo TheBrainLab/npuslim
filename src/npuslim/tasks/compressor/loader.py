@@ -118,6 +118,7 @@ class ChunkLoader:
         self._tensor_names = list(self._weight_map.keys())
         self._build_layer_tensor_map()
         self._build_aux_tensor_lists()
+        self._merge_extra_shard_tensors()
         self._validate_tensor_assignment()
         logger.info(
             f"[ChunkLoader] Loaded {checkpoint_format} index: {len(self._tensor_names)} tensors"
@@ -136,6 +137,7 @@ class ChunkLoader:
             self._tensor_names = list(tensor_names)
             self._build_layer_tensor_map()
             self._build_aux_tensor_lists()
+            self._merge_extra_shard_tensors()
             self._validate_tensor_assignment()
             logger.info(f"[ChunkLoader] Single shard: {len(tensor_names)} tensors")
         except Exception as e:
@@ -251,6 +253,42 @@ class ChunkLoader:
                 f"Examples: {preview}. "
                 "These tensors will be preserved by CompressorTask backfill."
             )
+
+    def _merge_extra_shard_tensors(self) -> None:
+        """Merge tensors from .safetensors shards that are not referenced by the
+        index (e.g. GLM-5's mtp-others.safetensors, whose MTP weights live in a
+        separate file absent from model.safetensors.index.json).
+
+        Without this, such weights are invisible to backfill and silently dropped
+        from the quantized output (observed: model.layers.78.embed_tokens.weight
+        and shared_head.head.weight missing after GLM-5 W4A16 quantization).
+        """
+        if self._resolved_dir is None:
+            return
+        indexed_shards = set(self._weight_map.values())
+        merged = 0
+        for shard_path in sorted(self._resolved_dir.glob("*.safetensors")):
+            if shard_path.name in indexed_shards:
+                continue
+            try:
+                with safe_open(shard_path, framework="pt", device="cpu") as handle:
+                    for name in handle.keys():
+                        if name not in self._weight_map:
+                            self._weight_map[name] = shard_path.name
+                            merged += 1
+            except Exception as exc:
+                logger.debug(
+                    f"[ChunkLoader] Skipping extra shard {shard_path.name}: {exc}"
+                )
+        if merged:
+            self._tensor_names = list(self._weight_map.keys())
+            self._build_layer_tensor_map()
+            self._build_aux_tensor_lists()
+            logger.info(
+                f"[ChunkLoader] Merged {merged} tensors from extra shard(s) "
+                "not listed in the index"
+            )
+
 
     def _load_module_infos(self, module_tensor_map: Dict[str, List[str]]) -> List[ModuleInfo]:
         modules: List[ModuleInfo] = []

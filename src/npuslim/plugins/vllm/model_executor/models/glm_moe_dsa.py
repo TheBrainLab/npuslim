@@ -109,7 +109,7 @@ def patch_glm_moe_dsa_load_weights(module):
 
     # Find the model class that has load_weights
     model_cls = None
-    for cls_name in ("GlmMoeDsaForCausalLM", "GlmMoeDsaModel"):
+    for cls_name in ("GlmMoeDsaForCausalLM", "GlmMoeDsaModel", "DeepseekV2ForCausalLM", "DeepseekV2Model"):
         cls = getattr(module, cls_name, None)
         if cls is not None and hasattr(cls, "load_weights"):
             model_cls = cls
@@ -190,8 +190,8 @@ def patch_glm_moe_dsa_load_weights(module):
 
         for name, loaded_weight in weights:
             # Handle KV cache quantization scales
-            if self.quant_config is not None:
-                scale_name = self.quant_config.get_cache_scale(name)
+            if getattr(self, "quant_config", None) is not None:
+                scale_name = getattr(self, "quant_config", None).get_cache_scale(name)
                 if scale_name is not None:
                     param = params_dict[scale_name]
                     weight_loader = getattr(
@@ -403,3 +403,11 @@ def patch_glm_moe_dsa_load_weights(module):
     patch_logger.info(
         f"Patched {model_cls.__name__}.load_weights for W4A16 MoE support"
     )
+
+
+# Also register for vLLM 0.23.0+ where GlmMoeDsaForCausalLM is in deepseek_v2
+from npuslim.plugins.registry import _PATCH_REGISTRY, PatchSpec
+_vllm_cond = package_version_range('vllm', min_version='0.1.0')
+_PATCH_REGISTRY.setdefault('vllm.model_executor.models.deepseek_v2', []).append(
+    PatchSpec(func=patch_glm_moe_dsa_load_weights, condition=_vllm_cond)
+)
