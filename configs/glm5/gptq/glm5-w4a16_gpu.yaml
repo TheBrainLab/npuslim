@@ -1,6 +1,6 @@
 metadata:
   name: "GLM5_GPTQ_Quantization_Recipe_GPU"
-  description: "Quantize GLM-5 (GlmMoeDsa) with GPTQ W4A16 (GPU format)"
+  description: "Quantize GLM-5 (GlmMoeDsa) with GPTQ W4A16 (GPU/transformers format)"
 
 resources:
   - id: glm5
@@ -8,13 +8,16 @@ resources:
     path: /data/yult/llm_inference/models/GLM-5.2-bf16/snapshots/master/
     trust_remote_code: true
     low_cpu_mem_usage: true
-    device_map: cuda
+    device_map: cpu         # cuda：当前层权重直接加载到 GPU；cpu：当前层加载到 CPU 内存、fasterquant 时搬 GPU
+                             #   注意：npuslim 采用 meta 骨架 + 单层流式加载（非全模型驻留），每时刻只驻留当前层；
+                             #   当前层权重 ~19GB bf16 + 前向激活峰值 ~26GB + 量化 ~5GB，单卡 80GB 在 cuda 模式下理论上可容纳，
+                             #   但 cpu 模式为默认且已验证路径（Hessian CPU 侧累积更稳），建议保持 cpu
 
   - id: calib_data
     type: C4Dataset
     data_path: dataset/c4/c4-train.00000.json.gz
-    num_samples: 64
-    max_seq_length: 1024
+    num_samples: 128           # 校准样本数（default: 128）；64 用于快速验证，增大可降低 Hessian 退化概率
+    max_seq_length: 1024      # 校准序列长度（2048 -> 1024，C4 文本不需要长序列，省显存/耗时）
 
 recipe:
   - name: "GPTQ_Quantization"
@@ -22,22 +25,27 @@ recipe:
     model: "@glm5"
     dataloader:
       dataset: "@calib_data"
-      batch_size: 4
+      batch_size: 4           # 校准前向 batch（1 -> 4，更好 GPU 利用率，减少 Python 循环）
       shuffle: true
       pin_memory: true
     algorithm:
       type: GPTQ
-      wbits: 4
-      groupsize: 128
-      # No save_backend -> auto-detect GPU format (qweight/qzeros/scales/g_idx)
-      expert_chunk_size: 8
-      max_calib_samples: 64
-      blocksize: 256
-      actorder: false
-    ignore_layers: []
+      wbits: 4                # 权重位宽（default: 4）
+      groupsize: 128          # 量化分组大小（default: 128）
+      # 不设 save_backend -> auto-detect GPU/transformers 格式（qweight/qzeros/scales/g_idx）
+      expert_chunk_size: 1    # MoE 专家打包粒度（default: 1）
+                              #   CH=1：per-expert GPTQModule，逐专家量化，actorder 生效（推荐，精度最优）
+                              #   CH>1：BatchedGPTQModule 批量加速（num_experts/CH 次迭代），但 actorder 硬性禁用（精度略降）
+      max_calib_samples: 128   # Hessian 采集样本数（default: 128），与 num_samples 保持一致
+      blocksize: 256          # fasterquant 列分块（default: 128）；256 减半 Python 迭代加速，精度影响可忽略
+      actorder: true          # desc_act 列排序量化（default: true）
+                              #   按 Hessian 幅值降序量化列，误差传播更小，精度更好（GPTQ 关键特性，约 0.1-0.5pp）
+                              #   仅 CH=1 生效；CH>1 的 Batched 模式硬性禁用 actorder
+                              #   preproc_hessian 已处理 dead column，与 actorder 兼容、无冲突
+    ignore_layers: []         # 跳过量化的层，支持 glob/regex（default: []）
     execution:
-      mode: streaming
-      chunk_size: 1
+      mode: streaming         # 流式逐层量化（default: streaming）
+      chunk_size: 1           # 流式加载层数分块（default: 1）；增大可减少加载开销但提高显存峰值
     saver:
       type: StreamingHuggingFaceSaver
       save_dir: "./outputs_gpu"

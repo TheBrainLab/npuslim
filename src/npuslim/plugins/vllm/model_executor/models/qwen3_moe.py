@@ -142,6 +142,14 @@ def patch_qwen3_moe_load_weights(module):
     ) -> set[str]:
         params_dict = dict(self.named_parameters())
 
+        # GPU standard GPTQ: vLLM >=0.27 uses FusedMoE params
+        # (routed_experts.w13_qweight / w2_qweight), which the legacy per-expert
+        # naming logic below does not handle. vLLM loads standard GPTQ checkpoints
+        # natively, so bypass the patch entirely for AutoGPTQConfig.
+        quant_config = getattr(self, "quant_config", None)
+        if quant_config is not None and type(quant_config).__name__ == "AutoGPTQConfig":
+            return original_load_weights(self, weights)
+
         # Check if quantization is used (NPU W4A16 or GPU GPTQ)
         is_quant = _is_quantized(params_dict)
 
@@ -176,9 +184,13 @@ def patch_qwen3_moe_load_weights(module):
                 pass
 
         for name, loaded_weight in weights:
-            # Handle KV cache quantization scales
-            if getattr(self, "quant_config", None) is not None:
-                scale_name = getattr(self, "quant_config", None).get_cache_scale(name)
+            # Handle KV cache quantization scales.
+            # Only ascend-style quant configs expose get_cache_scale();
+            # GPU GPTQ (AutoGPTQConfig) does not, so guard with getattr.
+            quant_config = getattr(self, "quant_config", None)
+            get_cache_scale = getattr(quant_config, "get_cache_scale", None)
+            if get_cache_scale is not None:
+                scale_name = get_cache_scale(name)
                 if scale_name is not None:
                     param = params_dict[scale_name]
                     weight_loader = getattr(

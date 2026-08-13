@@ -806,7 +806,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         fake_quant: bool = False,
         max_calib_samples: int = 128,
         save_backend: Optional[str] = None,
-        expert_chunk_size: int = 8,
+        expert_chunk_size: int = 1,
         quantize_mtp: bool = False,
         save_mtp_debug: bool = False,
         **kwargs,

@@ -7,8 +7,8 @@ metadata:
 resources:
   - id: qwen
     type: Qwen3Model
-    path: Qwen/Qwen3-30B-A3B-Instruct-2507
-    device_map: cpu
+    path: /data/yult/llm_inference/models/Qwen3-30B-A3B-Instruct-2507 #Qwen/Qwen3-30B-A3B-Instruct-2507
+    device_map: gpu #cpu
     model_hub: ms
 
   - id: calib_data
@@ -23,13 +23,18 @@ recipe:
     model: "@qwen"
     dataloader:
       dataset: "@calib_data"
-      batch_size: 1
+      batch_size: 4
       shuffle: true
       pin_memory: true
     algorithm:
       type: GPTQ
       wbits: 4
       groupsize: 128
+      # expert_chunk_size 控制 MoE 3D 参数的量化路径：
+      #   =1: per-expert GPTQModule，每个 expert 独立做 actorder（desc_act），精度更好但更慢
+      #   >1: BatchedGPTQModule 批量量化 CH 个 expert，速度快，但无法独立重排列，actorder 被禁用
+      # 不设置 save_backend：输出格式自动跟随运行时 backend（CUDA 环境 → 标准 GPTQ 格式）
+      expert_chunk_size: 1
     ignore_layers: []
     execution:
       mode: streaming

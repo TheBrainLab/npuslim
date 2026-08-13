@@ -8,7 +8,7 @@ resources:
   - id: qwen
     type: Qwen3Model
     path: /data/yult/llm_inference/models/Qwen3-0.6B #Qwen/Qwen3-0.6B
-    device_map: cpu
+    device_map: gpu #cpu
 
   - id: calib_data
     type: C4Dataset
@@ -23,7 +23,7 @@ recipe:
     # data: "@calib_data"
     dataloader:
       dataset: "@calib_data"
-      batch_size: 1
+      batch_size: 8
       shuffle: true
       pin_memory: true
     algorithm:

@@ -18,7 +18,7 @@ from npuslim.plugins.registry import package_version_range, register_patch
 
 @register_patch(
     registrar=register_quantization_config("quip"),
-    condition=package_version_range("transformers", max_version="4.58.0"),
+    condition=package_version_range("transformers", min_version="5.2"),
 )
 @dataclass
 class QuipConfig(QuantizationConfigMixin):
@@ -50,7 +50,7 @@ class QuipConfig(QuantizationConfigMixin):
 
 @register_patch(
     registrar=register_quantizer("quip"),
-    condition=package_version_range("transformers", max_version="4.58.0"),
+    condition=package_version_range("transformers", min_version="5.2"),
 )
 class QuipHfQuantizer(HfQuantizer):
     """

@@ -7,11 +7,12 @@ metadata:
 resources:
   - id: qwen
     type: Qwen3Model
-    path: Qwen/Qwen3-0.6B
-    device_map: cpu
+    path: /data/yult/llm_inference/models/Qwen3-0.6B
+    device_map: gpu
 
   - id: calib_data
     type: C4Dataset
+    data_path: /data/yult/llm_inference/npuslim/dataset/c4/c4-train.00000.json.gz
     num_samples: 128
     max_seq_length: 2048
 
@@ -22,7 +23,7 @@ recipe:
     # data: "@calib_data"
     dataloader:
       dataset: "@calib_data"
-      batch_size: 1
+      batch_size: 8
       shuffle: true
       pin_memory: true
     algorithm:
