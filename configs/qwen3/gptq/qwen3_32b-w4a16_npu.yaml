@@ -1,0 +1,49 @@
+# config.yaml
+#
+# GPTQ W4A16 量化配置 for Qwen3-32B（稠密模型，64 层）
+# 参考: qwen3_30b_a3b_2507-w4a16_npu.yaml
+# 模型路径: /model/chengwx/Qwen3-32B
+#
+# 与 30B-A3B MoE 配置的区别：
+#   - 32B 为稠密模型，无 MoE 专家，expert_chunk_size 不适用
+#   - 64 层，chunk_size=8 -> 8 chunks
+#   - batch_size=8
+
+metadata:
+  name: "Qwen3_32B_GPTQ_W4A16_NPU"
+  description: "GPTQ W4A16 quantization for Qwen3-32B on NPU."
+
+resources:
+  - id: qwen
+    type: Qwen3Model
+    path: /model/chengwx/Qwen3-32B
+    device_map: cpu
+    model_hub: hf
+
+  - id: calib_data
+    type: TextDataset
+    data_path: dataset/sharegpt_gpt4_qwen/sharegpt_gpt4-qwen3_a22B_output.jsonl
+    num_samples: 128
+    max_seq_length: 4096
+
+recipe:
+  - name: "GPTQ_Quantization"
+    type: compressor
+    model: "@qwen"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 8 #1
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ
+      wbits: 4
+      groupsize: 128
+      save_backend: npu
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 8
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_npu"

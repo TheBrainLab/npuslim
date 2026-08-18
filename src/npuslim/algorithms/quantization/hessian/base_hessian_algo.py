@@ -43,6 +43,7 @@ class BaseHessianAlgorithm(BaseQuantizationAlgorithm):
         self._inps: Optional[torch.Tensor] = None
         self._outs: Optional[torch.Tensor] = None
         self._layer_kwargs: Dict[str, Any] = {}
+        self._layer_kwargs_need_move: bool = False
         # DSA (Dynamic Sparse Attention) support: track prev_topk_indices
         # across layers. GLM-5's "shared" indexer layers require topk_indices
         # from a previous "full" indexer layer. In streaming mode (layer-by-layer),
@@ -104,6 +105,7 @@ class BaseHessianAlgorithm(BaseQuantizationAlgorithm):
         self._inps = None
         self._outs = None
         self._layer_kwargs = {}
+        self._layer_kwargs_need_move = False
         self._calib_batch_size = 1
         self._prev_topk_indices = None
         self._fallback_events: list[tuple[str, str]] = []  # (layer_name, fallback_type)
@@ -819,12 +821,104 @@ class BaseHessianAlgorithm(BaseQuantizationAlgorithm):
             expected += 1
         self._next_expected_layer_index = expected
 
+    # === Resume (checkpoint) support ===
+
+    @staticmethod
+    def _map_tree(obj: Any, fn) -> Any:
+        """Recursively apply fn to tensors inside dicts/tuples/lists."""
+        if torch.is_tensor(obj):
+            return fn(obj)
+        if isinstance(obj, dict):
+            return {k: BaseHessianAlgorithm._map_tree(v, fn) for k, v in obj.items()}
+        if isinstance(obj, tuple):
+            return tuple(BaseHessianAlgorithm._map_tree(v, fn) for v in obj)
+        if isinstance(obj, list):
+            return [BaseHessianAlgorithm._map_tree(v, fn) for v in obj]
+        return obj
+
+    def save_resume_state(self, path) -> None:
+        """Persist cross-chunk calibration state for automatic resume.
+
+        Must be called after a chunk's process_chunk completes: _inps then holds
+        the activations entering the NEXT chunk's first layer, and
+        _prev_topk_indices the DSA topk state accumulated so far.
+        """
+        from pathlib import Path
+
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        payload = {
+            "version": 1,
+            "inps": self._inps.detach().cpu() if self._inps is not None else None,
+            "prev_topk_indices": (
+                self._prev_topk_indices.detach().cpu()
+                if self._prev_topk_indices is not None
+                else None
+            ),
+            "layer_kwargs": self._map_tree(
+                self._layer_kwargs, lambda t: t.detach().cpu()
+            ),
+            "calib_batch_size": self._calib_batch_size,
+            "next_expected_layer_index": self._next_expected_layer_index,
+            "total_layers": self._total_layers,
+        }
+        tmp_path = path.with_name(path.name + ".tmp")
+        torch.save(payload, tmp_path)
+        os.replace(tmp_path, path)
+
+    def load_resume_state(self, path) -> Optional[int]:
+        """Restore state saved by save_resume_state. Returns next expected layer index."""
+        payload = torch.load(path, map_location="cpu", weights_only=False)
+        if payload.get("version") != 1:
+            raise ValueError(
+                f"[{self._TAG}] unsupported resume state version: {payload.get('version')}"
+            )
+
+        inps = payload.get("inps")
+        if not torch.is_tensor(inps):
+            raise ValueError(f"[{self._TAG}] resume state is missing 'inps'")
+        topk = payload.get("prev_topk_indices")
+        if topk is not None and topk.shape[0] != inps.shape[0]:
+            raise ValueError(
+                f"[{self._TAG}] resume state inconsistent: prev_topk_indices has "
+                f"{topk.shape[0]} rows but inps has {inps.shape[0]}"
+            )
+
+        self._inps = inps
+        self._outs = torch.zeros_like(self._inps)
+        self._prev_topk_indices = topk
+        self._layer_kwargs = payload.get("layer_kwargs") or {}
+        self._calib_batch_size = max(int(payload.get("calib_batch_size") or 1), 1)
+        self._next_expected_layer_index = payload.get("next_expected_layer_index")
+        saved_total = payload.get("total_layers")
+        if saved_total:
+            self._total_layers = int(saved_total)
+        # Saved on CPU; migrate kwargs tensors to the runtime device once it is
+        # resolved in the next process_chunk call.
+        self._layer_kwargs_need_move = True
+
+        logger.info(
+            f"[{self._TAG}] resume state loaded: inps={list(inps.shape)}, "
+            f"topk={'None' if topk is None else list(topk.shape)}, "
+            f"next_layer={self._next_expected_layer_index}"
+        )
+        return self._next_expected_layer_index
+
     def process_chunk(self, chunk) -> Any:
         if self._runtime_model is None:
             raise RuntimeError(f"[{self._TAG}] on_start must be called before process_chunk")
         self._validate_chunk_order(chunk)
         if self._runtime_device is None:
             self._runtime_device = self._resolve_runtime_device(chunk)
+
+        if self._layer_kwargs_need_move and self._runtime_device is not None:
+            # Restored from a resume checkpoint on CPU; kwargs tensors must live
+            # on the runtime device like the freshly-captured ones.
+            self._layer_kwargs = self._map_tree(
+                self._layer_kwargs, lambda t: t.to(self._runtime_device)
+            )
+            self._layer_kwargs_need_move = False
 
         skip_names = self._set_skip_from_chunk_metadata(chunk)
         quantized_tensor_names: set[str] = set()

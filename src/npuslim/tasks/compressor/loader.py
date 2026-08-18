@@ -450,6 +450,12 @@ class ChunkLoader:
             return 0
         return (total_layers + self.chunk_size - 1) // self.chunk_size
 
+    def get_chunk_layer_indices(self, chunk_index: int) -> List[int]:
+        """Get global layer indices covered by a chunk (without loading tensors)."""
+        start = chunk_index * self.chunk_size
+        end = min(start + self.chunk_size, self.get_total_layers())
+        return self._layer_indices[start:end]
+
     def _load_layers(self, layer_indices: List[int], progress_desc: str) -> List[LayerInfo]:
         layers: List[LayerInfo] = []
         layer_iter = tqdm(

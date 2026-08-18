@@ -60,6 +60,11 @@ def parse_args():
         action="store_true",
         help="Disable NPUSlim ASCII header output",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Enable automatic checkpoint/resume (sets execution.resume=true on tasks)",
+    )
     return parser.parse_args()
 
 
@@ -78,6 +83,12 @@ def main():
         show_header=not args.no_header,
         strict_validate=True,
     )
+
+    if args.resume:
+        for task_cfg in parsed_cfg.recipe:
+            execution = task_cfg.extra.setdefault("execution", {})
+            if isinstance(execution, dict):
+                execution["resume"] = True
 
     engine = SlimEngine(parsed_cfg)
     engine.run()
