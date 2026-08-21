@@ -1,7 +1,7 @@
 # Offload Trunk 设计文档
 
 > 设计日期：2026-07-28
-> 最后更新：2026-07-30
+> 最后更新：2026-08-20
 > 目标：在有限的昇腾 NPU HBM 资源上部署超出显存容量的量化大模型（如 GLM5.2 W8A8）
 > 实现方式：基于 npuslim Patch 机制，无侵入增强 vllm-ascend 的权重 offload 能力
 
@@ -765,3 +765,144 @@ def patched_init(self, vllm_config, *args, **kwargs):
 ```
 
 **验证**：Qwen3-30B-A3B，TP=2，`--gpu-memory-utilization 0.3`，offload 24/48 层，图模式，推理正常输出。
+
+---
+
+## 13. W4A8 量化模型（FRACTAL_NZ）Offload 支持 — K2.6 验证记录（2026-08-20）
+
+### 13.1 背景与目标
+
+trunk 此前已在非量化（Qwen3.8-27B bf16）和 W8A8（GLM5.2）模型上验证。Kimi K2.6 w4a8（W4A8 量化 MoE，61 层，499GB checkpoint，EP/DP4×TP8，4 节点 × 8×910B）暴露了一类新问题：**量化权重以 NPU internal format（FRACTAL_NZ）存储，使 trunk "plain ND 静态 buffer + plain `copy_`" 的核心假设失效**。
+
+本轮目标：验证 offload trunk 的**量化 `wrapped_process_weights` 路径**在 K2.6 上端到端正确（功能正确性优先，性能后续再调）。
+
+### 13.2 验证环境与配置
+
+- 节点 10.42.0.70-73，容器 `vllm-ascend-zzw-v0.23.0`（910B 64GB）
+- 部署改动：
+
+| 文件 | 改动 |
+|------|------|
+| `vllm-learning/deploy_v2/models_config.sh` | `config_kimi2.6w4a8` 的 `GPU_MEM_UTIL` 0.90 → **0.50**（0.50 + `safety_margin_gb=14` 触发 trunk：权重 ~16GB/卡 offload ~2GB 后，KV 2.25GB/卡 通过 vllm 硬校验） |
+| `vllm-learning/deploy_v2/kimi2.6w4a8/EP/start_ep.sh` | `NPUSLIM_PLUGIN_ENABLE=1`；`additional-config` 增加 `"npuslim_offload_trunk": {"enabled": true, "safety_margin_gb": 14}`；`cudagraph_mode` `FULL_DECODE_ONLY` → **NONE**（临时，见 13.4 坑 5）；移除 `DYNAMIC_EPLB=1`（vllm-ascend 对 K2.6 默认 False，保持 config 一致） |
+
+- 规划结果（node0 日志，14:48 轮）：
+
+```
+OffloadPlan: offload=7/61 layers, prefetch_step=1, est_hbm=14.15GB, est_cpu=1.85GB,
+             buffer=0.29GB, overlap=✓, source=auto, strategy=size_aware
+Offloaded layer indices: [4, 13, 22, 30, 39, 48, 57]
+FRACTAL_NZ pool slots for 7 unique param keys:
+  mlp.experts.w13_weight, mlp.experts.w2_weight,
+  mlp.shared_experts.down_proj.weight, mlp.shared_experts.gate_up_proj.weight,
+  self_attn.fused_qkv_a_proj.weight, self_attn.o_proj.weight, self_attn.q_b_proj.weight
+Initialized 7 modules. Total NPU memory saved: 2.2029 GB, Static buffer pool: 0.3101 GB
+GPU KV cache size: 1,210,368 tokens
+```
+
+注意：每层 offload 的 **7 个参数全部是 FRACTAL_NZ**（MoE experts w13/w2 为 int32 `pack_to_int32` 输出，shared_experts 与 attention 为 int8）。
+
+- 验证命令：`python vllm-learning/code/benchmark/quick_check.py --host 10.42.0.70 --port 9082 --model kimi_k26`
+
+### 13.3 FRACTAL_NZ 关键语义（理解本问题的核心）
+
+以下均为硬件实测/源码核实结论（探测脚本 `temp/probe_nz_*.py`、`temp/test_nz_capture.py`）：
+
+1. **格式**：W4A8（`--quantization ascend`）权重经 `maybe_trans_nz`（vllm_ascend/utils.py:295）后是 **FRACTAL_NZ internal format**（`ACL_FORMAT_FRACTAL_NZ=29`）。`torch.npu.config.allow_internal_format=True`（vllm_ascend model_runner_v1.py:201 已设）是创建 NZ tensor 的前提。
+2. **storageShape**：`torchair.core._npu_graph_executor.GetNpuStorageSizes(nz_tensor)` 对 NZ 返回 **5-D** 物理存储 shape；ND 返回 3-D/1-D。
+3. **AIV op 硬要求**：`aclnnGroupedMatmulSwigluQuantWeightNzV2`（moe_mlp.py:273 `quant_apply_mlp` 调用）要求权重 storageShape 为 5-D（真 NZ）——plain ND 静态 buffer 直接报 **EZ1001 "storageShape must be 5, got [N], dimNum is 1"**。
+4. **跨格式 `copy_`**：int8 层面 ND CPU → NZ NPU 的直接 `copy_` **数据正确**；**int32 层面**的跨格式 `copy_` **会损坏数据**（probe_nz_crosscopy.py 实测 C1 正确 / C3 错误）。
+5. **view 保格式**：NZ int8 tensor 的 `.view(torch.int32)` 保留 FRACTAL_NZ 格式（仍是 5-D storage）——这正是 load 时 `pack_to_int32` 产出的 int32 权重也带 NZ 的原因；因此 int32 参数的 D2H/onload 必须落到 int8 base 上做。
+6. **aclop 限制**：`npu_format_cast` 与跨格式 `copy_` 在 aclgraph（cudagraph）capture 中 dispatch "Identity" aclop 被拒绝（见坑 5）。
+7. **格式观测时机**：D2H 只能发生在 `process_weights_after_loading` 期间（`wrapped_process_weights`）——这是 NZ 格式最后可被观测的时刻（搬走 NPU 侧张量后就没了）。
+
+### 13.4 坑清单与解决（按发现顺序）
+
+**坑 1：profile_run 崩溃 EZ1001 "storageShape must be 5"**
+- 现象：启用 offload 后 profile_run 失败，`aclnnGroupedMatmulSwigluQuantWeightNzV2` 报权重 storage 非 5-D。
+- 根因：`StaticBufferPool` 用 `empty_strided` 建 plain ND slot（1-D storage），不满足 WeightNz op 的 internal format 要求。
+- 解决：`_NZStaticBufferPool` 对 NZ key 重建**真 NZ slot**：`npu_format_cast(torch.zeros(i8 base shape), 29)`；int32 权重在 int8 层面 cast 后 `.view(int32)`（view 保格式）。同时用 `i8_bases`（`data_ptr(slot) → int8 NZ base`）登记表供 onload 时定位 int8 base，避免运行时对 internal format tensor 做 `view()`。
+
+**坑 2：int32 层面跨格式 copy 数据损坏**
+- 实测：int32 ND CPU → int32 NZ NPU 直接 `copy_` 结果错误；改到 int8 层面正确。
+- 解决：D2H 与 onload 的跨格式转换**全部在 int8 层面**进行。
+
+**坑 3：`RuntimeError: expanded size (512) must match (2048)`（post_init）**
+- 根因：`_nz_i8_handles` 快照在 `super().post_init()` **之后**才取，而第一次 onload（初始预取）在 `super().post_init()` **内部**就执行 → 找不到 int8 base，fallback 到错误 buffer。
+- 解决：直接引用**活字典** `_NZStaticBufferPool.i8_bases`（池构造时填充，早于第一次 onload）+ lazy derive/cache 兜底。
+
+**坑 4：`AttributeError: ... no attribute '_nz_scratch'`**
+- 根因：中间版本 onload 用 3-step scratch 路径，清理时误删了 `__init__` 中的初始化。
+- 解决：恢复初始化。最终版已简化为**单次 int8 层面跨格式 `copy_`**（坑 2 证明直接 copy 即可），不再需要 scratch，`_nz_scratch` 随之移除。
+
+**坑 5：cudagraph capture 拒绝 "Cannot run aclop operators during NPU graph capture. aclop=Identity"**
+- 现象：post_init + profile_run 全部通过后，cudagraph capture 阶段失败。
+- 根因：NZ onload 序列（H2D copy / 跨格式 copy / `npu_format_cast`）dispatch "Identity" aclop，vllm 的 aclgraph capture 路径拒绝。
+- 关键事实：**同一序列用独立 `torch.npu.NPUGraph` 可以捕获成功**（test_nz_capture.py）→ 拒绝与 vllm capture 上下文有关（stream/event/allocator 差异），精因待定。
+- 规避（两层）：
+  1. **专属 slot 设计**（代码层）：`nz_slot_count = offload 模块数`，`get_buffer` 按模块顺序**独占分配**（非循环复用）。slot 在 eager 阶段（post_init 初始预取 + profile_run）已填入真实权重 → **capture 与 replay 期间 NZ 参数零数据搬运**，`_patch_module_onload` 的 capture 分支只记录 event 协议（fork/copy_done 事件），不执行任何 NZ aclop。非 NZ 参数保持原生可捕获的 ND `copy_`（循环 slot，每次 replay 重填，与原生设计一致）。代价：buffer pool 从 1×max_layer 增至 7×max_layer（0.29→0.31GB，可忽略）。
+  2. **临时 `cudagraph_mode=NONE`**（配置层）：先用 NONE 完成功能验证。
+- 待办：恢复 `FULL_DECODE_ONLY` 验证专属 slot 设计下 capture 是否通过（理论上 NZ 路径已无 aclop）。
+
+**坑 6（诊断方向）：误判为 EP dispatch 问题**
+- 早期日志出现 "Split sizes" / "negative dimension" / FusedInfer 等错误，一度怀疑 EP dispatch 本身有问题。
+- 基线实验（`GPU_MEM_UTIL=0.90` + trunk 关闭，13:04 轮）quick_check 通过 → 确认这些错误**全部由 offload 路径引入**（根因即坑 1/2 的 ND buffer 与 NZ 权重不匹配），EP dispatch 本身干净。
+- 教训：offload 相关异常先做 trunk-off 基线对照，再下结论。
+
+### 13.5 最终实现（代码级总结）
+
+**`offload/patch.py` — `wrapped_process_weights`（D2H 阶段）**
+
+对每个 offload 参数：
+- NZ 检测：`"NZ" in str(torch_npu.get_npu_format(d))`，或名称兜底（`w13_weight`/`w2_weight` 且 dtype=int32）
+- NZ 参数：记入 `offloader.nz_param_keys`，D2H 序列 =
+  `d.view(int8)`（保留 NZ 5-D storage）→ `npu_format_cast(i8, ND)` → `.to("cpu")`（pinned N-D）→ `view(int32)`（若原为 int32）
+- 非 NZ 参数：直接 `.to("cpu")`；大张量失败时走 `_d2h_chunked`（32MB 分块 N-D 拷贝兜底）
+
+**`offload/npu_prefetch_offloader.py`**
+
+- `_NZStaticBufferPool(StaticBufferPool)`：
+  - `nz_names`（frozenset）+ `i8_bases`（data_ptr→int8 NZ base 活字典）
+  - `__init__`：对 NZ key 将 slot 替换为 `_make_nz_slot`（int8 base → NZ cast → view int32；每模块专属 slot）
+  - `get_buffer`：NZ key 按请求顺序独占分配（`_nz_assign_count`），非 NZ key 走原生循环分配
+- `EnhancedNPUPrefetchOffloader.post_init`：
+  - 若 `nz_param_keys` 非空：动态子类化 `_NZStaticBufferPool`，在 `super().post_init()` 期间 monkey-patch `vllm_ascend...prefetch.StaticBufferPool`（池类在该模块命名空间运行时查找），结束后还原并快照 `i8_bases`
+- `_nz_onload(buf, cpu)`（eager）：单次 **int8 层面跨格式 `copy_`**：`i8_bases[buf.data_ptr()].copy_(cpu.view(int8), non_blocking=True)`
+- `_patch_module_onload(mo)`：包装 `mo.start_onload_to_static`
+  - 模块无 NZ 参数 → 走原生
+  - capture 且 `mo._nz_slots_loaded` → **no-op 分支**：只记录 fork/copy_done event 协议，零数据搬运
+  - 否则 → fork event + copy_stream 上逐参数（NZ 走 `_nz_onload`，非 NZ 走原生 `copy_`）+ done event
+- `_log_buffer_diagnostics`：post_init 后打印每个大 buffer 的 shape / `GetNpuStorageSizes` / format（bufDiag）与 CPU storage 布局（cpuDiag），用于快速定位格式/布局问题
+
+### 13.6 验证结果
+
+- 部署成功：7/61 层 offload，NPU 节省 2.2029GB/卡，KV cache 1,210,368 tokens，服务 ready。
+- quick_check **4/4 通过**（含任务中断后复查）：连贯的 Kimi 自我介绍 + reasoning，与 0.90+trunk-off 基线输出一致 → **offload 路径计算正确性验证通过**。
+- 日志中仅有的 2 条 ERROR 均无害：usage 统计线程 cpuinfo JSON 解析失败（`_report_usage_worker` 后台噪音）；一次模型名拼错（`kimi-k26` vs `kimi_k26`）404。
+
+### 13.7 性能（当前验证配置）
+
+| 配置 | 130-150 token 请求 | TTFT |
+|------|-------------------|------|
+| offload + cudagraph NONE（本轮） | ~53-56s（≈0.5 tok/s） | 0.4-0.7s |
+| 基线（0.90 + trunk off + FULL_DECODE cudagraph） | ~6.5s（≈22 tok/s） | 低 |
+
+慢的构成：cudagraph 关闭 + 每个 decode step 都要 wait 7 层权重的 H2D（专属 slot 设计下 NZ 层每步重填 int8 copy，ND 层原生重填）。**功能正确性达标；性能需恢复 cudagraph 后再评估**——专属 slot 设计下 replay 期间 NZ 层零搬运，恢复 FULL_DECODE_ONLY 后 decode 应接近基线。
+
+### 13.8 待办
+
+1. `start_ep.sh` 恢复 `cudagraph_mode=FULL_DECODE_ONLY`，验证专属 slot NZ 设计的 capture + replay（理论已 capture-safe，实测确认）
+2. 恢复 cudagraph 后复测性能，与基线对比
+3. 若 capture 仍失败：对比 vllm aclgraph 与独立 `torch.npu.NPUGraph` 的 capture 上下文差异（stream/event/allocator）定位 Identity aclop 拒绝点
+4. `GPU_MEM_UTIL=0.50` 为验证值（KV 仅 1.2M tokens），生产按需上调
+5. 其他 w4a8 模型（GLM5.2 w4a8c8、Kimi K3）走同一量化路径，可直接复用本节 NZ 语义结论（13.3）与实现
+
+### 13.9 改动文件清单
+
+| 文件 | 改动 |
+|------|------|
+| `npuslim/src/npuslim/plugins/vllm_ascend/offload/npu_prefetch_offloader.py` | `_NZStaticBufferPool`（真 NZ slot + i8_bases + 专属分配）；`nz_param_keys`；`post_init` 池类替换；`_nz_onload`；`_patch_module_onload`（capture no-op 分支）；`_log_buffer_diagnostics` |
+| `npuslim/src/npuslim/plugins/vllm_ascend/offload/patch.py` | `wrapped_process_weights` NZ 检测 + i8 层面 D2H；`_d2h_chunked` 分块兜底 |
+| `vllm-learning/deploy_v2/models_config.sh` | K2.6 `GPU_MEM_UTIL=0.50` |
+| `vllm-learning/deploy_v2/kimi2.6w4a8/EP/start_ep.sh` | offload 启用 + `safety_margin_gb=14` + 临时 `cudagraph_mode=NONE` + 移除 `DYNAMIC_EPLB=1` |
+| `temp/probe_nz_*.py`（format/d2h/onload/crosscopy/final 等）、`temp/test_nz_*.py`（capture/rawbytes/roundtrip/probe 等） | NZ 语义硬件探测脚本（13.3 各结论的来源，关键：`probe_nz_crosscopy.py` 跨格式 copy 正确性、`test_nz_capture.py` 独立 NPUGraph 可捕获性） |

@@ -9,7 +9,13 @@ from typing import Any, Dict, List, Optional, Set
 
 from npuslim.plugins.logging import patch_logger
 from npuslim.plugins.vllm_ascend.offload.config import OffloadTrunkConfig
-from npuslim.plugins.vllm_ascend.offload.memory_budget import MemoryBudget
+from npuslim.plugins.vllm_ascend.offload.memory_budget import (
+    MemoryBudget,
+    MemoryBudgetCalculator,
+    checkpoint_total_bytes,
+    expert_shard_world,
+    resolve_hf_text_config,
+)
 
 
 @dataclass
@@ -330,7 +336,7 @@ class OffloadPlanner:
         if model_config is None:
             return {idx: 0 for idx in range(num_layers)}
 
-        hf_config = getattr(model_config, "hf_config", None)
+        hf_config = resolve_hf_text_config(model_config)
         if hf_config is None:
             return {idx: 0 for idx in range(num_layers)}
 
@@ -380,26 +386,36 @@ class OffloadPlanner:
                 (num_heads * head_dim) * hidden_size         # o_proj
             )
 
+        # Calibrate bytes/param with the actual checkpoint size when
+        # available: quantized checkpoints (W4A8 etc.) are far smaller than
+        # the dtype/quantization heuristic above.
+        ckpt_bytes = checkpoint_total_bytes(model_config)
+        formula_total = MemoryBudgetCalculator()._estimate_num_params(hf_config)
+        if ckpt_bytes and formula_total > 0:
+            bytes_per_param = ckpt_bytes / formula_total
+
+        # Expert weights are sharded across the EP world (TP×DP with
+        # --enable-expert-parallel), not just TP.
+        ep_world = expert_shard_world(parallel_config)
+
         layer_sizes: Dict[int, int] = {}
         for idx in range(num_layers):
-            mlp_params: int
             if idx < first_k_dense or n_routed == 0:
                 # Dense MLP: gate + up + down
-                mlp_params = 3 * hidden_size * intermediate_size
+                non_expert_params = attn_params + 3 * hidden_size * intermediate_size
+                expert_params = 0
             else:
-                # MoE: routed experts + shared experts
+                # MoE: routed + shared experts are EP-shardable; the router
+                # gate is not.
                 expert_params = n_routed * 3 * hidden_size * moe_inter
-                shared_params = 0
                 if n_shared > 0:
-                    shared_params = n_shared * 3 * hidden_size * moe_inter
-                mlp_params = expert_params + shared_params
+                    expert_params += n_shared * 3 * hidden_size * moe_inter
+                non_expert_params = attn_params + hidden_size * n_routed
 
-            # Router gate (small but include for accuracy)
-            if n_routed > 0 and idx >= first_k_dense:
-                mlp_params += hidden_size * n_routed
-
-            total_params = attn_params + mlp_params
-            layer_sizes[idx] = (total_params * bytes_per_param) // tp_size
+            layer_sizes[idx] = (
+                (non_expert_params * bytes_per_param) // tp_size
+                + (expert_params * bytes_per_param) // max(1, ep_world)
+            )
 
         return layer_sizes
 
@@ -407,7 +423,7 @@ class OffloadPlanner:
         model_config = getattr(vllm_config, "model_config", None)
         if model_config is None:
             return 0
-        hf_config = getattr(model_config, "hf_config", None)
+        hf_config = resolve_hf_text_config(model_config)
         if hf_config is None:
             return 0
         return getattr(hf_config, "num_hidden_layers", 0)

@@ -54,8 +54,93 @@ class MemoryBudget:
         )
 
 
+def resolve_hf_text_config(model_config: Any) -> Any:
+    """Resolve the text-model HF config.
+
+    Multimodal models (e.g. Qwen3.5) nest the text architecture under
+    ``hf_config.text_config``; the top-level config lacks
+    num_hidden_layers/hidden_size. vllm exposes the resolved text config
+    as ``model_config.hf_text_config``. Prefer the candidate that
+    actually carries ``num_hidden_layers``.
+    """
+    hf_config = getattr(model_config, "hf_config", None)
+    hf_text_config = getattr(model_config, "hf_text_config", None)
+    for cand in (hf_text_config, hf_config):
+        if cand is not None and getattr(cand, "num_hidden_layers", 0):
+            return cand
+    return hf_text_config if hf_text_config is not None else hf_config
+
+
+def checkpoint_total_bytes(model_config: Any) -> Optional[int]:
+    """Exact total weight bytes from the safetensors index, if the model
+    lives on a local path.
+
+    Quantized checkpoints (W4A8 etc.) store far fewer bytes per param
+    than dtype/quantization heuristics can infer, so the index
+    ``total_size`` is preferred when available.
+    """
+    import glob
+    import json
+    import os
+
+    model_path = getattr(model_config, "model", None) or getattr(
+        model_config, "model_path", None)
+    if not model_path or not os.path.isdir(model_path):
+        return None
+    candidates = [os.path.join(model_path, "model.safetensors.index.json")]
+    candidates += sorted(
+        glob.glob(os.path.join(model_path, "*.safetensors.index.json")))
+    for idx_path in candidates:
+        try:
+            with open(idx_path) as f:
+                total = int(json.load(f).get("metadata", {}).get("total_size", 0))
+            if total > 0:
+                return total
+        except Exception:
+            continue
+    return None
+
+
+def expert_shard_world(parallel_config: Any) -> int:
+    """World size used to shard MoE expert weights.
+
+    With ``enable_expert_parallel``, vllm flattens TP across DP
+    (experts are distributed over TP×DP ranks, see
+    FusedMoEParallelConfig); otherwise experts are sharded by TP only.
+    """
+    if parallel_config is None:
+        return 1
+    tp_size = getattr(parallel_config, "tensor_parallel_size", 1) or 1
+    if getattr(parallel_config, "enable_expert_parallel", False):
+        dp_size = getattr(parallel_config, "data_parallel_size", 1) or 1
+        return tp_size * dp_size
+    return tp_size
+
+
+def expert_param_fraction(hf_config: Any, total_params: int) -> float:
+    """Fraction of total params held by EP-shardable expert weights."""
+    if total_params <= 0:
+        return 0.0
+    hidden_size = getattr(hf_config, "hidden_size", 0)
+    num_layers = getattr(hf_config, "num_hidden_layers", 0)
+    intermediate_size = getattr(hf_config, "intermediate_size", 0)
+    first_k_dense = getattr(hf_config, "first_k_dense_replace", 0)
+    n_routed = (getattr(hf_config, "n_routed_experts", None)
+                or getattr(hf_config, "num_experts", 0))
+    moe_inter = getattr(hf_config, "moe_intermediate_size", intermediate_size)
+    n_shared = getattr(hf_config, "n_shared_experts", 0)
+    if n_routed == 0:
+        return 0.0
+    moe_layers = max(0, num_layers - min(first_k_dense, num_layers))
+    expert = moe_layers * (n_routed + max(n_shared, 0)) * 3 * hidden_size * moe_inter
+    return expert / total_params
+
+
 class MemoryBudgetCalculator:
     """Calculate per-card weight memory budget with precise KV cache estimation."""
+
+    def _resolve_hf_text_config(self, model_config: Any) -> Any:
+        return resolve_hf_text_config(model_config)
 
     def calculate(
         self,
@@ -154,6 +239,19 @@ class MemoryBudgetCalculator:
         num_layers_total = self._get_num_layers(vllm_config)
         num_attn_layers = (num_layers_total + pp_size - 1) // pp_size if pp_size > 1 else num_layers_total
 
+        # Hybrid models (e.g. Qwen3.5: linear_attention + full_attention):
+        # only full-attention layers allocate per-token KV cache;
+        # linear-attention layers use fixed per-sequence state.
+        hf_config = self._resolve_hf_text_config(model_config)
+        layer_types = getattr(hf_config, "layer_types", None) if hf_config is not None else None
+        if layer_types and len(layer_types) == num_layers_total:
+            num_full_attn = sum(
+                1 for lt in layer_types
+                if "attention" in str(lt) and "linear" not in str(lt)
+            )
+            if 0 < num_full_attn < num_layers_total:
+                num_attn_layers = max(1, num_attn_layers * num_full_attn // len(layer_types))
+
         if dcp_size * pcp_size > 1:
             effective_max_model_len = (max_model_len + dcp_size * pcp_size - 1) // (dcp_size * pcp_size)
         else:
@@ -181,18 +279,14 @@ class MemoryBudgetCalculator:
         return total_kv
 
     def _get_compress_ratio(self, model_config: Any) -> int:
-        hf_config = getattr(model_config, "hf_config", None)
-        if hf_config is None:
-            hf_config = getattr(model_config, "hf_text_config", None)
+        hf_config = self._resolve_hf_text_config(model_config)
         compress_ratios = getattr(hf_config, "compress_ratios", None) if hf_config else None
         if compress_ratios and isinstance(compress_ratios, (list, tuple)) and len(compress_ratios) > 0:
             return int(compress_ratios[0])
         return 1
 
     def _estimate_page_size_bytes(self, model_config: Any, parallel_config: Any, cache_config: Any) -> int:
-        hf_config = getattr(model_config, "hf_config", None)
-        if hf_config is None:
-            hf_config = getattr(model_config, "hf_text_config", None)
+        hf_config = self._resolve_hf_text_config(model_config)
         if hf_config is None:
             return 0
 
@@ -258,7 +352,7 @@ class MemoryBudgetCalculator:
                 return total
 
         # Fallback: read from hf_config
-        hf_config = getattr(model_config, "hf_config", None)
+        hf_config = self._resolve_hf_text_config(model_config)
         if hf_config is not None:
             return getattr(hf_config, "num_key_value_heads",
                           getattr(hf_config, "num_attention_heads", 1))
@@ -282,7 +376,7 @@ class MemoryBudgetCalculator:
                 pass
 
         # Fallback: compute from hf_config
-        hf_config = getattr(model_config, "hf_config", None)
+        hf_config = self._resolve_hf_text_config(model_config)
         if hf_config is not None:
             hidden_size = getattr(hf_config, "hidden_size", 0)
             num_heads = getattr(hf_config, "num_attention_heads", 1)
@@ -328,9 +422,7 @@ class MemoryBudgetCalculator:
         model_config = getattr(vllm_config, "model_config", None)
         if model_config is None:
             return 0
-        hf_config = getattr(model_config, "hf_config", None)
-        if hf_config is None:
-            hf_config = getattr(model_config, "hf_text_config", None)
+        hf_config = self._resolve_hf_text_config(model_config)
         if hf_config is None:
             return 0
         return getattr(hf_config, "num_hidden_layers", 0)
@@ -400,9 +492,7 @@ class MemoryBudgetCalculator:
             patch_logger.warning("Cannot estimate weight size: model_config not found")
             return 0
 
-        hf_config = getattr(model_config, "hf_config", None)
-        if hf_config is None:
-            hf_config = getattr(model_config, "hf_text_config", None)
+        hf_config = self._resolve_hf_text_config(model_config)
         if hf_config is None:
             patch_logger.warning("Cannot estimate weight size: hf_config not found")
             return 0
@@ -414,12 +504,26 @@ class MemoryBudgetCalculator:
         bytes_per_param = self._get_bytes_per_param(model_config, vllm_config)
         total_bytes = num_params * bytes_per_param
 
+        # Calibrate with the actual checkpoint size when available:
+        # quantized models (W4A8 etc.) have far fewer bytes per param than
+        # the heuristic above.
+        ckpt_bytes = checkpoint_total_bytes(model_config)
+        if ckpt_bytes:
+            total_bytes = ckpt_bytes
+
         parallel_config = getattr(vllm_config, "parallel_config", None)
         tp_size = 1
         if parallel_config is not None:
             tp_size = getattr(parallel_config, "tensor_parallel_size", 1)
 
-        per_card = total_bytes // tp_size
+        # Expert weights are sharded across the EP world (TP×DP with
+        # --enable-expert-parallel), not just TP.
+        ep_world = expert_shard_world(parallel_config)
+        expert_frac = expert_param_fraction(hf_config, num_params)
+        per_card = (
+            int(total_bytes * (1 - expert_frac)) // tp_size
+            + int(total_bytes * expert_frac) // max(1, ep_world)
+        )
         return per_card
 
     def _estimate_max_layer_size_bytes_per_card(self, vllm_config: Any) -> int:
@@ -433,9 +537,7 @@ class MemoryBudgetCalculator:
         if model_config is None:
             return 0
 
-        hf_config = getattr(model_config, "hf_config", None)
-        if hf_config is None:
-            hf_config = getattr(model_config, "hf_text_config", None)
+        hf_config = self._resolve_hf_text_config(model_config)
         if hf_config is None:
             return 0
 
@@ -485,29 +587,42 @@ class MemoryBudgetCalculator:
         moe_inter = getattr(hf_config, "moe_intermediate_size", intermediate_size)
         n_shared = getattr(hf_config, "n_shared_experts", 0)
 
-        max_layer_params = 0
+        max_non_expert_params = 0
+        max_expert_params = 0
         for idx in range(num_layers):
             if idx < first_k_dense or n_routed == 0:
                 # Dense MLP: gate + up + down
-                mlp_params = 3 * hidden_size * intermediate_size
+                non_expert_mlp = 3 * hidden_size * intermediate_size
+                expert_mlp = 0
             else:
-                # MoE: routed experts + shared experts + router gate
-                expert_params = n_routed * 3 * hidden_size * moe_inter
-                shared_params = n_shared * 3 * hidden_size * moe_inter if n_shared > 0 else 0
-                mlp_params = expert_params + shared_params
-                if n_routed > 0:
-                    mlp_params += hidden_size * n_routed  # router gate
+                # MoE: routed + shared experts are EP-shardable; the router
+                # gate is not.
+                expert_mlp = n_routed * 3 * hidden_size * moe_inter
+                if n_shared > 0:
+                    expert_mlp += n_shared * 3 * hidden_size * moe_inter
+                non_expert_mlp = hidden_size * n_routed  # router gate
 
-            total_params = attn_params + mlp_params
-            if total_params > max_layer_params:
-                max_layer_params = total_params
+            non_expert = attn_params + non_expert_mlp
+            if non_expert > max_non_expert_params:
+                max_non_expert_params = non_expert
+            if expert_mlp > max_expert_params:
+                max_expert_params = expert_mlp
 
+        # Calibrate bytes/param with the actual checkpoint size when possible.
         bytes_per_param = self._get_bytes_per_param(model_config, vllm_config)
+        formula_total = self._estimate_num_params(hf_config)
+        ckpt_bytes = checkpoint_total_bytes(model_config)
+        if ckpt_bytes and formula_total > 0:
+            bytes_per_param = ckpt_bytes / formula_total
 
         parallel_config = getattr(vllm_config, "parallel_config", None)
         tp_size = getattr(parallel_config, "tensor_parallel_size", 1) if parallel_config else 1
+        ep_world = expert_shard_world(parallel_config)
 
-        return (max_layer_params * bytes_per_param) // tp_size
+        return (
+            (max_non_expert_params * bytes_per_param) // tp_size
+            + (max_expert_params * bytes_per_param) // max(1, ep_world)
+        )
 
     def _estimate_num_params(self, hf_config: Any) -> int:
         """Rough estimate of total parameter count from HF config."""

@@ -94,6 +94,29 @@ def patch_model_runner_offloader(module: Any) -> None:
             self._npuslim_offload_config = None
             return
 
+        # Quantized weights (W4A8 modelslim) are repacked to FRACTAL_NZ in
+        # process_weights_after_loading via maybe_trans_nz. torch-npu
+        # silently demotes internal-format tensor creation to ND unless the
+        # ALLOW_INTERNAL_FORMAT option is enabled — ND weights are then
+        # rejected by aclnnGroupedMatmul*WeightNz ops ("storageShape must be
+        # 5, got [N], dimNum is 1"). Enable it here — before original_init,
+        # i.e. before any weight loading/processing — whenever the offload
+        # trunk is active. (vllm_config.quant_config is populated lazily
+        # during config verification, so it cannot be used as a gate here.)
+        try:
+            import torch_npu
+
+            if torch_npu._C._npu_getOption("ALLOW_INTERNAL_FORMAT") != b"enable":
+                torch_npu.config.allow_internal_format = True
+                patch_logger.info(
+                    "[OffloadTrunk] ALLOW_INTERNAL_FORMAT enabled "
+                    "(FRACTAL_NZ weights)"
+                )
+        except Exception as e:
+            patch_logger.warning(
+                f"[OffloadTrunk] failed to enable ALLOW_INTERNAL_FORMAT: {e}"
+            )
+
         # Set vllm's offload_config BEFORE original_init so the framework
         # creates the correct NPUPrefetchOffloader inside __init__.
         # This ensures the offloader is created at the right time in the
@@ -157,8 +180,8 @@ def patch_model_runner_offloader(module: Any) -> None:
         """Wrap load_model to handle offloaded layer weight processing.
 
         Problem: _CpuParamOffloader.__init__ (called during make_layers →
-        wrap_modules) moves offloaded params to CPU. ascend_process_weights
-        _after_loading has two phases:
+        wrap_modules) moves offloaded params to CPU. process_weights_after
+        _loading has two phases:
           1. Process QuantizeMethodBase modules (with device_loading_context)
           2. Process Attention modules (with device_loading_context)
         Phase 1 moves fused_qkv_a_proj to NPU, processes it, moves it back to
@@ -176,8 +199,21 @@ def patch_model_runner_offloader(module: Any) -> None:
         Timing: wrap_modules (which populates offloader.module_offloaders)
         is called inside original_load_model → initialize_model, which runs
         BEFORE process_weights_after_loading. So we register the wrapper
-        before calling original_load_model, and build layer_specs inside
-        the wrapper (when it's actually called).
+        before calling original_load_model, and collect the offloaded param
+        offloaders inside the wrapper (when it's actually called).
+
+        Note on interaction with vllm-ascend: vllm-ascend already patches
+        base_loader.process_weights_after_loading with
+        ascend_process_weights_after_loading (a superset of the upstream
+        version that adds DSAAttention support). Our wrapped version keeps
+        all of that, adds update_param_tp_status after quant-method
+        processing, and adds the per-layer NPU↔CPU transfer needed for
+        offload scenarios.
+
+        CAVEAT: We access private attributes (module_offloaders,
+        _offloader_idx_to_module_index, _param_offloaders, _param) on the
+        offloader and its sub-objects. These are not part of the public API
+        and may break across vllm/vllm-ascend version upgrades.
         """
         offload_config = getattr(self, "_npuslim_offload_config", None)
         if offload_config is None or not offload_config.enabled:
@@ -200,6 +236,7 @@ def patch_model_runner_offloader(module: Any) -> None:
             original_process_weights = base_loader.process_weights_after_loading
 
             def wrapped_process_weights(model, model_config, target_device):
+                import torch
                 from vllm.model_executor.offloader.base import get_offloader
                 from vllm.model_executor.layers.quantization.base_config import (
                     QuantizeMethodBase,
@@ -207,84 +244,260 @@ def patch_model_runner_offloader(module: Any) -> None:
                 from vllm.model_executor.layers.attention import (
                     Attention, MLAAttention, MMEncoderAttention,
                 )
-                from vllm.model_executor.model_loader.utils import device_loading_context
+                from vllm.model_executor.model_loader.utils import (
+                    device_loading_context,
+                )
 
                 offloader = get_offloader()
-                has_offload = (hasattr(offloader, "module_offloaders")
-                               and offloader.module_offloaders)
+                module_offloaders = getattr(offloader, "module_offloaders", None)
+                has_offload = module_offloaders and len(module_offloaders) > 0
 
                 if not has_offload:
                     original_process_weights(model, model_config, target_device)
                     return
 
-                # Build layer_idx → list of (param_offloader, device) mapping.
+                # Flatten all offloaded param offloaders across layers.
                 # Available now because wrap_modules has already run.
-                layer_specs: dict[int, list] = {}
-                for mo in offloader.module_offloaders:
-                    offloader_idx = mo.layer_idx
-                    module_idx = offloader._offloader_idx_to_module_index.get(
-                        offloader_idx, offloader_idx)
-                    layer_specs[module_idx] = [
-                        (po, mo.device) for po in mo._param_offloaders.values()
-                    ]
+                all_param_offloaders: list = []
+                for mo in module_offloaders:
+                    param_offloaders = getattr(mo, "_param_offloaders",
+                                        getattr(mo, "param_offloaders", {}))
+                    all_param_offloaders.extend(param_offloaders.values())
+
+                def _param_of(po):
+                    """Current nn.Parameter of a param offloader, or None if
+                    process_weights_after_loading deleted it (transient scale
+                    params are dropped after being absorbed into permanent
+                    buffers)."""
+                    try:
+                        return po._param
+                    except AttributeError:
+                        return None
 
                 def _is_dsa_attention(mod):
-                    cls = type(mod)
-                    return (cls.__module__
-                            == "vllm_ascend.models.layer.attention.layer"
-                            and cls.__name__ == "DSAAttention")
+                    """Check if module is DSAAttention.
 
-                def _parse_layer_idx(module):
-                    """Extract transformer layer index from an attention module."""
-                    layer_name = getattr(module, "layer_name", None)
-                    if layer_name:
-                        parts = layer_name.split(".")
-                        for i, p in enumerate(parts):
-                            if p == "layers" and i + 1 < len(parts):
-                                try:
-                                    return int(parts[i + 1])
-                                except ValueError:
-                                    pass
-                    return None
+                    Prefer isinstance when the class is importable; fall back
+                    to class name matching to handle environments where the
+                    vllm-ascend attention layer module is not installed.
+                    """
+                    try:
+                        from vllm_ascend.models.layer.attention.layer import (
+                            DSAAttention,
+                        )
+                        return isinstance(mod, DSAAttention)
+                    except ImportError:
+                        cls = type(mod)
+                        return (cls.__module__
+                                == "vllm_ascend.models.layer.attention.layer"
+                                and cls.__name__ == "DSAAttention")
 
-                # Phase 1: QuantizeMethodBase modules — device_loading_context
-                # handles per-module NPU↔CPU correctly (moves one module's
-                # params at a time, not all at once).
-                for _, module in model.named_modules():
-                    quant_method = getattr(module, "quant_method", None)
-                    if isinstance(quant_method, QuantizeMethodBase):
+                def _d2h_probe(tag: str, tensor: Any = None) -> None:
+                    """Probe whether NPU→CPU copies work right now."""
+                    t = tensor if tensor is not None else torch.ones(
+                        4, device=target_device)
+                    try:
+                        t.to("cpu")
+                        torch.npu.synchronize(target_device)
+                        patch_logger.info(f"[OffloadTrunk] D2H probe ({tag}): OK")
+                    except Exception as e:
+                        patch_logger.warning(
+                            f"[OffloadTrunk] D2H probe ({tag}) FAILED: "
+                            f"{type(e).__name__}: {str(e)[:160]}")
+
+                _d2h_probe("entry")
+
+                # Offloaded params are moved to the NPU BEFORE weight
+                # processing, so device_loading_context finds nothing on
+                # CPU and performs no NPU→CPU copy during the phases below.
+                # In DCP/EP worker contexts, D2H copies fail with
+                # "aclrtAllocatorGetByStream failed: The stream is not
+                # registered with any allocator" once quantization repack
+                # ops (npu_format_cast) have run on the default stream, so
+                # the processing phases run on a dedicated side stream and
+                # the final bulk D2H runs on the untouched default stream.
+                for po in all_param_offloaders:
+                    param = _param_of(po)
+                    if param is not None and param.data.device.type == "cpu":
+                        param.data = param.data.to(target_device)
+
+                proc_stream = torch.npu.Stream()
+                with torch.npu.stream(proc_stream):
+                    # Phase 1: QuantizeMethodBase modules — offloaded params
+                    # are already on the NPU, so device_loading_context
+                    # performs no copies for them (resident modules are
+                    # untouched as well).
+                    #
+                    # Note: vllm-ascend's _ModuleOffloader has already
+                    # wrapped quant_method.process_weights_after_loading with
+                    # NZ format detection
+                    # (_capture_static_buffer_formats_from_npu_params), so
+                    # calling it here also triggers that detection correctly.
+                    for _, module in model.named_modules():
+                        quant_method = getattr(module, "quant_method", None)
+                        if isinstance(quant_method, QuantizeMethodBase):
+                            with device_loading_context(module, target_device):
+                                quant_method.process_weights_after_loading(module)
+                            # Reconcile TP state after quant_method may have
+                            # swapped in fresh Parameters (e.g. FP8 requant).
+                            if hasattr(module, "update_param_tp_status"):
+                                module.update_param_tp_status()
+
+                    # Phase 2: Attention modules (incl. DSA) — same no-copy
+                    # situation as phase 1.
+                    for _, module in model.named_modules():
+                        is_attn = (isinstance(module, (Attention, MLAAttention,
+                                                        MMEncoderAttention))
+                                   or _is_dsa_attention(module))
+                        if not is_attn or not hasattr(
+                                module, "process_weights_after_loading"):
+                            continue
                         with device_loading_context(module, target_device):
-                            quant_method.process_weights_after_loading(module)
+                            module.process_weights_after_loading(model_config.dtype)
 
-                # Phase 2: Attention modules — process one layer at a time.
-                # For offloaded layers, move ONLY that layer's params to NPU
-                # before processing, then back to CPU after. This keeps
-                # peak HBM = resident + one offloaded layer.
-                for _, module in model.named_modules():
-                    is_attn = (isinstance(module, (Attention, MLAAttention,
-                                                    MMEncoderAttention))
-                               or _is_dsa_attention(module))
-                    if not is_attn or not hasattr(
-                            module, "process_weights_after_loading"):
+                # Order the default stream after the processing stream, then
+                # move offloaded params back to CPU (release HBM) so post_init
+                # (sync_cpu_storage / static buffer assignment) observes the
+                # final CPU tensors.
+                #
+                # In DCP/EP worker contexts large D2H copies fail with
+                # "aclrtAllocatorGetByStream failed: The stream is not
+                # registered with any allocator" (the TransData runtime
+                # staging allocation cannot resolve the stream's allocator),
+                # while small copies succeed. Each param is therefore copied
+                # directly first and falls back to 32MB chunked copies.
+                def _d2h_chunked(src: torch.Tensor) -> torch.Tensor:
+                    """D2H via flat 32MB slices (small TransData copies that
+                    do not need runtime staging buffers).
+
+                    The destination must be a freshly allocated N-D tensor:
+                    AIV ops (e.g. aclnnGroupedMatmulSwigluQuantWeightNzV2)
+                    reject scale tensors whose storageShape is 1-D, which is
+                    what a flat-buffer .view(src.shape) reports to the ACL
+                    plugin. Allocating torch.empty(src.shape, device="cpu")
+                    matches the N-D storage semantics of a normal .to("cpu").
+                    """
+                    dst = torch.empty(src.shape, dtype=src.dtype, device="cpu")
+                    flat_src = src.flatten()
+                    flat_dst = dst.flatten()
+                    step = max(1, (32 * 1024 * 1024) // flat_src.element_size())
+                    for i in range(0, flat_src.numel(), step):
+                        flat_dst[i:i + step].copy_(flat_src[i:i + step])
+                    return dst
+
+                torch.npu.current_stream(target_device).wait_stream(proc_stream)
+                _d2h_probe("pre-d2h-big-int8", torch.ones(
+                    512 * 1024 * 1024, dtype=torch.int8, device=target_device))
+                d2h_failed: list = []
+                for idx, po in enumerate(all_param_offloaders):
+                    param = _param_of(po)
+                    if param is None or param.data.device.type == "cpu":
                         continue
+                    d = param.data
+                    pname = getattr(po, "_param_name", "") or ""
+                    # FRACTAL_NZ weights (W4A8 w13/w2 after maybe_trans_nz)
+                    # cannot round-trip through CPU as-is:
+                    #  - .to("cpu") on the int32 NZ view crashes (Identity
+                    #    TransData tiling failure)
+                    #  - the aclnnGroupedMatmul*WeightNz ops reject buffers
+                    #    whose storageShape is not the 5-D NZ physical layout
+                    # Hardware-verified pipeline (all format casts on the
+                    # int8 base — casting the int32 view crashes):
+                    #   view(i8) -> npu_format_cast(ND) -> .to("cpu")
+                    # The name-based fallback covers packed w13/w2 even when
+                    # get_npu_format does not report the internal format.
+                    is_nz = False
+                    pre_fmt = None
+                    try:
+                        import torch_npu
 
-                    layer_idx = _parse_layer_idx(module)
-                    specs = layer_specs.get(layer_idx) if layer_idx is not None else None
+                        pre_fmt = torch_npu.get_npu_format(d)
+                        is_nz = "NZ" in str(pre_fmt)
+                        if (not is_nz and d.dtype == torch.int32
+                                and pname.endswith(
+                                    ("w13_weight", "w2_weight"))):
+                            is_nz = True
+                    except Exception:
+                        if (d.dtype == torch.int32
+                                and pname.endswith(
+                                    ("w13_weight", "w2_weight"))):
+                            is_nz = True
+                    size_mb = d.numel() * d.element_size() / 1024**2
+                    if size_mb > 4.0:
+                        patch_logger.info(
+                            f"[OffloadTrunk] preD2H param[{idx}] {pname} "
+                            f"{d.dtype} {tuple(d.shape)} fmt={pre_fmt} "
+                            f"nz={is_nz}")
+                    if is_nz:
+                        if pname:
+                            offloader.nz_param_keys.add(pname)
 
-                    if specs:
-                        for po, device in specs:
-                            param = po._param
-                            if param.data.device.type == "cpu":
-                                param.data = param.data.to(device)
+                        def _nz_d2h(chunked: bool = False) -> torch.Tensor:
+                            import torch_npu
 
-                    with device_loading_context(module, target_device):
-                        module.process_weights_after_loading(model_config.dtype)
+                            i8 = (d.view(torch.int8)
+                                  if d.dtype == torch.int32 else d)
+                            nd = torch_npu.npu_format_cast(i8, 2)  # ND
+                            if chunked:
+                                cpu = _d2h_chunked(nd)
+                            else:
+                                cpu = nd.to("cpu")
+                                if tuple(cpu.shape) != tuple(nd.shape):
+                                    cpu = cpu.reshape(nd.shape)
+                            return (cpu.view(torch.int32)
+                                    if d.dtype == torch.int32 else cpu)
 
-                    if specs:
-                        for po, device in specs:
-                            param = po._param
-                            if param.data.device.type != "cpu":
-                                param.data = param.data.to("cpu")
+                        try:
+                            param.data = _nz_d2h()
+                            patch_logger.info(
+                                f"[OffloadTrunk] D2H param[{idx}] OK nz: "
+                                f"{size_mb:.1f}MB {d.dtype} "
+                                f"{tuple(d.shape)} -> cpu "
+                                f"{tuple(param.data.shape)}")
+                        except Exception as e:
+                            patch_logger.warning(
+                                f"[OffloadTrunk] D2H param[{idx}] nz direct "
+                                f"FAILED: {size_mb:.1f}MB: "
+                                f"{str(e)[:100]} — retrying nz chunked")
+                            try:
+                                param.data = _nz_d2h(chunked=True)
+                                patch_logger.info(
+                                    f"[OffloadTrunk] D2H param[{idx}] OK "
+                                    f"nz-chunked: {size_mb:.1f}MB {d.dtype}")
+                            except Exception as e2:
+                                patch_logger.error(
+                                    f"[OffloadTrunk] D2H param[{idx}] "
+                                    f"nz-chunked FAILED: {size_mb:.1f}MB: "
+                                    f"{str(e2)[:100]}")
+                                d2h_failed.append(idx)
+                        continue
+                    try:
+                        param.data = d.to("cpu")
+                        patch_logger.info(
+                            f"[OffloadTrunk] D2H param[{idx}] OK direct: "
+                            f"{size_mb:.1f}MB {d.dtype} {tuple(d.shape)} -> cpu "
+                            f"{tuple(param.data.shape)} stride={param.data.stride()}")
+                    except Exception as e:
+                        patch_logger.warning(
+                            f"[OffloadTrunk] D2H param[{idx}] direct FAILED: "
+                            f"{size_mb:.1f}MB {d.dtype} {tuple(d.shape)}: "
+                            f"{str(e)[:100]} — retrying chunked")
+                        try:
+                            param.data = _d2h_chunked(d)
+                            patch_logger.info(
+                                f"[OffloadTrunk] D2H param[{idx}] OK chunked: "
+                                f"{size_mb:.1f}MB {d.dtype}")
+                        except Exception as e2:
+                            patch_logger.error(
+                                f"[OffloadTrunk] D2H param[{idx}] chunked "
+                                f"FAILED: {size_mb:.1f}MB {d.dtype}: "
+                                f"{str(e2)[:100]}")
+                            d2h_failed.append(idx)
+                if d2h_failed:
+                    raise RuntimeError(
+                        f"[OffloadTrunk] D2H failed for {len(d2h_failed)} "
+                        f"params: {d2h_failed[:10]}")
+                torch.npu.synchronize(target_device)
 
                 if model_config.quantization == "torchao":
                     from vllm.model_executor.model_loader.reload import (
