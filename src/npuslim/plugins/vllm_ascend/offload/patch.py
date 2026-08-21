@@ -154,11 +154,29 @@ def patch_model_runner_offloader(module: Any) -> None:
             log_interval=offload_config.monitor_log_interval
         ) if offload_config.enable_monitor else None
 
+        # Dedicated NZ slots are only needed by the graph-capture path.
+        # Auto-disable when cudagraph_mode=NONE: the eager path refills
+        # every step anyway, and per-module slots would duplicate ALL
+        # offloaded NZ weights in HBM (net savings -> 0, OOM for all-NZ
+        # models like K2.6 — incident 2026-08-21). Config can override.
+        dedicated_slots = offload_config.dedicated_nz_slots
+        if dedicated_slots is None:
+            try:
+                cg_mode = vllm_config.compilation_config.cudagraph_mode
+                dedicated_slots = "NONE" not in str(cg_mode)
+            except Exception:
+                dedicated_slots = True
+            patch_logger.info(
+                f"[OffloadTrunk] cudagraph_mode={cg_mode} -> "
+                f"dedicated_nz_slots={dedicated_slots}"
+            )
+
         enhanced_offloader = EnhancedNPUPrefetchOffloader(
             plan=plan,
             prefetch_step=offload_config.prefetch_step,
             offload_params=offload_config.offload_params,
             monitor=monitor,
+            dedicated_slots=dedicated_slots,
         )
 
         # Replace the offloader BEFORE load_model is called.

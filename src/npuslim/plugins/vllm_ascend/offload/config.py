@@ -50,6 +50,17 @@ class OffloadTrunkConfig:
     # available CPU memory, abort with an error.
     cpu_memory_threshold: float = 0.6
 
+    # === FRACTAL_NZ dedicated slots ===
+    # For NZ-format models (W4A8/W8A8, VLLM_ASCEND_ENABLE_NZ=1): with graph
+    # capture, each offloaded module gets a DEDICATED NZ buffer slot so the
+    # captured graph replays without NZ refill (the ND->NZ cross-format copy
+    # is not capturable in vllm's capture context). With cudagraph_mode=NONE
+    # the eager path refills every step anyway, and the dedicated slots
+    # would duplicate ALL offloaded weights in HBM (net savings -> 0,
+    # OOM for all-NZ models like K2.6 — incident 2026-08-21).
+    # None = auto: enabled iff cudagraph_mode != NONE.
+    dedicated_nz_slots: Optional[bool] = None
+
     # === Strict validation ===
     # When True, abort if the plan's estimated HBM usage exceeds available
     # memory. When False, log a warning but continue (may OOM at runtime).
@@ -163,6 +174,9 @@ def _from_dict(raw: Dict[str, Any]) -> OffloadTrunkConfig:
         offload_params=_parse_set(raw.get("offload_params", set())),
         safety_margin_gb=_parse_float(raw.get("safety_margin_gb", 2.0)),
         cpu_memory_threshold=_parse_float(raw.get("cpu_memory_threshold", 0.6)),
+        dedicated_nz_slots=(
+            _parse_bool(v) if (v := raw.get("dedicated_nz_slots")) is not None else None
+        ),
         strict_memory_check=_parse_bool(raw.get("strict_memory_check", True)),
         enable_monitor=_parse_bool(raw.get("enable_monitor", True)),
         monitor_log_interval=_parse_int(raw.get("monitor_log_interval", 100)),
@@ -192,6 +206,9 @@ def _from_env() -> OffloadTrunkConfig:
         offload_params=_parse_set(_env("OFFLOAD_PARAMS", "")),
         safety_margin_gb=_parse_float(_env("SAFETY_MARGIN_GB", "2.0")),
         cpu_memory_threshold=_parse_float(_env("CPU_MEMORY_THRESHOLD", "0.6")),
+        dedicated_nz_slots=(
+            _parse_bool(v) if (v := _env("DEDICATED_NZ_SLOTS")) is not None else None
+        ),
         strict_memory_check=_parse_bool(_env("STRICT_MEMORY_CHECK", "true")),
         enable_monitor=_parse_bool(_env("ENABLE_MONITOR", "true")),
         monitor_log_interval=_parse_int(_env("MONITOR_LOG_INTERVAL", "100")),

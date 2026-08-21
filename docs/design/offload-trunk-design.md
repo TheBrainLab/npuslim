@@ -891,6 +891,8 @@ GPU KV cache size: 1,210,368 tokens
 
 ### 13.8 待办
 
+> **2026-08-21 更新**：本节后 1/3 项已被第 14 节的图模式排查取代——capture 失败真因已定位（14.3），"专属 slot capture-safe"假设不成立（混合方案可行但净节省归零，14.6），图模式的完整方案见 14.7 决策矩阵。
+
 1. `start_ep.sh` 恢复 `cudagraph_mode=FULL_DECODE_ONLY`，验证专属 slot NZ 设计的 capture + replay（理论已 capture-safe，实测确认）
 2. 恢复 cudagraph 后复测性能，与基线对比
 3. 若 capture 仍失败：对比 vllm aclgraph 与独立 `torch.npu.NPUGraph` 的 capture 上下文差异（stream/event/allocator）定位 Identity aclop 拒绝点
@@ -906,3 +908,211 @@ GPU KV cache size: 1,210,368 tokens
 | `vllm-learning/deploy_v2/models_config.sh` | K2.6 `GPU_MEM_UTIL=0.50` |
 | `vllm-learning/deploy_v2/kimi2.6w4a8/EP/start_ep.sh` | offload 启用 + `safety_margin_gb=14` + 临时 `cudagraph_mode=NONE` + 移除 `DYNAMIC_EPLB=1` |
 | `temp/probe_nz_*.py`（format/d2h/onload/crosscopy/final 等）、`temp/test_nz_*.py`（capture/rawbytes/roundtrip/probe 等） | NZ 语义硬件探测脚本（13.3 各结论的来源，关键：`probe_nz_crosscopy.py` 跨格式 copy 正确性、`test_nz_capture.py` 独立 NPUGraph 可捕获性） |
+
+---
+
+## 14. 图模式（cudagraph）× FRACTAL_NZ：`VLLM_ASCEND_ENABLE_NZ` 开关与 offload 形态（2026-08-21，Qwen3.6-27B-w8a8 三轮诊断）
+
+### 14.1 背景
+
+第 13 节用 `cudagraph_mode=NONE` 完成了 K2.6 的功能验证，遗留"图模式下 offload 能否工作"。本节回答该问题，并澄清一个关键疑问：**同样是量化模型，W8A8（qwen3.6 w8a8）之前"图模式没问题"，为什么 K2.6 W4A8 有问题？**
+
+答案：之前的 W8A8 测试**没有启用 offload**。NZ 权重的 ND→NZ 转换只发生在 load 阶段（eager、capture 之前）一次；**无 offload 时 NZ 权重在图内是只读的**（图里只有消费 NZ 权重的 GEMM AIV op，本就为捕获设计），capture 天然无碍。问题只在 **NZ 权重 + offload（反复重载）+ 图模式** 三者同时出现时：重载路径需要 ND→NZ 转换，而该转换在 vllm 的图捕获上下文里不可捕获（14.3）。
+
+### 14.2 `VLLM_ASCEND_ENABLE_NZ` 的语义（源码核实）
+
+`_should_trans_nz`（vllm_ascend/utils.py:261）+ `weight_nz_mode`（ascend_config.py:249，env 默认 1，envs.py:92）：
+
+| 权重 dtype | nz_mode=1（默认） | nz_mode=0 | nz_mode=2 |
+|---|---|---|---|
+| FP32 | 永不转 | 永不转 | 永不转 |
+| BF16/FP16 | **不转** | 不转 | 转 |
+| **量化 dtype（int8/int32，W8A8/W4A8）** | **默认转 NZ** | **不转** | 转 |
+| 310P 机型 | 恒转 | — | — |
+
+推论（全部实测验证）：
+
+- **bf16 模型**（Qwen3.8-27B）：默认配置下权重全程 ND → offload = 原生"逐字节 DDR + 图内 `copy_`" → 与图模式天然兼容（0955 轮 FULL_DECODE_ONLY + offload 捕获成功 44s）。
+- **量化模型**（W8A8/W4A8）：默认配置下 int8/int32 权重转 NZ → offload 重载引入不可捕获的转换 → 图模式撞墙（14.3）。
+- **`VLLM_ASCEND_ENABLE_NZ=0`**：量化权重保持 ND，offload 退化为 bf16 模型的原生字节拷贝形态 → 图模式可用，且**全部 offload 体积都是真实节省**（R3 实测，14.6）。
+
+注意：`VLLM_ASCEND_ENABLE_NZ=0` 使 W4A8 的 MoE GEMM 从 fused `grouped_matmul_swiglu_quant_v2`（WeightNz AIV op）落到 `quant_apply_mlp` 的 ND 回退分支（`npu_grouped_matmul`(scale+bias) + `npu_swiglu` + gmm2，moe_mlp.py）——功能正确（W8A8 已实测），性能损失待 benchmark（14.9）。
+
+### 14.3 图模式 capture 失败的定位（69 节点空闲 NPU 隔离探针）
+
+探针 `temp/probe_nz_vllmreplica.py` **逐行复刻 vllm 的真实捕获流程**（acl_graph.py + prefetch.py：默认流捕获（`torch.npu.graph(g, pool=...)` 不传 `stream=`）+ 共享 `graph_pool_handle` + 跨层 fork/wait/join 事件协议），逐一对照：
+
+| 变体 | 结果 |
+|---|---|
+| c1: ND slot + 直接 `copy_`（原生 ND offload 路径） | **PASS**（Qwen3.8 同构） |
+| c2: NZ slot + i8 直接跨格式 `copy_`（当前 `_nz_onload`） | **FAIL 107025**（PTA call acl api failed） |
+| c3: NZ slot + 3-step（H2D + `npu_format_cast` + D2D copy） | **FAIL 107025** |
+
+结论与修正（对 13.4 坑 5 的更新）：
+
+1. **vllm 真实捕获上下文里，ND→NZ 转换（`npu_format_cast` / 跨格式 `copy_`）不可捕获**——K2.6 round 16 的 "Identity aclop" 真凶就是跨格式 copy 本身（`view()` 已被探针洗清）。
+2. 同一序列在**独立 capture stream** 上可捕获（probe_nz_graphmode.py T1-T3）→ 行为与捕获流/pool 配置相关；PTA（aclgraph 引擎）内部规则是黑盒，只能经验规避。
+3. 错误信息中的官方提示 `torch.npu.config.allow_internal_format=False` **不是解药**（probe_nz_flagfalse.py f1/f2）：capture 窗口置 False 救不了跨格式 copy_（仍 107025）；且该 flag 下 `npu_format_cast(zeros, NZ)` 直接产出 **ND 张量**（真 NZ 造不出来），slot 构造期必须保持 True。
+
+**机制（为什么跨格式不可捕获，ND→ND 可以）**：纯 ND→ND H2D 是**内存搬运**，torch NPU 后端能翻译成 PTA 图原生支持的 DMA 拷贝节点（静态可表示）。ND→NZ 则要做 32×32 tile 布局变换，派发为无数学内容的"内部格式 acl op"（名为 **Identity**）——PTA 图构建器在 vllm 捕获上下文（默认流 + 共享 graph pool + fork/join 协议）下对这类 op **没有可录制的节点类型**：录制 → 无节点类型（107025）；当场执行 → capture 模式禁止现场执行 acl op（"Cannot run aclop..."）。两条路皆死。独立流可捕获证明非硬件不可能，而是 vllm 捕获配置的派发差异（根因在黑盒内）。绕开 torch 的 raw `aclrtMemcpy` 更危险：被 PTA **静默丢弃**、replay 不执行（14.4）——图内搬运必须走 torch 派发。
+
+### 14.4 路径 B（物理 NZ 字节存 DDR + 无转换 raw DMA）——已证伪
+
+用户直觉方案："load 已完成 NZ 转换，把 NZ 物理字节原样存 DDR，forward 时无转换写回"。数据层正确（同 5-D 几何，字节落回原位），但实现层被两堵墙挡住（probe_nz_flagfalse.py P1、probe_nz_rawmemcpy.py、probe_nz_rawreplay.py）：
+
+| 步骤 | 结果 |
+|---|---|
+| P1: `nz.cpu()` | 驱动**解码为逻辑值**返回——torch API 拿不到物理字节 |
+| r1/r2: ctypes `aclrtMemcpy`（`libascendcl.so`）raw D2H/H2D | eager 数据正确（写回真 NZ slot 后 `format_cast` decode == 原值） |
+| rawreplay: 图内 raw H2D（vllm 复刻上下文） | **被 PTA 引擎静默丢弃**：capture 不报错，但 replay 时不执行（capture 时也未执行）——replay 后 slot 既非旧值也非新值。对照：torch `copy_` 是正常图节点（c1 PASS） |
+
+结论：**不要**在图内用 ctypes/aclrt raw stream memcpy 搬数据（会被 PTA 丢弃且不报错，极难排查）；图内数据搬运只能走 torch 派发路径产生的图节点。
+
+### 14.5 no-op 分支的两个 bug（R1 失败 EH0012）与修复
+
+R1（NZ=1 + 第 13 节代码 + FULL_DECODE_ONLY）capture 0/5 失败，新错误签名（非 107025）：
+
+```
+Invalid_Argument(EH0012): aclrtAllocatorGetByStream failed.
+  Reason: The stream is not registered with any allocator.
+rtStreamWaitEvent execution failed, reason=in the model capture scenario,
+  the event wait task has no corresponding event record task
+```
+
+两个 bug（`_patch_module_onload` 的 capture no-op 分支）：
+
+1. **缺 fork**：no-op 分支只在 capture 期间对 `copy_stream` 做 `_copy_done_event.record(...)`，但没有先把 `copy_stream` fork 进捕获图（capture 流 `record_event` + `copy_stream.wait_event(fork)`）。结果 done-event 的 record 不是图节点 → PTA 收尾时 wait 无对应 record、side stream 无 allocator 注册 → EH0012。原生 full 路径有 fork，抄协议时漏了。
+2. **ND 参数陈旧（正确性 bug，更隐蔽）**：混合模块（如 Qwen3.6 每层 = `linear_attn` bf16 ND + `mlp` int8 NZ）走 no-op 分支时，ND 参数的旋转 slot 不在图内回填 → replay 后所有层读 warmup 末层的陈旧权重，输出必错（即使 capture 不报错也是坏服务）。
+
+**修复**（npu_prefetch_offloader.py）：no-op 分支 = fork（record + `copy_stream.wait_event`）+ **ND 参数图内 `copy_` 回填**（c1 已证可捕获，replay 正确）+ 仅 NZ 参数零搬运。
+
+**残留风险**：纯 NZ 模块（如 K2.6 全部 offload 层）走 no-op 分支时 `copy_stream` 上无任何张量 op，EH0012 风险仍在（K2.6 当前 `cudagraph_mode=NONE` 不触发；K2.6 若要图模式应走 14.7 的路径 A）。
+
+### 14.6 三轮诊断（Qwen3.6-27B-w8a8，69 节点 TP2，util 0.50 + margin 14，offload 41/64 层 9.6GB，FULL_DECODE_ONLY）
+
+前提确认：W8A8 int8 权重（`mlp.gate_up_proj`/`down_proj`、`self_attn.qkv_proj`/`o_proj`）默认全部转 FRACTAL_NZ（preD2H 日志 `fmt=FRACTAL_NZ nz=True`）——**与 W4A8 同病**；之前 w8a8"没问题"只因没开 offload（14.1）。
+
+| | R1（NZ=1 旧代码） | R2（NZ=1 no-op 修复后） | R3（NZ=0，路径 A） | R4（NZ=0 + util 0.62） |
+|---|---|---|---|---|
+| util / margin | 0.50 / 14 | 0.50 / 14 | 0.50 / 14 | **0.62** / 14 |
+| FRACTAL_NZ | 确认（4 个 key） | 同 | **0 行**（全 ND） | 0 行 |
+| offload 量 | 41/64 层 9.6GB | 同 | 同 | **6/64 层 1.2GB**（planner 自平衡，见 14.8.1） |
+| capture | ❌ 0/5，EH0012（14.5） | ✅ 4s | ✅ 3s | ✅ 3s |
+| 正确性 | — | ✅ 17×23=391、杭州 150 字连贯（`enable_thinking:false` 下 `finish:stop`） | ✅ 同 | ✅ 同 |
+| 静态 pool | — | 日志 0.30GB（**父类 `total_bytes` 旧值**）/ 实测 **~7.5GB 专属常驻** | 0.30GB（真值，共享旋转） | 0.21GB |
+| HBM 实测/卡 | — | 42GB | **34.8GB（少 7.3GB）** | 42.5GB（反升） |
+| **净节省** | — | **~2GB**（仅 ND 部分；NZ 部分 offload 后被专属 slot 占回） | **~9.3GB（全部真实）** | ~1.2GB |
+| KV cache | — | 18.96GiB / 525,697 tokens | 18.96GiB（相同，见 14.8.1） | 18.65GiB（未涨） |
+
+内存账目（R2）：42GB ≈ 常驻权重 7.4 + KV 20.4 + 专属 NZ pool 7.5 + 激活/MTP/HCCL 等 ~7。R3 少掉的 7.3GB 与专属 pool 体量吻合——**混合方案下 offload 的 NZ 部分净节省归零**，只有 ND 部分（`linear_attn` bf16 等）真实省出。
+
+### 14.7 图模式 offload 配置决策矩阵
+
+| 形态 | capture | 净节省 | 性能 | 适用 |
+|---|---|---|---|---|
+| **A: `VLLM_ASCEND_ENABLE_NZ=0`（全 ND + 原生 offload）** | ✅（R3 实测） | **全部 offload 体积**（R3：9.3/9.6GB） | 量化 GEMM 走 ND 回退分支，损失待测 | **图模式 + offload 的正确形态**（W8A8 已验证；W4A8 待部署验证 14.9.2） |
+| B: NZ=1 + 混合方案（14.5 修复后） | ✅（R2 实测） | 仅 ND 部分；**全 NZ 模块（K2.6）≈ 0** | 保留 NZ fused GEMM 快路径 | 需要 NZ 快路径性能、且模型 ND 占比可观、能接受大部分 offload 落空 |
+| C: NZ=1 + `cudagraph_mode=NONE` | —（无图） | 全部（每步 eager 重载） | 最低（每步 H2D+转换无 overlap，K2.6 实测 ~0.5 tok/s） | 纯功能验证 / 不需要图的场景（K2.6 当前状态） |
+
+### 14.8 当前约束与已知风险
+
+1. **offload pool 不在 vllm 的 KV 账内 + planner 公式自平衡**：vllm 的 KV 上限 ≈ `total × util − (它追踪的常驻权重 + 激活峰值 + 固定开销)`，插件在记账之外分配的 pool 不可见（R2/R3 KV 同为 18.96GiB 的直接原因）。同时 npuslim planner 的公式（memory_budget.py）：
+   ```
+   available_for_weights = requested(=total×util) − kv_estimate − safety_margin
+   required_offload      = total_weight − available_for_weights
+   ```
+   **抬 `GPU_MEM_UTIL` 不能增加 KV**（R4 实测证伪）：util 0.50→0.62 → required_offload 8.55→1.20GB（41→6 层）→ 常驻权重回升 → KV 上限不变（18.96→18.65GiB），HBM 实测反升（34.8→42.5GB）。
+   - (a) R3 真实多省出的 ~7.2GB **不会自动变成 KV**——正确的杠杆是**抬 `safety_margin_gb`**（util 不变）：margin↑ → available_for_weights↓ → required_offload↑ → 常驻权重↓ → KV 上限↑（R5：util 0.50 + margin 21，预期 offload ~15GB / ~60 层 → KV ~26GB）；
+   - (b) 形态 B（专属 pool ~7.5GB）下若 util 开高，vllm 会按"没有 pool"分 KV → **OOM 风险**。K2.6 B1/B2 两轮 OOM 的根因**不是** KV 而是插件专属 NZ slot 占回全部 offload 体积（14.10，已修复；曾误判为"KV 张量实际分配 ≈ 定尺 × 1.17"，B4 证伪：KV 张量精确按定尺分配）。**修复后的真实 KV 约束（B4 轮）**：free-memory 定尺 49.04 GiB 分配成功，但**首个 forward 的 PTA/EP 运行时工作集**（kernel workspace、EP alltoall 缓冲等，不在 profile 峰值内）吃掉剩余 ~6.4 GiB headroom → `ERR00100` OOM 引擎死。**结论：offload 后必须用 `--kv-cache-memory` 显式封顶，且在 权重+KV+profile 激活+non-torch 之外预留 ≥~7 GiB 运行时 headroom**（B3/B5：42 GiB 封顶，headroom ~13 GiB，服务验证正确）；
+   - (c) 更干净的做法是 planner 直接接受"目标 KV 大小"输入（见 14.9.4），margin 是当前的间接杠杆。
+   - (d) **margin 存在硬上限（planner 下限）**：模型有不可 offload 的最小常驻权重（Qwen3.6 实测 3.61GB：embedding/lm_head/MTP 等）+ pool，构成 `available_for_weights` 的下限（实测 ~3.82GB）。margin 抬到超出下限（R5：margin 21 → available 1.62GB < 3.82GB）时，planner 的 `validate_plan` 直接报 "Memory insufficient" **硬失败**（deficit 2.2GB），而不是把 required_offload 截断到可 offload 上限（16.96−3.82≈13.1GB）best-effort 降级——应改为 clamp + warning（见 14.9.4）。
+2. **planner 的 buffer 估算失真**：plan 报 `buffer=0.21GB`（共享 slot 公式），形态 B 实际 ~7.5GB——预算决策应以 HBM 实测为准，planner 需按"NZ 专属 + ND 共享"修正（未改）。
+3. **纯 NZ 模块的 no-op 分支有 EH0012 风险**（14.5 残留）：`copy_stream` 上无张量 op 时 side stream 可能不被 PTA 注册。形态 A 下无 NZ 参数，不触发。
+4. **NZ=0 的 W4A8 ND 路径未实测**：`quant_apply_mlp` 的 ND 回退分支（`npu_grouped_matmul` scale+bias + `npu_swiglu` + gmm2）对 W8A8 已验证正确（R3），对 W4A8（int32 packed、per-channel scale_bias、`is_per_channel_weight`）未部署验证；gmm2 对 W4A8 ND 权重的接受性尤其待测。
+5. **图内数据搬运必须走 torch 派发路径**：raw `aclrtMemcpy` 会被 PTA 静默丢弃（14.4.3）；跨格式转换 op 在 vllm 捕获上下文不可捕获（14.3）——两条边界内只有"ND → ND `copy_`"是图内合法的数据搬运。
+   **推论（K2.6 w4a8 图模式 offload 不可行的完整链条）**：NZ 格式权重的每步 slot 回填（跨格式 `copy_`/3 步转换）不可捕获 → 图模式 + NZ = 不能真预取；于是图模式 + 全 NZ 模型只剩形态 B（专属 slot、图内零搬运），而专属 slot 把 offload 体积原样占回 HBM → 净节省 ≈ 0 或为负（B1/B2 OOM，14.10）；同时能产生净节省的形态 A（NZ=0 真 offload+真预取）被 W4A8 dispatch gap 阻断（14.8.4）。两条路皆死 → **图模式下 K2.6 不能 offload，要 offload 必须关图（形态 C，14.7）**。W8A8（Qwen3.6）无 dispatch gap，形态 A 两全（图 + 真 offload 已验证，15.2）。
+
+### 14.9 遗留问题（按优先级）
+
+1. ✅ **margin 杠杆已验证（R5b 完成）**：NZ=0 + util 0.50 + margin 18.5 → **offload 63/64 层 14.72GB（到地板附近）→ KV 23.72GiB / 658,178 tokens / 2.51x**（R3 margin 14：41 层 9.6GB / KV 18.96GiB / 2.01x；R4 util 0.62：证伪抬 util；R5 margin 21：触发 planner 下限硬失败，最小常驻权重 3.61GB）。63 层极限 offload 正确性抽检通过（17×23=391）。
+2. ✅ **K2.6 显存压缩实验完成（15.1/15.3）**：基线 18.8 GiB/卡 → 最终配置（margin 52, 58/61 层, 形态 C + 42GiB KV 封顶）**2.16 GiB/卡，节省 16.64 GiB ≈ 88.5% ≈ 8.7 倍**（vllm 口径），quick_check 通过；期间发现并修复专属 NZ slot 无条件创建 bug（14.10），确认运行时 headroom 约束（14.8.1b）。最终配置服务已恢复并验证（quick_check ✓，集群留在 offload 状态）。
+3. **插件估算偏差**（15.4 第 4 条，不影响对外数据）：`total_weight_per_card` 比 vllm 实测偏低 7–15%、`Total NPU memory saved` 多计；后续触碰插件时修正。
+4. **ND vs NZ GEMM 性能 benchmark**：形态 A vs B（同模型同配置）量化性能差，作为生产选型依据。
+5. **planner 修正**：(a) buffer 估算按"NZ 专属 slot（形态 B）/ 共享 slot（形态 A）"分别计算，形态 B 预算计入专属 pool；(b) required_offload 超可 offload 上限时 clamp + warning（而非硬失败，14.8.1d）；(c) 接口改为直接接受 `target_kv_gb`，margin 回归纯安全余量（14.8.1c）。
+6. **纯 NZ 模块 no-op 分支加固**（仅当形态 B 要用于 K2.6 类全量化 MoE 时）：no-op 分支在 `copy_stream` 上放一个可捕获的最小 ND op 以注册 side stream，或改走形态 A。
+7. **诊断配置恢复**：`qwen3.6_27b/TP/deploy_tp.sh`（`NPUSLIM_PLUGIN_ENABLE` / trunk / `VLLM_ASCEND_ENABLE_NZ=0` / margin 14）与 `models_config.sh`（util）为三轮诊断临时值。
+8. **npuslim 提交**：第 13 节 5 文件改动 + 14.5 no-op 分支修复 + 14.10 专属 slot 修复 + 第 14/15 节文档（commit message 需补充 14.5/14.10/15 内容）。
+
+### 14.10 专属 NZ slot 无条件创建 bug（2026-08-21 发现并修复）
+
+**现象**：K2.6 形态 C（`cudagraph_mode=NONE` + trunk on）两轮 OOM（B1 margin 48 / B2 margin 52 + `--kv-cache-memory` 42GiB 封顶）。B2 账目：OOM 时 torch 已占 56.86 GiB = KV 42 + 常驻层 0.69 + **专属 NZ slot ≈ 18.25（= 插件 "Total NPU memory saved" 的全额）** + 插件未跟踪部分 ~2.8 + pool 0.31 + 激活 0.73——offload 的权重被 slot 原样占回，净节省为**负**，比不 offload 更差。
+
+**根因**：`_NZStaticBufferPool`（npu_prefetch_offloader.py）按 `nz_slot_count = len(module_offloaders)` 为**每个 offload 模块**建独立真 NZ slot——该设计是形态 B（图捕获）专用的（捕获图内零数据搬运，14.3/14.5），但 `post_init` **不看 cudagraph_mode 无条件执行**。`cudagraph_mode=NONE` 时 eager 路径每步本来就要 H2D 重载（8/20 已验证 0.5 tok/s 即此行为），slot 纯属开销。这也解释了 14.7 矩阵"形态 B 对全 NZ 模型（K2.6）净节省 ≈ 0"——旧代码下**任何** cudagraph 模式的 K2.6 offload 净节省都 ≈ 0（或为负），形态 C 根本不存在。
+
+**修复**（3 文件）：
+- `config.py`：新增 `dedicated_nz_slots: Optional[bool]`（None=自动；additional-config `dedicated_nz_slots` 或 env `NPUSLIM_OFFLOAD_TRUNK_DEDICATED_NZ_SLOTS` 可强制覆盖）。
+- `patch.py`：自动判定 = `cudagraph_mode` 字符串不含 `NONE`（跨版本稳健），日志打印决策。
+- `npu_prefetch_offloader.py`：`EnhancedNPUPrefetchOffloader(dedicated_slots=...)`；`post_init` 按标志设 `nz_slot_count = len(module_offloaders) or 1`；关闭时 NZ key 走**单 slot 环形池**（eager 每步 int8 级跨格式 `copy_` 重载，8/20 已验证数据正确）；capture no-op 分支加 `and self.dedicated_slots` 守卫（强制 false + 开图时会 loud fail，绝不静默用脏数据）。
+
+**影响面**：仅改变 `cudagraph_mode=NONE` 的 NZ 模型行为（形态 C 由此才真正存在）；形态 B（有图）行为不变。形态 C 性能 = 每步 H2D 重载（8/20 实测 ~0.5 tok/s @ 7 层；58 层会更慢，量级预期个位数 tok/s 以下——压缩与性能不可兼得，生产选型见 14.7）。
+
+---
+
+## 15. 权重压缩实验（HBM 压缩比）— 2026-08-21 完成
+
+**目标**：在不改变模型规模与并行切分的前提下，offload trunk 能将**权重 HBM 占用**压缩多少（相对不 offload 的基线）。本章数据一律取 vllm 自身测量（日志 `worker.py:771` 行 `Actual usage: X GiB for weights`，每卡实际分配快照，基线/offload 两轮同一测量代码），npu-smi 只做旁证（reserved 口径含分配器持有块）。
+
+### 15.1 最终压缩结果
+
+| 模型 | 并行切分 | 采用形态 | 权重 HBM/卡：不 offload → offload 后 | 节省 | **压缩率** | offload 层数 | 正确性验证 |
+|---|---|---|---|---|---|---|---|
+| Qwen3.6-27B-w8a8 | TP2（node 69） | A：NZ=0 + 图 | 18.28 → **4.57 GiB** | 13.71 GiB | **75.0% ≈ 4.0 倍** | 63/64 | quick_check ✓ |
+| Kimi K2.6 w4a8 | EP/DP4×TP8（node 70–73） | C：NZ=1 + 无图 | 18.8 → **2.16 GiB** | 16.64 GiB | **88.5% ≈ 8.7 倍** | 58/61 | quick_check ✓ |
+
+- Qwen3.6：原来每卡占 18.28 GiB 权重，现在只需要 4.57 GiB（4 倍）；K2.6：原来 18.8 GiB，现在只需要 2.16 GiB（8.7 倍）。
+- **两模型都到各自切分的压缩上限**：剩余常驻 = 不可 offload 地板（embedding/lm_head/MTP 等），margin 再加触发 planner 下限硬失败（14.8.1d）。
+- K2.6 倍数更高：MoE 专家占比大、非层地板小；且同 util（0.90）下权重让出的 HBM 转为 KV（32.73 → 42 GiB，**+28% 并发容量**）。
+- 压缩深度由 `safety_margin_gb` 控制（Qwen3.6：margin 14 → 41 层/9.6GB，18.5 → 63 层/13.7GB；K2.6：48 → 43 层，52 → 58 层到顶），抬 util 无效（R4 已证伪，14.8.1）。
+
+### 15.2 当前实现情况（形态 × 模型）
+
+| 形态 | 定义 | Qwen3.6（W8A8） | K2.6（W4A8） |
+|---|---|---|---|
+| **A**：NZ=0 + 图 + 真预取 | 图内 ND `copy_` 可捕获 → 图与压缩兼得，唯一两全形态 | ✅ **已验证采用**（75.0%/4.0 倍） | ❌ 被 vllm-ascend W4A8 dispatch gap 阻断（14.8.4）：上游 patch 解锁后仍需验证 W4A8 ND GEMM 路径 + benchmark |
+| **B**：NZ=1 + 图 + 专属 slot | 图内零数据搬运，offload 体积被 slot 占回 | ⚠️ 仅 ND 部分有净节省 | ❌ 全 NZ → 净节省 ≈ 0（不采用） |
+| **C**：NZ=1 + 无图 + 环形 slot | 每步 eager 跨格式重载，全量真实节省 | （不采用，A 更优） | ✅ **已验证采用**（88.5%/8.7 倍，当前 70–73 集群运行态） |
+
+要点：
+- 形态 C 的两个前提（均已落实）：插件 14.10 修复（`cudagraph_mode: NONE` 时不建专属 slot，`dedicated_nz_slots` 自动判定）；`--kv-cache-memory` 显式封顶并留 ≥ ~7 GiB 运行时 headroom（14.8.1b）。
+- 代价与收益：形态 C 的 decode 无图 + 每步 H2D 重载（K2.6 实测 0.9 tok/s，基线 ~22 tok/s）；换来 16.64 GiB/卡权重 HBM + KV +28%。
+- 生产选型：W8A8 类 → 形态 A（两全）；W4A8 全 NZ 类 → 容量优先用形态 C，性能优先等上游修 dispatch gap（14.8.4）后升形态 A。
+
+### 15.3 复现配置（各模型最终配置）
+
+环境：容器 `vllm-ascend-zzw-v0.23.0`（vllm-ascend v0.23.0，CANN 9.1.0，910B 64GB）；npuslim 共享盘 editable 安装（`/home/zzw/llm_infer_workspace/zzw/code/vllm-workspace/npuslim`），`NPUSLIM_PLUGIN_ENABLE=1` 时自动加载。部署脚本会被后续实验改写，复现以本节为准；全部轮次日志（含失败轮）归档于 `qwen3.6_27b/TP/log/` 与 `kimi2.6w4a8/EP/log/archive/`。
+
+**Qwen3.6-27B-w8a8**（node 69，TP2）
+公共：`--quantization ascend --max-model-len 262144 --max-num-seqs 8 --max-num-batched-tokens 8096 --enable-chunked-prefill --enable-prefix-caching --async-scheduling --speculative-config '{"method":"mtp","num_speculative_tokens":3,"enforce_eager":true}' --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'`
+
+| 参数 | 基线（不 offload） | offload 63/64（采用） |
+|---|---|---|
+| `--gpu-memory-utilization` | 0.90 | 0.50 |
+| `VLLM_ASCEND_ENABLE_NZ` | 未设（=1） | **0** |
+| additional-config | `{"enable_cpu_binding": true}` | + `"npuslim_offload_trunk": {"enabled": true, "safety_margin_gb": 18.5}` |
+
+**Kimi K2.6 w4a8**（node 70–73，EP/DP4×TP8）
+公共：`--max-model-len 256000 --max-num-seqs 32 --max-num-batched-tokens 8192 --data-parallel-size 4 --data-parallel-size-local 1 --data-parallel-rpc-port 13389 --tensor-parallel-size 8 --enable-expert-parallel --quantization ascend --block-size 128 --prefill-context-parallel-size 1 --decode-context-parallel-size 8 --cp-kv-cache-interleave-size 128 --enable-chunked-prefill --enable-prefix-caching --async-scheduling --enable-auto-tool-choice --tool-call-parser kimi_k2 --reasoning-parser kimi_k2 --mm-encoder-tp-mode data --seed 1024 --gpu-memory-utilization 0.90`
+公共环境变量：`VLLM_ASCEND_ENABLE_MLAPO=1 HCCL_OP_EXPANSION_MODE=AIV HCCL_BUFFSIZE=800 ASCEND_BUFFER_POOL=4:8 PYTORCH_NPU_ALLOC_CONF=expandable_segments:True TASK_QUEUE_ENABLE=1 ASCEND_AGGREGATE_ENABLE=1 ACL_OP_INIT_MODE=1 DYNAMIC_EPLB=1 OMP_NUM_THREADS=1`（`VLLM_ASCEND_ENABLE_NZ` 不设 = 1，W4A8 不能设 0，见 14.8.4）
+
+| 参数 | 基线（不 offload） | offload 58/61（采用） |
+|---|---|---|
+| `cudagraph_mode` | FULL_DECODE_ONLY | **NONE** |
+| additional-config | `{"enable_cpu_binding": true}` | + `"npuslim_offload_trunk": {"enabled": true, "safety_margin_gb": 52}` |
+| `--kv-cache-memory` | 无 | **45097156608**（42 GiB 封顶，必须，14.8.1b） |
+
+### 15.4 实验发现（结论已沉淀至 §14）
+
+1. W4A8 + NZ=0 被 vllm-ascend dispatch gap 阻断（`moe_mlp.py:272` 不看权重格式恒选 NZ kernel），W8A8 无此问题 → 两模型形态选择差异的根源（14.8.4）。
+2. 专属 NZ slot 只能在图捕获场景创建，无条件创建会让 offload 净节省为 0/负（14.10，已修复：`dedicated_nz_slots` 按 cudagraph_mode 自动判定）。
+3. offload 后 KV 必须用 `--kv-cache-memory` 显式封顶，并为 PTA/EP 运行时工作集留 ≥ ~7 GiB headroom（14.8.1b；无封顶轮 KV 张量分配成功但首个 forward OOM）。
+4. 对外数据一律用 vllm `for weights` 行：插件估算（`total_weight_per_card` 偏低 7–15%、`Total NPU memory saved` 多计）只用于 plan 决策；npu-smi 是 reserved 口径（含分配器持有块），只做旁证。

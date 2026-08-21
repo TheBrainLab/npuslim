@@ -138,6 +138,7 @@ class EnhancedNPUPrefetchOffloader(NPUPrefetchOffloader):
         offload_params: Optional[Set[str]] = None,
         mode: str = "cpu",
         monitor: Optional[OffloadMonitor] = None,
+        dedicated_slots: bool = True,
     ):
         # Pass dummy group_size/num_in_group to parent — we override
         # wrap_modules so they are never used.
@@ -151,6 +152,13 @@ class EnhancedNPUPrefetchOffloader(NPUPrefetchOffloader):
 
         self.plan = plan
         self.monitor = monitor
+
+        # One dedicated NZ slot per offloaded module (graph-capture path:
+        # replay needs no NZ refill). When False (cudagraph_mode=NONE, the
+        # eager path refills every step) NZ keys fall back to the single
+        # circular slot — otherwise every offloaded NZ weight is duplicated
+        # in HBM and net savings go to zero (K2.6 OOM, 2026-08-21).
+        self.dedicated_slots = dedicated_slots
 
         # Param names whose NPU-side tensors carry the FRACTAL_NZ internal
         # format (W4A8 w13/w2 after maybe_trans_nz). Populated by the
@@ -189,8 +197,16 @@ class EnhancedNPUPrefetchOffloader(NPUPrefetchOffloader):
             "_NZStaticBufferPoolForParams", (_NZStaticBufferPool,), {}
         )
         pool_cls.nz_names = frozenset(self.nz_param_keys)
-        # Dedicated slot per offloaded module (see _NZStaticBufferPool).
-        pool_cls.nz_slot_count = len(self.module_offloaders)
+        # Dedicated slot per offloaded module (see _NZStaticBufferPool) only
+        # when the captured graph needs them; otherwise keep the single
+        # circular slot (eager refill every step).
+        pool_cls.nz_slot_count = (
+            len(self.module_offloaders) if self.dedicated_slots else 1
+        )
+        patch_logger.info(
+            f"[EnhancedNPUPrefetchOffloader] dedicated NZ slots: "
+            f"{'ON (per-module, for graph capture)' if self.dedicated_slots else 'OFF (single circular slot, cudagraph NONE)'}"
+        )
         orig_pool_cls = va_prefetch.StaticBufferPool
         _NZStaticBufferPool.i8_bases.clear()
         try:
@@ -363,10 +379,39 @@ class EnhancedNPUPrefetchOffloader(NPUPrefetchOffloader):
                 orig()
                 return
             capturing = torch.npu.is_current_stream_capturing()
-            if capturing and mo._nz_slots_loaded:
-                # Dedicated NZ slots already filled: capture the (no-op)
-                # event protocol only, no data movement.
+            # The no-op capture path is only valid with dedicated slots
+            # (each module's slot survives across replays). Without them
+            # (single circular slot) replay would read another layer's
+            # stale data — fall through to the eager refill, which makes
+            # capture fail loudly instead of serving wrong results.
+            if capturing and mo._nz_slots_loaded and self.dedicated_slots:
+                # Dedicated NZ slots already filled in the eager phase:
+                # NZ params need no data movement (the ND->NZ conversion
+                # is not capturable in vllm's capture context). ND params
+                # of mixed modules still need their rotating-slot refill
+                # captured (plain ND copy_ is capturable and keeps the
+                # data correct on replay — without it every layer would
+                # read the warmup-last layer's stale slot).
+                # copy_stream MUST be forked into the capture graph
+                # (wait_event on an event recorded on the capture stream)
+                # before any record on it — otherwise PTA fails capture
+                # end with EH0012 (aclrtAllocatorGetByStream: "stream is
+                # not registered with any allocator") + "event wait task
+                # has no corresponding event record task" (Qwen3.6 w8a8
+                # round 2026-08-21).
                 mo._prefetch_in_capture = True
+                fork_event = torch.npu.Event()
+                torch.npu.current_stream().record_event(fork_event)
+                mo.copy_stream.wait_event(fork_event)
+                with torch.npu.stream(mo.copy_stream):
+                    for name, po in mo._param_offloaders.items():
+                        if name in self.nz_param_keys:
+                            continue
+                        cpu = po._cpu_storage
+                        buf = po._gpu_buffer
+                        if cpu is None or buf is None:
+                            continue
+                        buf.copy_(cpu, non_blocking=True)
                 mo._copy_done_event.record(mo.copy_stream)
                 mo._event_valid_for_eager = False
                 return
