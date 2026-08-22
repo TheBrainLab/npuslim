@@ -18,6 +18,8 @@ remains unchanged.
 
 from __future__ import annotations
 
+import os
+
 from typing import Any
 
 from npuslim.plugins.logging import patch_logger
@@ -426,17 +428,24 @@ def patch_model_runner_offloader(module: Any) -> None:
                     # get_npu_format does not report the internal format.
                     is_nz = False
                     pre_fmt = None
-                    try:
-                        import torch_npu
+                    # Name-based fallback (packed int32 w13/w2 are normally
+                    # FRACTAL_NZ after maybe_trans_nz) only applies when the
+                    # NZ conversion is actually enabled. With
+                    # VLLM_ASCEND_ENABLE_NZ=0 the weights stay ND and must take
+                    # the plain-ND offload path — forcing NZ slots would be
+                    # inconsistent with the ND MoE GEMM dispatch (w4a8_nd_
+                    # dispatch, 2026-08-22).
+                    if os.environ.get("VLLM_ASCEND_ENABLE_NZ", "1") == "0":
+                        pre_fmt = "ND (VLLM_ASCEND_ENABLE_NZ=0)"
+                    else:
+                        try:
+                            import torch_npu
 
-                        pre_fmt = torch_npu.get_npu_format(d)
-                        is_nz = "NZ" in str(pre_fmt)
+                            pre_fmt = torch_npu.get_npu_format(d)
+                            is_nz = "NZ" in str(pre_fmt)
+                        except Exception:
+                            pass
                         if (not is_nz and d.dtype == torch.int32
-                                and pname.endswith(
-                                    ("w13_weight", "w2_weight"))):
-                            is_nz = True
-                    except Exception:
-                        if (d.dtype == torch.int32
                                 and pname.endswith(
                                     ("w13_weight", "w2_weight"))):
                             is_nz = True
