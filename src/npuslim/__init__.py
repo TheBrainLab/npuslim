@@ -20,19 +20,5 @@ except importlib.metadata.PackageNotFoundError:
         __version__ = "0.0.0-dev"
 
 
-def __getattr__(name: str):
-    """Lazily expose heavy runtime objects.
-
-    Importing lightweight subpackages such as ``npuslim.opd`` should not require
-    torch, vLLM, or CANN runtime dependencies.  The core engine is loaded only
-    when callers request it directly.
-    """
-
-    if name == "SlimEngine":
-        from npuslim.core import SlimEngine
-
-        return SlimEngine
-    raise AttributeError(f"module 'npuslim' has no attribute {name!r}")
-
-
-__all__ = ["SlimEngine", "__version__"]
+# Core runtime
+from npuslim.core import SlimEngine
