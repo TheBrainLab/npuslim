@@ -1,0 +1,55 @@
+metadata:
+  name: "Qwen3_Tiny_GPTQ_MoE_W4A8_Dense_W8A8"
+  description: "Mixed quantization verification on a tiny Qwen3-30B-A3B-like model (pure MoE, 4 layers, 8 experts): MoE experts W4A8_DYNAMIC + attention W8A8_DYNAMIC, per-channel, CH=1 per-expert GPTQ with AWQ scale_search."
+
+resources:
+  - id: qwen3_tiny
+    type: Qwen3Model
+    path: /data/yult/llm_inference/npuslim/workspace/tiny_qwen3
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    device_map: cuda         # tiny 0.75B 整卡可容纳（CUDA_VISIBLE_DEVICES=5）
+
+  - id: calib_data
+    type: MixedDomain          # 与全量配方一致的校准配置
+    data_path: dataset/calib/mixed_chat_code.jsonl
+    num_samples: 128           # 与全量配方一致（128 样本）
+    max_seq_length: 2048       # 与全量配方一致（2048 窗口）
+
+recipe:
+  - name: "GPTQ_MoE_W4A8_Dense_W8A8"
+    type: compressor
+    model: "@qwen3_tiny"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 1
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ
+      wbits: 4                # MoE 专家默认 W4A8_DYNAMIC（主目标，decode 带宽收益）
+      act_bits: 8             # 激活 8-bit 动态量化 -> 输出 W4A8_DYNAMIC / W8A8_DYNAMIC
+      groupsize: -1           # per-channel（上游 W4A8_DYNAMIC moe scheme 仅支持 per-channel）
+      save_backend: npu
+      expert_chunk_size: 1    # CH=1：per-expert GPTQ，actorder 生效（与成功 W4A16 CH=1 一致）
+      layer_routing:          # 稠密层覆写为 wbits=8（W8A8_DYNAMIC）；Qwen3-30B-A3B 为纯 MoE
+                              # （无 dense MLP / 无 shared expert），attention q/k/v/o 走 W8A8
+        - patterns:
+            - "*.self_attn.*"            # q_proj/k_proj/v_proj/o_proj
+          wbits: 8                        # 专家默认 wbits=4 不受影响（router gate 已由模型默认 skip）
+      max_calib_samples: 128   # 与全量配方一致
+      blocksize: 256
+      actorder: true
+      scale_search:            # 阶段 3：MoE 专家 AWQ 缩放预处理
+        moe:
+          method: awq
+          nbits: 4
+          grid: 20            # α 网格搜索 20 点
+    ignore_layers: []         # router gate 已由 Qwen3 模型默认 skip
+    execution:
+      mode: streaming
+      chunk_size: 1
+      resume: true            # 断点续跑（default: true）
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_path: "./outputs_npu/qwen3/gptq/tiny_qwen3_w4a8_moe_w8a8"   # 显式 save_path：避免 bootstrap 再拼接配置名后缀

@@ -143,6 +143,14 @@ class BaseHessianModule:
         self.preproc_hessian = bool(preproc_hessian)
         self._dead_mask: Optional[torch.Tensor] = None
         self._hinv_fallback: Optional[str] = None
+        self._x_abs_sum: Optional[torch.Tensor] = None  # [in] running abs sum for scale search
+
+    @property
+    def x_abs_mean(self) -> Optional[torch.Tensor]:
+        """Per-input-channel activation abs-mean used by scale search."""
+        if self._x_abs_sum is None or self.nsamples == 0:
+            return None
+        return self._x_abs_sum / self.nsamples
 
     def add_batch(self, inp: torch.Tensor, out: torch.Tensor) -> None:
         _ = out
@@ -166,6 +174,14 @@ class BaseHessianModule:
             inp = inp.flatten(1)
 
         inp = inp.to(self.dev, dtype=torch.float32)
+        # Accumulate per-channel activation abs-mean for scale search (AWQ/SmoothQuant).
+        # Keep the accumulator on _hdev (like H): expert weights may be offloaded
+        # to CPU after statistics collection while self.dev stays cuda.
+        abs_sum = inp.abs().sum(dim=1).to(self._hdev)  # [in]
+        if self._x_abs_sum is None:
+            self._x_abs_sum = abs_sum
+        else:
+            self._x_abs_sum += abs_sum
         self.H *= self.nsamples / (self.nsamples + batch)
         self.nsamples += batch
         inp = math.sqrt(2 / self.nsamples) * inp
@@ -242,4 +258,5 @@ class BaseHessianModule:
         self.H = None
         self.Losses = None
         self.Trace = None
+        self._x_abs_sum = None
         bh.empty_cache()

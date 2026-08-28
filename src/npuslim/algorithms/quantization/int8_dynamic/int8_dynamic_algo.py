@@ -243,6 +243,7 @@ class INT8DynamicAlgorithm(BaseQuantizationAlgorithm):
         a_quant_method: str = "per-token",
         group_size: int = -1,
         weight_observer: Optional[str] = None,
+        fake_quant: bool = True,
         **kwargs,
     ):
         if "w_bits" in kwargs:
@@ -272,6 +273,7 @@ class INT8DynamicAlgorithm(BaseQuantizationAlgorithm):
             group_size=int(group_size),
             weight_observer=weight_observer,
         )
+        self.fake_quant = bool(fake_quant)
 
         self.weight_scales_dict: Dict[str, torch.Tensor] = {}
         self.observer_layers: Dict[str, torch.Tensor] = {}
@@ -452,8 +454,13 @@ class INT8DynamicAlgorithm(BaseQuantizationAlgorithm):
                     )
 
                     scale_name = self._make_scale_name(rel_name)
-                    layer.tensors[rel_name] = quant_weight.to(dtype=tensor.dtype)
-                    layer.tensors[scale_name] = stored_scale.to(dtype=tensor.dtype)
+                    if self.fake_quant:
+                        layer.tensors[rel_name] = quant_weight.to(dtype=tensor.dtype)
+                        layer.tensors[scale_name] = stored_scale.to(dtype=tensor.dtype)
+                    else:
+                        # Real int8 storage for W8A8_DYNAMIC deployment (symmetric per-channel)
+                        layer.tensors[rel_name] = quant_weight.to(torch.int8)
+                        layer.tensors[scale_name] = stored_scale.to(torch.float32)
                     self.weight_scales_dict[full_name] = stored_scale
                     quantized_tensor_names.add(full_name)
                     quantized_tensor_names.add(f"{layer.name}.{scale_name}")

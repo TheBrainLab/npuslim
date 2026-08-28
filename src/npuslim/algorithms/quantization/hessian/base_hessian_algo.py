@@ -905,6 +905,14 @@ class BaseHessianAlgorithm(BaseQuantizationAlgorithm):
         )
         return self._next_expected_layer_index
 
+    def _apply_scale_search(self, layer, handlers, chunk) -> None:
+        """Hook for scale search preprocessing (AWQ/SmoothQuant).
+
+        Override in subclasses (e.g. GPTQAlgorithm) to apply per-channel scaling
+        before quantization. Default: no-op.
+        """
+        pass
+
     def process_chunk(self, chunk) -> Any:
         if self._runtime_model is None:
             raise RuntimeError(f"[{self._TAG}] on_start must be called before process_chunk")
@@ -963,6 +971,7 @@ class BaseHessianAlgorithm(BaseQuantizationAlgorithm):
                         layer_name=layer.name,
                         chunk_index=chunk.chunk_index,
                     )
+                    self._apply_scale_search(layer, handlers, chunk)
 
                 layer_quantized_names, layer_processed_weights = self._process_layer_handlers(
                     layer,

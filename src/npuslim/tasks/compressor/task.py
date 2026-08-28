@@ -41,8 +41,11 @@ class CompressorTask(BaseTask):
         self.mode = self.execution_config.get("mode", "full")
         self.chunk_size = max(int(self.execution_config.get("chunk_size", 1)), 1)
 
-        # Resume (automatic checkpoint) settings - opt-in.
-        self.resume_enabled = bool(self.execution_config.get("resume", False))
+        # Resume (automatic checkpoint) settings - enabled by default.
+        # resume_explicit distinguishes "user asked for resume" (hard errors on
+        # conflicts) from "default-on" (downgrade to disabled with a warning).
+        self.resume_explicit = "resume" in self.execution_config
+        self.resume_enabled = bool(self.execution_config.get("resume", True))
         self.resume_state_interval = max(
             int(self.execution_config.get("resume_state_interval", 1)), 1
         )
@@ -420,17 +423,30 @@ class CompressorTask(BaseTask):
             self.resume_enabled = False
             return
         if getattr(algo, "_quantize_mtp", False) or getattr(algo, "_save_mtp_debug", False):
-            raise ValueError(
+            if self.resume_explicit:
+                raise ValueError(
+                    "[CompressorTask] execution.resume does not support "
+                    "quantize_mtp/save_mtp_debug; disable MTP options or disable resume"
+                )
+            logger.warning(
                 "[CompressorTask] execution.resume does not support "
-                "quantize_mtp/save_mtp_debug; disable MTP options or disable resume"
+                "quantize_mtp/save_mtp_debug; resume disabled"
             )
+            self.resume_enabled = False
+            return
         if not (
             hasattr(algo, "save_resume_state")
             and hasattr(algo, "load_resume_state")
         ):
-            raise ValueError(
-                f"[CompressorTask] algorithm {type(algo).__name__} does not support resume"
+            if self.resume_explicit:
+                raise ValueError(
+                    f"[CompressorTask] algorithm {type(algo).__name__} does not support resume"
+                )
+            logger.warning(
+                f"[CompressorTask] algorithm {type(algo).__name__} does not support "
+                "resume; resume disabled"
             )
+            self.resume_enabled = False
 
     def _config_fingerprint(
         self,

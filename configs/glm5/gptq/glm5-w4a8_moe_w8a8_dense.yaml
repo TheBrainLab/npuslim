@@ -1,0 +1,74 @@
+metadata:
+  name: "GLM5_GPTQ_MoE_W4A8_Dense_W8A8"
+  description: "Mixed quantization for GLM-5 (GlmMoeDsa): MoE experts W4A8_DYNAMIC + dense linear W8A8_DYNAMIC"
+
+resources:
+  - id: glm5
+    type: GLM5
+    path: /data/yult/llm_inference/models/GLM-5.2-bf16/snapshots/master/
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    device_map: cpu           # cpu：量化主流程在 CPU 侧（Hessian/backfill），fasterquant 逐块上 GPU
+
+  - id: calib_data
+    type: MixedDomain          # 多域混合校准（P1-3）：chat+代码+数学+网页，APEX 实证优于纯 C4
+                              # 数据由 tools/prepare_calib_data.py 生成（474 样本：
+                              # chat 255 + code 43 + math 48 + web 128，行格式自适应 messages/text）
+    data_path: dataset/calib/mixed_chat_code.jsonl
+    num_samples: 128          # 校准样本数（default: 128）；增大可降低 Hessian 退化概率
+    max_seq_length: 1024      # 短于窗口的样本自动跳过（GPTQ 需等长无 padding 批次）
+
+recipe:
+  - name: "GPTQ_MoE_W4A8_Dense_W8A8"
+    type: compressor
+    model: "@glm5"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 4
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ
+      wbits: 4                # MoE 专家默认 W4A8_DYNAMIC（默认位宽）
+      act_bits: 8             # 激活 8-bit 动态量化 -> 输出 W4A8_DYNAMIC / W8A8_DYNAMIC
+      groupsize: -1           # per-channel（上游 W4A8_DYNAMIC moe scheme 仅支持 per-channel；
+                              #   per-group 需要兜底插件 P2-1，阶段 3 再评估）
+      save_backend: npu
+      expert_chunk_size: 1    # CH=1：per-expert GPTQ，actorder 生效（推荐）
+      layer_routing:          # 稠密层覆写为 wbits=8（W8A8_DYNAMIC）
+                              # pattern 同时匹配全路径（model.layers.N.xxx）与层内相对名（xxx）
+        - patterns:
+            - "*.self_attn.*"            # q_a/q_b/kv_a/o_proj + indexer.wq_b（kv_b_proj/wk/weights_proj 已由模型默认 FLOAT）
+            - "*.mlp.shared_experts.*"   # shared expert（checkpoint 实际属性名为复数 shared_experts）
+            - "*.mlp.gate_proj"          # dense MLP（first_k_dense_replace 层）；experts.*.gate_proj 不匹配
+            - "*.mlp.up_proj"
+            - "*.mlp.down_proj"
+          wbits: 8                        # eh_proj 属 MTP 层，同事产物保持 FLOAT，不列入
+      max_calib_samples: 128
+      blocksize: 256
+      actorder: true
+      quantize_mtp: false
+      save_mtp_debug: false
+      scale_search:            # 阶段 3 缩放预处理（P1-1）：MoE 专家 AWQ 三段式
+                              #   ① α 网格搜索（RTN 评估权重 MSE）② 折叠进权重 ③ GPTQ 精修
+                              # tiny 验证：norm_loss down_proj -50%、gate_up -35~60%
+        moe:
+          method: awq
+          nbits: 4
+          grid: 20            # α 网格搜索 20 点
+    ignore_layers: []         # 已由 GLM5 模型默认 skip（router gate / kv_b_proj / indexer）
+    execution:
+      mode: streaming
+      chunk_size: 1           # 流式加载层数分块（default: 1）
+      resume: true            # 断点续跑（default: true）：逐 chunk 自动落盘 checkpoint，
+                              #   异常中断后重跑同配置可从断点恢复（成功完成后自动清理）
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_npu"
+
+
+# cd /data/yult/llm_inference/npuslim && \
+# CUDA_VISIBLE_DEVICES=7 HF_DATASETS_CACHE=/data/yult/llm_inference/npuslim/workspace/hf_datasets_cache \
+# nohup /data/yult/miniconda3/envs/npuslim/bin/python tools/run.py \
+#   -c configs/glm5/gptq/glm5-w4a8_moe_w8a8_dense.yaml \
+#   > ./logs/run_glm5.2_w4a8_0826.log 2>&1 &

@@ -1,0 +1,63 @@
+metadata:
+  name: "Qwen3_GPTQ_MoE_W4A8"
+  description: "Mixed quantization for Qwen3-30B-A3B (pure MoE): MoE experts W4A8_DYNAMIC + attention W8A8_DYNAMIC, per-channel, CH=1 per-expert GPTQ with AWQ scale_search."
+
+resources:
+  - id: qwen
+    type: Qwen3Model
+    path: /data/yult/llm_inference/models/Qwen3-30B-A3B-Instruct-2507 #Qwen/Qwen3-30B-A3B-Instruct-2507
+    device_map: cpu           # cpu：量化主流程在 CPU 侧（Hessian/backfill），fasterquant 逐块上 GPU
+    model_hub: ms
+
+  - id: calib_data
+    type: MixedDomain          # 多域混合校准（chat+code+math+web），APEX 实证优于单域；模型无关，随 qwen3 tokenizer 渲染
+    data_path: dataset/calib/mixed_chat_code.jsonl
+    num_samples: 128          # 校准样本数（default: 128）
+    max_seq_length: 2048      # 短于窗口的样本自动跳过（GPTQ 需等长无 padding 批次）
+
+recipe:
+  - name: "GPTQ_MoE_W4A8_Dense_W8A8"
+    type: compressor
+    model: "@qwen"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 4
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ
+      wbits: 4                # MoE 专家默认 W4A8_DYNAMIC（主目标，decode 带宽收益）
+      act_bits: 8             # 激活 8-bit 动态量化 -> 输出 W4A8_DYNAMIC / W8A8_DYNAMIC
+      groupsize: -1           # per-channel（上游 W4A8_DYNAMIC moe scheme 仅支持 per-channel；
+                              #   per-group 需额外产出 weight_scale_second，当前不支持）
+      save_backend: npu
+      expert_chunk_size: 1    # CH=1：per-expert GPTQ，actorder 生效（与成功 W4A16 CH=1 一致）
+      layer_routing:          # 稠密层覆写为 wbits=8（W8A8_DYNAMIC）；Qwen3-30B-A3B 为纯 MoE
+                              # （无 dense MLP / 无 shared expert），attention q/k/v/o 走 W8A8
+        - patterns:
+            - "*.self_attn.*"            # q_proj/k_proj/v_proj/o_proj
+          wbits: 8                        # 专家默认 wbits=4 不受影响（router gate 已由模型默认 skip）
+      max_calib_samples: 128
+      blocksize: 256
+      actorder: true
+      scale_search:            # 阶段 3 缩放预处理（P1-1）：MoE 专家 AWQ 三段式
+                              #   ① α 网格搜索（RTN 评估权重 MSE）② 折叠进权重 ③ GPTQ 精修
+        moe:
+          method: awq
+          nbits: 4
+          grid: 20            # α 网格搜索 20 点
+    ignore_layers: []         # router gate 已由 Qwen3 模型默认 skip
+    execution:
+      mode: streaming
+      chunk_size: 8           # 流式加载层数分块
+      resume: true            # 断点续跑：逐 chunk 自动落盘 checkpoint，异常中断后重跑同配置可恢复
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_npu"
+
+
+# cd /data/yult/llm_inference/npuslim && \
+# CUDA_VISIBLE_DEVICES=3 HF_DATASETS_CACHE=/data/yult/llm_inference/npuslim/workspace/hf_datasets_cache \
+# nohup /data/yult/miniconda3/envs/npuslim/bin/python tools/run.py \
+#   -c configs/qwen3/gptq/qwen3_30b_a3b_2507-w4a8_npu.yaml \
+#   > ./logs/run_qwen3_30b_w4a8_0826.log 2>&1 &

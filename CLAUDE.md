@@ -1,5 +1,9 @@
 # NPUSlim Framework
 
+## Reference Implementation (modelslim)
+
+实现新功能前**先查 modelslim 官方实现**（`/data/yult/llm_inference/msmodelslim`，MindStudio 官方 LLM 量化工具链）：Ascend 量化格式（int4 打包、scale_bias、group_size、W4A8_DYNAMIC/W8A8_DYNAMIC 等）在 modelslim 中都有**保存端/加载端参考实现**。先查询是否有可参考或启发的地方；若有相似功能，与 modelslim 实现做交叉核验，避免从零推导踩坑。典型案例：W4A8 打包补码编码与 scale_bias 公式（见 `workspace/W4A8_修改总结.md` §10.9c）。
+
 ## Run Commands
 
 ### Quantization

@@ -8,6 +8,7 @@ Design goal:
 
 from __future__ import annotations
 
+import fnmatch
 import math
 import re
 from types import SimpleNamespace
@@ -133,6 +134,7 @@ class BatchedGPTQModule:
         # as BaseHessianModule.add_batch.
         self.H = torch.zeros(self._CH, self.infeatures, self.infeatures, device=self._hdev)
         self.nsamples = torch.zeros(self._CH, device=self._hdev)
+        self._x_abs_sum = torch.zeros(self._CH, self.infeatures, device=self._hdev)  # [CH, in] for scale search
         self.preproc_done = False
         self.last_metrics: Dict[str, float] = {}
         self._hinv_fallback: Optional[str] = None
@@ -152,6 +154,12 @@ class BatchedGPTQModule:
         """Compatibility: return first slice for pack access."""
         return self._slice_linears[0]
 
+    @property
+    def x_abs_mean(self) -> torch.Tensor:
+        """Per-input-channel activation abs-mean [CH, in] for scale search."""
+        ns = self.nsamples.clamp(min=1).to(self._hdev).view(-1, 1)  # [CH, 1]
+        return self._x_abs_sum / ns  # [CH, in]
+
     def add_batch_for_expert(self, inp: torch.Tensor, local_idx: int) -> None:
         """Accumulate Hessian contribution on CPU.
 
@@ -165,6 +173,8 @@ class BatchedGPTQModule:
             inp = inp.reshape(-1, inp.shape[-1])
         inp = inp.t().to(self.dev, dtype=torch.float32)  # [in, batch]
         batch = inp.shape[1]
+        # Accumulate per-channel activation abs-mean for scale search (AWQ)
+        self._x_abs_sum[local_idx] += inp.abs().sum(dim=1).to(self._hdev)
         contrib = inp.matmul(inp.t())  # [in, in] on GPU
         self.H[local_idx] += contrib.to(self._hdev)  # GPU -> CPU transfer
         self.nsamples[local_idx] += batch
@@ -380,6 +390,7 @@ class BatchedGPTQModule:
     def free(self) -> None:
         self.H = None
         self._w_batch = None
+        self._x_abs_sum = None
 
 
 class GPTQModule(BaseHessianModule):
@@ -528,13 +539,17 @@ class GPTQModule(BaseHessianModule):
             losses[:, i1:i2] = losses1 / 2
             w[:, i2:] -= err1.matmul(hinv[i1:i2, i2:])
 
+        # g_idx must live on the compute device (self.dev): expert slice weights are
+        # offloaded to CPU after statistics collection (BaseHessianAlgorithm
+        # _collect_statistics), so self.layer.weight.device may be CPU while
+        # perm/invperm/q stay on self.dev. Mixing them breaks g_idx[invperm] on GPU.
         if self.groupsize == -1:
-            g_idx = torch.zeros(self.columns, dtype=torch.int32, device=self.layer.weight.device)
+            g_idx = torch.zeros(self.columns, dtype=torch.int32, device=self.dev)
         else:
             if self.static_groups:
                 g_idx = (perm // self.groupsize).to(torch.int32)
             else:
-                g_idx = (torch.arange(self.columns, device=self.layer.weight.device) // self.groupsize).to(
+                g_idx = (torch.arange(self.columns, device=self.dev) // self.groupsize).to(
                     torch.int32
                 )
 
@@ -584,6 +599,7 @@ class GPTQQuantLinear(nn.Module):
         bias: bool,
         weight_dtype: torch.dtype,
         backend: str,
+        act_bits: int = 16,
     ):
         super().__init__()
         if bits not in [2, 3, 4, 8]:
@@ -592,30 +608,47 @@ class GPTQQuantLinear(nn.Module):
         self.infeatures = int(infeatures)
         self.outfeatures = int(outfeatures)
         self.bits = int(bits)
+        self.act_bits = int(act_bits)
         self.group_size = self.infeatures if int(group_size) == -1 else int(group_size)
+        self.scale_bias = None
         self.maxq = 2**self.bits - 1
         self._is_ascend_format = backend == "npu"
 
         if self._is_ascend_format:
-            if self.bits != 4:
-                raise ValueError("Ascend backend only supports 4-bit GPTQ packing.")
-            if self.infeatures % 8 != 0:
-                raise ValueError(
-                    f"Ascend packing requires infeatures divisible by 8, got {self.infeatures}"
+            if self.bits not in [4, 8]:
+                raise ValueError("Ascend backend only supports 4/8-bit GPTQ packing.")
+            if self.bits == 8:
+                num_groups = math.ceil(self.infeatures / self.group_size)
+                self.register_buffer(
+                    "weight",
+                    torch.zeros((self.outfeatures, self.infeatures), dtype=torch.int8),
                 )
-            num_groups = math.ceil(self.infeatures / self.group_size)
-            self.register_buffer(
-                "weight",
-                torch.zeros((self.outfeatures, self.infeatures // 8), dtype=torch.int32),
-            )
-            self.register_buffer(
-                "weight_scale",
-                torch.zeros((self.outfeatures, num_groups), dtype=torch.bfloat16),
-            )
-            self.register_buffer(
-                "weight_offset",
-                torch.zeros((self.outfeatures, num_groups), dtype=torch.bfloat16),
-            )
+                self.register_buffer(
+                    "weight_scale",
+                    torch.zeros((self.outfeatures, num_groups), dtype=torch.float32),
+                )
+                self.register_buffer(
+                    "weight_offset",
+                    torch.zeros((self.outfeatures, num_groups), dtype=torch.float32),
+                )
+            else:
+                if self.infeatures % 8 != 0:
+                    raise ValueError(
+                        f"Ascend packing requires infeatures divisible by 8, got {self.infeatures}"
+                    )
+                num_groups = math.ceil(self.infeatures / self.group_size)
+                self.register_buffer(
+                    "weight",
+                    torch.zeros((self.outfeatures, self.infeatures // 8), dtype=torch.int32),
+                )
+                self.register_buffer(
+                    "weight_scale",
+                    torch.zeros((self.outfeatures, num_groups), dtype=torch.bfloat16),
+                )
+                self.register_buffer(
+                    "weight_offset",
+                    torch.zeros((self.outfeatures, num_groups), dtype=torch.bfloat16),
+                )
         else:
             self.register_buffer(
                 "qweight",
@@ -651,6 +684,7 @@ class GPTQQuantLinear(nn.Module):
         scales: torch.Tensor,
         zeros: torch.Tensor,
         g_idx: Optional[torch.Tensor] = None,
+        module_name: Optional[str] = None,
     ) -> None:
         weight = linear.weight.data.clone()
         outfeatures, infeatures = weight.shape
@@ -663,6 +697,58 @@ class GPTQQuantLinear(nn.Module):
         signed_offset = 2 ** (self.bits - 1)
         quant = torch.round((weight + current_scale_zeros) / current_scales) - signed_offset
         quant = quant.clamp(-signed_offset, signed_offset - 1).to(torch.int8)
+
+        if self.bits == 8:
+            self.weight = quant.contiguous().cpu()
+            self.weight_scale = scales.to(torch.float32).cpu()
+            self.weight_offset = torch.zeros_like(scales, dtype=torch.float32).cpu()
+            self.scale_bias = None
+            if linear.bias is not None and self.bias is not None:
+                self.bias = linear.bias.clone().cpu().to(dtype=self.bias.dtype)
+            return
+
+        if self.bits == 4 and self.act_bits == 8:
+            # W4A8 row-wise interleave packing: pairs of output rows share one int8.
+            # even output row -> low nibble, odd output row -> high nibble (co-worker
+            # artifact: int8 [out//2, in] + weight_scale float32 [out, 1]).
+            if outfeatures % 2 != 0:
+                raise ValueError(
+                    f"W4A8 row-wise packing requires even outfeatures, got {outfeatures}"
+                )
+            # quant 已是二进制补码 [-8,7]。W4A8 kernel 期望补码 nibble（nib = q & 0xF），
+            # 不能像 W4A16 那样 + signed_offset 偏置编码（写(+8)/读(-8) 在 W4A16 是对称的，
+            # 但 W4A8 kernel 不解 offset，直接按补码解码）。见 W4A8_修改总结.md §10.9。
+            q_unsigned = quant.to(torch.uint8) & 0x0F
+            packed_u8 = torch.zeros((outfeatures // 2, infeatures), dtype=torch.uint8, device=device)
+            packed_u8 |= q_unsigned[0::2]
+            packed_u8 |= (q_unsigned[1::2] << 4).to(torch.uint8)
+            self.weight = packed_u8.to(torch.int8).contiguous().cpu()
+            self.weight_scale = scales.to(torch.float32).cpu()
+            self.weight_offset = torch.zeros_like(scales, dtype=torch.float32).cpu()
+            # AscendV1 W4A8_DYNAMIC：kernel 无条件把 weight_assist_matrix(scale_bias)
+            # Add 进 mm 累加器，补偿补码 nibble 的 -8 偏移，故 sb = 8 * Σ(q_tc * s)。
+            # gate/up（列并行）-> [out,1]；down（行并行）-> [out,16]（16 为协议固定
+            # 常数、TP 无关，见 §10.9b）。投影类型按 tensor 名判定，与 modelslim
+            # process_scale 一致（见 §10.9c）。
+            q_scaled = quant.to(torch.float32) * current_scales  # [out, in]
+            is_row_parallel = module_name is not None and any(
+                tok in module_name for tok in ("down_proj", "o_proj")
+            )
+            if is_row_parallel:
+                if infeatures % 16 != 0:
+                    raise ValueError(
+                        f"W4A8 down_proj scale_bias requires infeatures divisible by 16, "
+                        f"got {infeatures}"
+                    )
+                chunk = infeatures // 16
+                scale_bias = 8.0 * q_scaled.reshape(outfeatures, 16, chunk).sum(dim=-1)
+            else:
+                scale_bias = 8.0 * q_scaled.sum(dim=1, keepdim=True)
+            self.scale_bias = scale_bias.contiguous().cpu()
+            if linear.bias is not None and self.bias is not None:
+                self.bias = linear.bias.clone().cpu().to(dtype=self.bias.dtype)
+            return
+
         quant_unsigned = (quant + signed_offset).to(torch.uint8)
 
         packed = torch.zeros((outfeatures, infeatures // 8), dtype=torch.int32, device=device)
@@ -673,6 +759,7 @@ class GPTQQuantLinear(nn.Module):
         self.weight = packed.contiguous().cpu()
         self.weight_scale = scales.to(torch.bfloat16).cpu()
         self.weight_offset = torch.zeros_like(zeros, dtype=torch.bfloat16).cpu()
+        self.scale_bias = None
         if linear.bias is not None and self.bias is not None:
             self.bias = linear.bias.clone().cpu().to(dtype=self.bias.dtype)
 
@@ -774,9 +861,10 @@ class GPTQQuantLinear(nn.Module):
         scales: torch.Tensor,
         zeros: torch.Tensor,
         g_idx: Optional[torch.Tensor] = None,
+        module_name: Optional[str] = None,
     ) -> None:
         if self._is_ascend_format:
-            self._pack_ascend(linear, scales, zeros, g_idx)
+            self._pack_ascend(linear, scales, zeros, g_idx, module_name)
         else:
             self._pack_gptq(linear, scales, zeros, g_idx)
 
@@ -804,11 +892,14 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         percdamp: float = 0.01,
         preproc_hessian: bool = True,
         fake_quant: bool = False,
+        act_bits: int = 16,
+        layer_routing: Optional[List[Dict]] = None,
         max_calib_samples: int = 128,
         save_backend: Optional[str] = None,
         expert_chunk_size: int = 1,
         quantize_mtp: bool = False,
         save_mtp_debug: bool = False,
+        scale_search: Optional[Dict] = None,
         **kwargs,
     ):
         if w_bits is not None:
@@ -826,18 +917,159 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         self.preproc_hessian = bool(preproc_hessian)
         self.expert_chunk_size = max(int(expert_chunk_size), 1)
         self.fake_quant = bool(fake_quant)
+        self.act_bits = int(act_bits)
+        self.layer_routing = list(layer_routing) if layer_routing else None
         self._save_backend = save_backend
+        self.scale_search_cfg = scale_search
 
     @property
     def _ascend_quant_type(self) -> str:
-        return "FLOAT" if self.fake_quant else f"W{self.wbits}A16"
+        if self.fake_quant:
+            return "FLOAT"
+        if self.act_bits == 8:
+            return f"W{self.wbits}A8_DYNAMIC"
+        return f"W{self.wbits}A16"
+
+    def _resolve_layer_wbits(self, module_rel_name: str) -> int:
+        """Resolve per-layer weight bits via layer_routing glob patterns.
+
+        Callers pass two name forms:
+          - full tensor/module paths:  "model.layers.9.self_attn.q_a_proj"
+          - layer-relative names:      "self_attn.q_a_proj"
+        Patterns are matched against both forms so that handler creation
+        (relative names) and metadata annotation (full names) stay consistent.
+        """
+        if not self.layer_routing:
+            return self.wbits
+        candidates = (module_rel_name, f"*.{module_rel_name}")
+        for entry in self.layer_routing:
+            patterns = entry.get("patterns") or []
+            if any(
+                fnmatch.fnmatch(candidate, pattern)
+                for candidate in candidates
+                for pattern in patterns
+            ):
+                return int(entry.get("wbits", self.wbits))
+        return self.wbits
+
+    @staticmethod
+    def _strip_tensor_suffix(name: str) -> str:
+        for suffix in (".weight_scale", ".weight_offset", ".scale_bias", ".weight", ".bias"):
+            if name.endswith(suffix):
+                return name[: -len(suffix)]
+        return name
+
+    def _tensor_quant_type(self, name: str) -> str:
+        if self.target_backend != "npu":
+            return self._quantized_type_label
+        if self.fake_quant:
+            return "FLOAT"
+        wbits = self._resolve_layer_wbits(self._strip_tensor_suffix(name))
+        if self.act_bits == 8:
+            return f"W{wbits}A8_DYNAMIC"
+        return f"W{wbits}A16"
+
+    def _finalize_chunk_metadata(self, chunk, quantized_tensor_names: set[str]) -> None:
+        """Per-tensor type annotation for mixed (W4A8 + W8A8) outputs."""
+        tensor_types = {name: "FLOAT" for name in chunk.all_tensors().keys()}
+        for name in quantized_tensor_names:
+            if name in tensor_types:
+                tensor_types[name] = self._tensor_quant_type(name)
+        chunk.metadata["tensor_types"] = tensor_types
 
     def _log_start_params(self) -> None:
         logger.info(
             f"[{self._TAG}] start: "
             f"wbits={self.wbits}, groupsize={self.groupsize}, "
-            f"actorder={self.actorder}, percdamp={self.percdamp}"
+            f"actorder={self.actorder}, percdamp={self.percdamp}, "
+            f"act_bits={self.act_bits}"
         )
+        if self.scale_search_cfg:
+            logger.info(
+                f"[{self._TAG}] scale_search enabled: {self.scale_search_cfg}"
+            )
+
+    def _apply_scale_search(self, layer, handlers, chunk) -> None:
+        """Apply AWQ scale search to MoE expert handlers before GPTQ quantization.
+
+        For each expert handler, computes per-input-channel activation abs-mean
+        from calibration statistics, grid-searches the optimal AWQ scale s, and
+        replaces the 3D parameter with the adjusted weight: w_adjusted = RTN(w*s)/s.
+
+        This is a float weight with improved quantization properties; GPTQ
+        fasterquant then quantizes it normally. No post-quantize "divide by s"
+        step is needed because s is folded into w_adjusted's values.
+        """
+        if not self.scale_search_cfg:
+            return
+
+        moe_cfg = self.scale_search_cfg.get("moe")
+        if not moe_cfg:
+            return
+
+        method = moe_cfg.get("method", "awq")
+        if method != "awq":
+            return
+
+        nbits = int(moe_cfg.get("nbits", self.wbits))
+        grid = int(moe_cfg.get("grid", 20))
+
+        from ..scale_search import awq_search, awq_apply
+
+        import time as _time
+        t_search = 0.0
+        n_search = 0
+
+        for handler in handlers.values():
+            is_batched = getattr(handler, "_is_batched_expert", False)
+            is_expert = (
+                is_batched
+                or getattr(getattr(handler, "layer", None), "_is_expert_slice", False)
+            )
+            if not is_expert:
+                continue
+
+            x_abs_mean = getattr(handler, "x_abs_mean", None)
+            if x_abs_mean is None:
+                continue
+
+            if is_batched:
+                for local_e in range(handler._CH):
+                    sl = handler._slice_linears[local_e]
+                    w3d = sl._weight_3d
+                    e = sl._expert_idx
+                    w = w3d.data[e].float()
+                    xm = x_abs_mean[local_e].to(w.device)
+                    _t0 = _time.perf_counter()
+                    s = awq_search(w, xm, nbits=nbits, grid=grid)
+                    w_adjusted = awq_apply(w, s, nbits=nbits)
+                    t_search += _time.perf_counter() - _t0
+                    n_search += 1
+                    w3d.data[e].copy_(w_adjusted.to(w.dtype))
+                    # Update the slice linear's weight view to the new data
+                    sl.weight = torch.nn.Parameter(
+                        w3d.data[e], requires_grad=False
+                    )
+            else:
+                sl = handler.layer
+                w3d = sl._weight_3d
+                e = sl._expert_idx
+                w = w3d.data[e].float()
+                _t0 = _time.perf_counter()
+                s = awq_search(w, x_abs_mean.to(w.device), nbits=nbits, grid=grid)
+                w_adjusted = awq_apply(w, s, nbits=nbits)
+                t_search += _time.perf_counter() - _t0
+                n_search += 1
+                w3d.data[e].copy_(w_adjusted.to(w.dtype))
+                sl.weight = torch.nn.Parameter(
+                    w3d.data[e], requires_grad=False
+                )
+
+        if n_search:
+            logger.info(
+                f"[{self._TAG}] AWQ scale_search: {layer.name}: {n_search} experts, "
+                f"{t_search:.2f}s total, {t_search / n_search * 1000:.1f}ms/expert"
+            )
 
     def _pack_quant_linear_tensors(
         self,
@@ -846,21 +1078,24 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         scales: torch.Tensor,
         zeros: torch.Tensor,
         g_idx: torch.Tensor,
+        wbits: Optional[int] = None,
     ) -> Tuple[Dict[str, torch.Tensor], List[str]]:
+        bits = self.wbits if wbits is None else int(wbits)
         quant_linear = GPTQQuantLinear(
-            bits=self.wbits,
+            bits=bits,
             group_size=self.groupsize,
             infeatures=linear_module.in_features,
             outfeatures=linear_module.out_features,
             bias=linear_module.bias is not None,
             weight_dtype=linear_module.weight.dtype,
             backend=self.target_backend,
+            act_bits=self.act_bits,
         )
         proxy = SimpleNamespace(
             weight=linear_module.weight.detach().cpu(),
             bias=(linear_module.bias.detach().cpu() if linear_module.bias is not None else None),
         )
-        quant_linear.pack(proxy, scales.cpu(), zeros.cpu(), g_idx.cpu())
+        quant_linear.pack(proxy, scales.cpu(), zeros.cpu(), g_idx.cpu(), module_name=module_name)
 
         tensors: Dict[str, torch.Tensor] = {}
         quantized_names: List[str] = []
@@ -875,6 +1110,9 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                     f"{module_name}.weight_offset",
                 ]
             )
+            if getattr(quant_linear, "scale_bias", None) is not None:
+                tensors[f"{module_name}.scale_bias"] = quant_linear.scale_bias.cpu()
+                quantized_names.append(f"{module_name}.scale_bias")
         else:
             tensors[f"{module_name}.qweight"] = quant_linear.qweight.cpu()
             tensors[f"{module_name}.qzeros"] = quant_linear.qzeros.cpu()
@@ -923,7 +1161,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                         handler_key = f"{experts_module_path}.{chunk_start}.{param_name}"
                         handlers[handler_key] = BatchedGPTQModule(
                             slice_linears,
-                            wbits=self.wbits,
+                            wbits=self._resolve_layer_wbits(module_rel_name),
                             groupsize=self.groupsize,
                             blocksize=self.blocksize,
                             sym=self.sym,
@@ -940,7 +1178,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                         )
                         handlers[expert_rel_name] = GPTQModule(
                             slice_linear,
-                            wbits=self.wbits,
+                            wbits=self._resolve_layer_wbits(expert_rel_name),
                             groupsize=self.groupsize,
                             blocksize=self.blocksize,
                             actorder=self.actorder,
@@ -960,7 +1198,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                     hessian_device = torch.device("cpu")
                 handlers[module_rel_name] = GPTQModule(
                     submodule,
-                    wbits=self.wbits,
+                    wbits=self._resolve_layer_wbits(module_rel_name),
                     groupsize=self.groupsize,
                     blocksize=self.blocksize,
                     actorder=self.actorder,
@@ -975,7 +1213,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
     _EXPERT_PACKED_RE = re.compile(r"^(.+)\.experts\.(\d+)\.([^.]+)\.(.+)$")
 
     # NPU (Ascend) suffixes: output dimension is dim=0 (weight is [out, in//8])
-    _NPU_SUFFIXES = {"weight", "weight_scale", "weight_offset"}
+    _NPU_SUFFIXES = {"weight", "weight_scale", "weight_offset", "scale_bias"}
     # GPU (GPTQ) suffixes: output dimension is dim=1 (qweight is [in//8, out])
     _GPU_SUFFIXES = {"qweight", "qzeros", "scales"}
     # g_idx is 1D [infeatures], identical for gate_proj and up_proj; do NOT concatenate
@@ -1287,6 +1525,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                                 scales=expert_scales,
                                 zeros=expert_zeros,
                                 g_idx=all_g_idx,
+                                wbits=self._resolve_layer_wbits(expert_rel_name),
                             )
                             for rel_name, t in packed_tensors.items():
                                 layer.tensors[rel_name] = t
@@ -1342,6 +1581,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                     scales=scales,
                     zeros=zeros,
                     g_idx=g_idx,
+                    wbits=self._resolve_layer_wbits(module_rel_name),
                 )
                 layer.tensors.pop(rel_weight_name, None)
                 layer.tensors.pop(rel_bias_name, None)
@@ -1361,12 +1601,23 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
             return
 
         if self.target_backend == "npu":
+            model_quant_type = self._ascend_quant_type
+            if self.layer_routing:
+                # Mixed quant (e.g. MoE W4A8 + dense W8A8): top-level model_quant_type
+                # is W8A8_DYNAMIC (verified against GLM-5.2-w4a8c8 artifact). Per-tensor
+                # annotation in the desc drives per-layer scheme selection.
+                route_wbits = {int(e.get("wbits", self.wbits)) for e in self.layer_routing}
+                max_wbits = max(route_wbits | {self.wbits})
+                model_quant_type = (
+                    f"W{max_wbits}A8_DYNAMIC" if self.act_bits == 8 else f"W{max_wbits}A16"
+                )
             self._model_config.ascend_quant_config = {
-                "model_quant_type": self._ascend_quant_type,
+                "model_quant_type": model_quant_type,
                 "group_size": self.groupsize,
                 "quant_layer_types": ["GPTQQuantLinear"],
                 "include_g_idx": True,
                 "has_offset": True,
+                "act_bits": self.act_bits,
             }
             if hasattr(self._model_config, "quantization_config"):
                 try:

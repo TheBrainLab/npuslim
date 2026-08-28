@@ -368,8 +368,9 @@ class StreamingHuggingFaceSaver(BaseSaver):
             "version": "1.0.0",
             "model_quant_type": quant_type,
         }
-        if group_size > 0:
-            description["group_size"] = group_size
+        # Per-channel (group_size <= 0) must be explicitly written as 0,
+        # otherwise vLLM defaults to 256 (per-group) and mis-decodes the weights.
+        description["group_size"] = max(group_size, 0)
 
         missing_types = sorted(
             tensor_name

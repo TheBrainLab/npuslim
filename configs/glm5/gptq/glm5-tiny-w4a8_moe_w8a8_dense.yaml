@@ -1,0 +1,61 @@
+metadata:
+  name: "GLM5_Tiny_GPTQ_MoE_W4A8_Dense_W8A8"
+  description: "Mixed quantization verification on a tiny GLM-5 (GlmMoeDsa, 6 layers + MTP, 8 experts): MoE experts W4A8_DYNAMIC + dense linear W8A8_DYNAMIC"
+
+resources:
+  - id: glm5_tiny
+    type: GLM5
+    path: /data/yult/llm_inference/npuslim/workspace/tiny_glm5
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    device_map: cuda         # 全参数预演用 cuda:7（CUDA_VISIBLE_DEVICES=7）；tiny 3.33B 整卡可容纳
+
+  - id: calib_data
+    type: MixedDomain          # 全参数预演：与主配方完全一致的校准配置
+    data_path: dataset/calib/mixed_chat_code.jsonl
+    num_samples: 128           # 与主配方一致（128 样本）
+    max_seq_length: 1024       # 与主配方一致（1024 窗口）
+
+recipe:
+  - name: "GPTQ_MoE_W4A8_Dense_W8A8"
+    type: compressor
+    model: "@glm5_tiny"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 2
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ
+      wbits: 4                # MoE 专家默认 W4A8_DYNAMIC（默认位宽）
+      act_bits: 8             # 激活 8-bit 动态量化 -> 输出 W4A8_DYNAMIC / W8A8_DYNAMIC
+      groupsize: -1           # per-channel（上游 W4A8_DYNAMIC moe scheme 仅支持 per-channel）
+      save_backend: npu
+      expert_chunk_size: 1    # CH=1：per-expert GPTQ，actorder 生效（推荐）
+      layer_routing:          # 稠密层覆写为 wbits=8（W8A8_DYNAMIC）
+                              # pattern 同时匹配全路径（model.layers.N.xxx）与层内相对名（xxx）
+        - patterns:
+            - "*.self_attn.*"            # q_a/q_b/kv_a/o_proj + indexer.wq_b（kv_b_proj/wk/weights_proj 已由模型默认 FLOAT）
+            - "*.mlp.shared_experts.*"   # shared expert（checkpoint 实际属性名为复数 shared_experts）
+            - "*.mlp.gate_proj"          # dense MLP（first_k_dense_replace 层）；experts.*.gate_proj 不匹配
+            - "*.mlp.up_proj"
+            - "*.mlp.down_proj"
+          wbits: 8                        # eh_proj 属 MTP 层（quantize_mtp=false -> backfill FLOAT），不列入
+      max_calib_samples: 128   # 与主配方一致
+      blocksize: 256
+      actorder: true
+      quantize_mtp: false
+      save_mtp_debug: false
+      scale_search:            # 阶段 3：MoE 专家 AWQ 缩放预处理
+        moe:
+          method: awq
+          nbits: 4
+          grid: 20            # α 网格搜索 20 点
+    ignore_layers: []         # 已由 GLM5 模型默认 skip（router gate / kv_b_proj / indexer）
+    execution:
+      mode: streaming
+      chunk_size: 1
+      resume: true            # 断点续跑（default: true）
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_path: "./outputs_npu/glm5/gptq/tiny_w4a8_moe_w8a8"   # 显式 save_path：避免 bootstrap 再拼接配置名后缀
