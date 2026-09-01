@@ -71,4 +71,4 @@ recipe:
 # CUDA_VISIBLE_DEVICES=7 HF_DATASETS_CACHE=/data/yult/llm_inference/npuslim/workspace/hf_datasets_cache \
 # nohup /data/yult/miniconda3/envs/npuslim/bin/python tools/run.py \
 #   -c configs/glm5/gptq/glm5-w4a8_moe_w8a8_dense.yaml \
-#   > ./logs/run_glm5.2_w4a8_0826.log 2>&1 &
+#   > ./logs/run_glm5.2_w4a8_0828.log 2>&1 &
