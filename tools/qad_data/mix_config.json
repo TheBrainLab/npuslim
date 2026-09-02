@@ -1,0 +1,24 @@
+{
+  "metadata": {
+    "name": "qad_train_v1",
+    "notes": "配比依据：损伤集中在 humaneval(-4.27pp) 与 wikitext ppl(+9.6%)，代码 CoT 与通用语言为主；语料无 math 域（与 'math has ~zero headroom' 判断自洽）；配比为 token 加权。注：JSON 而非 yaml——本机 sandbox 无 yaml 依赖，M0 脚本需零额外依赖可跑。"
+  },
+  "token_estimate": {
+    "method": "bytes_scale",
+    "tokens_per_byte": 0.197,
+    "calibration": "561,684,804 tok / 2.85 GB, Qwen3 tokenizer 全局实测（§12.9）；index 全量校验偏差 0.03%"
+  },
+  "mix": {
+    "agentic_coding": 0.45,
+    "general": 0.25,
+    "random": 0.10,
+    "long_horizon": 0.10,
+    "long_context": 0.10
+  },
+  "sampling": {
+    "target_tokens": 100000000,
+    "group_by_id": true,
+    "exclude_content_dups": true,
+    "seed": 42
+  }
+}
