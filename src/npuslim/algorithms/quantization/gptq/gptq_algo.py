@@ -112,6 +112,7 @@ class BatchedGPTQModule:
         percdamp: float = 0.01,
         preproc_hessian: bool = True,
         hessian_device=None,
+        rtn: bool = False,
     ):
         self._slice_linears = slice_linears
         self._CH = len(slice_linears)
@@ -121,6 +122,8 @@ class BatchedGPTQModule:
         self.sym = bool(sym)
         self.percdamp = float(percdamp)
         self.preproc_hessian = bool(preproc_hessian)
+        # E8: RTN mode for batched expert slices — skip Hessian compensation.
+        self.rtn = bool(rtn)
         self._hdev = hessian_device if hessian_device is not None else slice_linears[0].weight.device
 
         w0 = slice_linears[0].weight.data
@@ -132,7 +135,12 @@ class BatchedGPTQModule:
         # Each batch's contrib (X@X.T) is computed on GPU and immediately
         # transferred to CPU via .to(self._hdev). This is the same pattern
         # as BaseHessianModule.add_batch.
-        self.H = torch.zeros(self._CH, self.infeatures, self.infeatures, device=self._hdev)
+        # E8 rtn mode: Hessian is never accumulated nor consumed — skip the
+        # [CH, in, in] allocation entirely.
+        if self.rtn:
+            self.H = None
+        else:
+            self.H = torch.zeros(self._CH, self.infeatures, self.infeatures, device=self._hdev)
         self.nsamples = torch.zeros(self._CH, device=self._hdev)
         self._x_abs_sum = torch.zeros(self._CH, self.infeatures, device=self._hdev)  # [CH, in] for scale search
         self.preproc_done = False
@@ -167,6 +175,19 @@ class BatchedGPTQModule:
         the 38 GB GPU memory that 32×BatchedGPTQModule GPU Hessian accumulators would require.
         PCIe transfer overhead is acceptable for 256-expert MoE layers.
         """
+        if self.rtn:
+            # E8: Hessian is never consumed in rtn mode — keep activation
+            # abs-sum (AWQ scale search) and nsamples (metrics) only.
+            if len(inp.shape) == 2:
+                inp = inp.unsqueeze(0)
+            if len(inp.shape) == 3:
+                inp = inp.reshape(-1, inp.shape[-1])
+            inp = inp.t().to(self.dev, dtype=torch.float32)
+            batch = inp.shape[1]
+            self._x_abs_sum[local_idx] += inp.abs().sum(dim=1).to(self._hdev)
+            self.nsamples[local_idx] += batch
+            self.H = None  # Hessian intentionally unused in rtn mode
+            return
         if len(inp.shape) == 2:
             inp = inp.unsqueeze(0)
         if len(inp.shape) == 3:
@@ -180,6 +201,9 @@ class BatchedGPTQModule:
         self.nsamples[local_idx] += batch
 
     def preproc(self) -> None:
+        if self.rtn:
+            self.preproc_done = True
+            return
         # Hessian scaling: H = (2 / nsamples) * Σ(Xi @ Xi.T)
         ns = self.nsamples.clamp(min=1).to(self._hdev).view(-1, 1, 1)  # [CH, 1, 1]
         self.H = (2.0 / ns * self.H).to(self._hdev)  # [CH, in, in] on CPU
@@ -259,7 +283,80 @@ class BatchedGPTQModule:
             hinv = hinv.to("cpu")
         return hinv
 
+    def _rtn_quantize(self, **kwargs) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """E8 expert RTN path (batched): round-to-nearest, no Hessian compensation.
+
+        Same static per-group scale computation and return conventions as
+        fasterquant, so downstream packing is unchanged.
+        """
+        CH, out, in_ = self._CH, self.outfeatures, self.infeatures
+        layer_name = kwargs.get("layer_name", "unknown")
+        logger.info(
+            f"[GPTQ] rtn expert quant: layer={layer_name}, CH={CH}, "
+            f"shape=[{out},{in_}], experts=[{self._expert_start_idx}.."
+            f"{self._expert_start_idx + CH - 1}]"
+        )
+        w = self._build_weight_batch().float().clone()  # [CH, out, in]
+
+        q = torch.zeros_like(w)
+        if self.groupsize != -1:
+            self.scales = []
+            self.zeros = []
+            for i in range(0, in_, self.groupsize):
+                chunk = w[:, :, i : i + self.groupsize]
+                s, z = compute_scales_with_zero(
+                    chunk.reshape(CH * out, self.groupsize), self.wbits, self.sym
+                )
+                self.scales.append(s.reshape(CH, out, 1))
+                self.zeros.append(z.reshape(CH, out, 1))
+            for i1 in range(0, in_, self.groupsize):
+                i2 = min(i1 + self.groupsize, in_)
+                g = i1 // self.groupsize
+                q[:, :, i1:i2] = quantize_with_scale_zero(
+                    w[:, :, i1:i2], self.scales[g], self.zeros[g], bits=self.wbits
+                )
+            final_scale = torch.cat(self.scales, dim=2)  # [CH, out, num_groups]
+            final_zero = torch.cat(self.zeros, dim=2)
+            g_idx = (torch.arange(in_, device=w.device) // self.groupsize).to(torch.int32)
+        else:
+            # per-channel (groupsize == -1): one scale/zero per (CH, out) row
+            s, z = compute_scales_with_zero(
+                w.reshape(CH * out, in_), bits=self.wbits, sym=self.sym
+            )
+            self.scale = s.reshape(CH, out, 1)
+            self.zero = z.reshape(CH, out, 1)
+            q = quantize_with_scale_zero(w, self.scale, self.zero, bits=self.wbits)
+            final_scale = self.scale
+            final_zero = self.zero
+            g_idx = torch.zeros(in_, dtype=torch.int32, device=w.device)
+
+        # Write results back to individual slice linears
+        for local_e in range(CH):
+            self._slice_linears[local_e].weight.data = q[local_e].to(
+                self._slice_linears[local_e].weight.data.dtype
+            )
+
+        self._w_batch = None
+        ref_weight = torch.stack(
+            [sl._weight_3d.data[sl._expert_idx] for sl in self._slice_linears], dim=0
+        )
+        norm_loss = float(torch.norm(q.cpu().float() - ref_weight.cpu().float()).item())
+        avg_loss = float(torch.mean((q - w) ** 2).item())
+        self.last_metrics = {
+            "rows": out,
+            "columns": in_,
+            "avg_loss": avg_loss,
+            "norm_loss": norm_loss,
+            "nsamples": float(self.nsamples.sum().item()),
+            "fallback": None,
+        }
+        self.free()
+        bh.empty_cache()
+        return final_scale.cpu(), final_zero.cpu(), g_idx.cpu()
+
     def fasterquant(self, **kwargs) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.rtn:
+            return self._rtn_quantize(**kwargs)
         CH, out, in_ = self._CH, self.outfeatures, self.infeatures
         w = self._build_weight_batch().float().clone()  # [CH, out, in]
 
@@ -409,6 +506,7 @@ class GPTQModule(BaseHessianModule):
         percdamp: float = 0.01,
         preproc_hessian: bool = True,
         hessian_device=None,
+        rtn: bool = False,
     ):
         super().__init__(
             layer=layer,
@@ -422,6 +520,10 @@ class GPTQModule(BaseHessianModule):
         self.actorder = bool(actorder)
         self.static_groups = bool(static_groups)
         self.sym = bool(sym)
+        # E8: RTN mode for expert slices — skip Hessian error compensation.
+        self.rtn = bool(rtn)
+        if self.rtn:
+            self.H = None  # Hessian never accumulated/consumed in rtn mode
 
         self.scales: List[torch.Tensor] = []
         self.zeros: List[torch.Tensor] = []
@@ -430,7 +532,100 @@ class GPTQModule(BaseHessianModule):
         self.last_metrics: Dict[str, float] = {}
         self._hinv_fallback: Optional[str] = None
 
+    def add_batch(self, inp: torch.Tensor, out: torch.Tensor) -> None:
+        if self.rtn:
+            # E8: Hessian is never consumed in rtn mode — skip the [in,batch] @
+            # [batch,in] contribution and keep only activation stats (AWQ scale
+            # search) and nsamples (metrics). Mirrors BaseHessianModule.add_batch
+            # without the H update; expert slices are plain Linear (no conv).
+            if len(inp.shape) == 2:
+                inp = inp.unsqueeze(0)
+            if len(inp.shape) == 3:
+                inp = inp.reshape((-1, inp.shape[-1]))
+            inp = inp.t().to(self.dev, dtype=torch.float32)
+            batch = inp.shape[1]
+            abs_sum = inp.abs().sum(dim=1).to(self._hdev)
+            if self._x_abs_sum is None:
+                self._x_abs_sum = abs_sum
+            else:
+                self._x_abs_sum += abs_sum
+            self.nsamples += batch
+            self.H = None  # Hessian intentionally unused in rtn mode
+            return
+        super().add_batch(inp, out)
+
+    def preproc(self) -> None:
+        if self.rtn:
+            self.preproc_done = True
+            return
+        super().preproc()
+
+    def _rtn_quantize(self, **kwargs) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """E8 expert RTN path: plain round-to-nearest, no Hessian compensation.
+
+        Uses the same static per-group scale computation and the same packing
+        conventions as the GPTQ path, so packed output tensors are
+        format-identical to GPTQ expert quantization (only values differ).
+        """
+        _ = kwargs
+        w = self.layer.weight.data.float().clone().to(self.dev)
+
+        if self.groupsize != -1:
+            if not self.static_groups:
+                logger.warning("[GPTQ] rtn mode ignores static_groups=False; using static groups")
+            for i in range(0, self.columns, self.groupsize):
+                scale, zero = compute_scales_with_zero(
+                    w[:, i : i + self.groupsize], bits=self.wbits, sym=self.sym
+                )
+                self.scales.append(scale)
+                self.zeros.append(zero)
+        else:
+            self.scale, self.zero = compute_scales_with_zero(
+                w, bits=self.wbits, sym=self.sym
+            )
+
+        q = torch.zeros_like(w)
+        if self.groupsize != -1:
+            for i1 in range(0, self.columns, self.groupsize):
+                i2 = min(i1 + self.groupsize, self.columns)
+                g = i1 // self.groupsize
+                q[:, i1:i2] = quantize_with_scale_zero(
+                    w[:, i1:i2], self.scales[g], self.zeros[g], bits=self.wbits
+                )
+            g_idx = (torch.arange(self.columns, device=self.dev) // self.groupsize).to(
+                torch.int32
+            )
+            final_scale = torch.cat(self.scales, dim=1)
+            final_zero = torch.cat(self.zeros, dim=1)
+        else:
+            q = quantize_with_scale_zero(w, self.scale, self.zero, bits=self.wbits)
+            g_idx = torch.zeros(self.columns, dtype=torch.int32, device=self.dev)
+            final_scale = self.scale
+            final_zero = self.zero
+
+        w_orig = self.layer.weight.data.float().to(self.dev)
+        self.layer.weight.data = q.reshape(self.layer.weight.shape).to(
+            self.layer.weight.data.dtype
+        )
+
+        avg_loss = float(torch.mean((q - w_orig) ** 2).item())
+        norm_loss = float(torch.norm(q - w_orig).item())
+        self.last_metrics = {
+            "rows": self.rows,
+            "columns": self.columns,
+            "avg_loss": avg_loss,
+            "norm_loss": norm_loss,
+            "nsamples": float(self.nsamples),
+            "fallback": None,
+        }
+
+        self.postproc()
+        self.free()
+        return final_scale.cpu(), final_zero.cpu(), g_idx.cpu()
+
     def fasterquant(self, **kwargs) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.rtn:
+            return self._rtn_quantize(**kwargs)
         _ = kwargs
         w_orig = self.layer.weight.data.float().clone().to(self.dev)
         w = self.layer.weight.data.clone().float().to(self.dev)
@@ -900,6 +1095,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         quantize_mtp: bool = False,
         save_mtp_debug: bool = False,
         scale_search: Optional[Dict] = None,
+        expert_mode: Optional[str] = None,
         **kwargs,
     ):
         if w_bits is not None:
@@ -921,6 +1117,26 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         self.layer_routing = list(layer_routing) if layer_routing else None
         self._save_backend = save_backend
         self.scale_search_cfg = scale_search
+        # E8: expert-module quantization mode. None -> per-expert GPTQ (default);
+        # "rtn" -> skip Hessian error compensation for MoE expert modules, plain
+        # RTN quantization on the same scale/pack path (modelslim "AWQ + no GPTQ"
+        # structural counterpart). Dense modules are unaffected.
+        if expert_mode is None:
+            self.expert_mode = None
+        else:
+            expert_mode = str(expert_mode).lower()
+            if expert_mode == "ssz":
+                raise NotImplementedError(
+                    "[GPTQ] expert_mode='ssz' is phase-2 (iterative LSQ scale "
+                    "refinement; ref: msmodelslim core/quantizer/impl/ssz.py); "
+                    "only 'rtn' is supported now"
+                )
+            if expert_mode != "rtn":
+                raise ValueError(
+                    f"[GPTQ] unsupported expert_mode: {expert_mode!r} (expected None or 'rtn')"
+                )
+            self.expert_mode = expert_mode
+        self._expert_rtn = self.expert_mode == "rtn"
 
     @property
     def _ascend_quant_type(self) -> str:
@@ -987,6 +1203,12 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         if self.scale_search_cfg:
             logger.info(
                 f"[{self._TAG}] scale_search enabled: {self.scale_search_cfg}"
+            )
+        if self.expert_mode:
+            logger.info(
+                f"[{self._TAG}] expert_mode={self.expert_mode}: MoE expert modules "
+                f"quantized with {self.expert_mode.upper()} (no Hessian compensation); "
+                f"dense modules unchanged"
             )
 
     def _apply_scale_search(self, layer, handlers, chunk) -> None:
@@ -1168,6 +1390,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                             percdamp=self.percdamp,
                             preproc_hessian=self.preproc_hessian,
                             hessian_device=torch.device("cpu"),
+                            rtn=self._expert_rtn,
                         )
                 else:
                     # Per-expert: create num_experts GPTQModule handlers
@@ -1187,6 +1410,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                             percdamp=self.percdamp,
                             preproc_hessian=self.preproc_hessian,
                             hessian_device=torch.device("cpu"),
+                            rtn=self._expert_rtn,
                         )
             else:
                 # Standard 2D Linear

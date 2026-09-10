@@ -1,0 +1,59 @@
+metadata:
+  name: "Qwen3_Tiny_GPTQ_MoE_W4A8_AWQOnly_Smoke"
+  description: "A7 Step B 对照组：tiny Qwen3 AWQ+GPTQ（无旋转），与 qwen3-tiny-w4a8_moe_w8a8_rot 同配方同数据，仅差 rotation。用于差分验证折叠生效（产物应不同）。"
+
+resources:
+  - id: qwen3_tiny
+    type: Qwen3Model
+    path: /data/yult/llm_inference/npuslim/workspace/tiny_qwen3
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    device_map: cpu
+
+  - id: calib_data
+    type: MixedDomain
+    data_path: dataset/calib/mixed_chat_code.jsonl
+    num_samples: 16
+    max_seq_length: 512
+
+recipe:
+  - name: "GPTQ_MoE_W4A8_AWQOnly_Smoke"
+    type: compressor
+    model: "@qwen3_tiny"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 2
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ                # 生产 GPTQ（无旋转），对照组
+      wbits: 4
+      act_bits: 8
+      groupsize: -1
+      save_backend: npu
+      expert_chunk_size: 1
+      layer_routing:
+        - patterns:
+            - "*.self_attn.*"
+          wbits: 8
+      max_calib_samples: 16
+      blocksize: 256
+      actorder: true
+      scale_search:
+        moe:
+          method: awq
+          nbits: 4
+          grid: 20
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 1
+      resume: false
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_path: "./outputs_smoke/qwen3_tiny_w4a8_norot"
+
+
+# cd /data/yult/llm_inference/npuslim && \
+# /data/yult/miniconda3/envs/npuslim/bin/python tools/run.py \
+#   -c configs/qwen3/gptq/qwen3-tiny-w4a8_moe_w8a8_norot.yaml

@@ -25,6 +25,12 @@ AlgorithmRegistry.register_lazy(
     ".quantization.quip.quip_algo",
     aliases=["quip"],
 )
+# A7 Step B：GPTQ + R1 旋转（独立子类，默认关闭，不影响既有 GPTQ 产线）
+AlgorithmRegistry.register_lazy(
+    "GPTQRotation",
+    "npuslim.qad.rotation_quant",
+    aliases=["gptq_rotation", "gptq_rot"],
+)
 
 __all__ = [
     "BaseAlgorithm",

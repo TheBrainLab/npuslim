@@ -1,0 +1,64 @@
+metadata:
+  name: "Qwen3_GPTQ_MoE_W4A8_R1Rot"
+  description: "A7 Step B: Qwen3-30B-A3B R1(Hadamard) rotation + AWQ + GPTQ real-scale simulation. 折叠 q/k/v/router/gate_up 列 + norm 后 R1 hook；对照 AWQ-only（同配方无 rotation 块）。产物不可部署（需在线 kernel §2.5），仅用于精度上限测量。"
+
+resources:
+  - id: qwen
+    type: Qwen3Model
+    path: /data/yult/llm_inference/models/Qwen3-30B-A3B-Instruct-2507 #Qwen/Qwen3-30B-A3B-Instruct-2507
+    device_map: cpu           # cpu：量化主流程在 CPU 侧（Hessian/backfill），fasterquant 逐块上 GPU
+    model_hub: ms
+
+  - id: calib_data
+    type: MixedDomain          # 多域混合校准，与 W4A8 基线同口径
+    data_path: dataset/calib/mixed_chat_code.jsonl
+    num_samples: 128
+    max_seq_length: 2048
+
+recipe:
+  - name: "GPTQ_MoE_W4A8_R1Rot"
+    type: compressor
+    model: "@qwen"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 4
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQRotation        # A7 Step B：GPTQ + R1 旋转（独立子类，生产 GPTQAlgorithm 零改动）
+      wbits: 4
+      act_bits: 8
+      groupsize: -1
+      save_backend: npu
+      expert_chunk_size: 1
+      layer_routing:
+        - patterns:
+            - "*.self_attn.*"
+          wbits: 8
+      max_calib_samples: 128
+      blocksize: 256
+      actorder: true
+      scale_search:
+        moe:
+          method: awq
+          nbits: 4
+          grid: 20
+      rotation:                 # Step A 结论：跨层共享全维 R1；block_size=-1 全维
+        mode: hadamard
+        block_size: -1          # -1=全维；128=块对角（kernel 受限时备选）
+        seed: 2026
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 8
+      resume: true
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_npu"
+
+
+# cd /data/yult/llm_inference/npuslim && \
+# CUDA_VISIBLE_DEVICES=3 HF_DATASETS_CACHE=/data/yult/llm_inference/npuslim/workspace/hf_datasets_cache \
+# nohup /data/yult/miniconda3/envs/npuslim/bin/python tools/run.py \
+#   -c configs/qwen3/gptq/qwen3_30b_a3b_2507-w4a8_rot_npu.yaml \
+#   > ./logs/run_qwen3_30b_w4a8_rot_0904.log 2>&1 &

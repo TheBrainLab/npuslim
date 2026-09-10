@@ -1,0 +1,63 @@
+metadata:
+  name: "Qwen3_Tiny_GPTQ_MoE_W4A8_R1Rot_Smoke"
+  description: "A7 Step B 流水线集成冒烟：tiny Qwen3-30B-A3B-like（4 层 8 专家）+ R1 旋转 + AWQ/GPTQ。验证 GPTQRotationAlgorithm 在 streaming 流程中的折叠/hook 注入（统计+接力两处）真实生效，非部署产物。"
+
+resources:
+  - id: qwen3_tiny
+    type: Qwen3Model
+    path: /data/yult/llm_inference/npuslim/workspace/tiny_qwen3
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    device_map: cpu         # 冒烟走 CPU（沙箱无 CUDA）
+
+  - id: calib_data
+    type: MixedDomain
+    data_path: dataset/calib/mixed_chat_code.jsonl
+    num_samples: 16          # 冒烟缩样
+    max_seq_length: 512
+
+recipe:
+  - name: "GPTQ_MoE_W4A8_R1Rot_Smoke"
+    type: compressor
+    model: "@qwen3_tiny"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 2
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQRotation      # A7 Step B：GPTQ + R1 旋转
+      wbits: 4
+      act_bits: 8
+      groupsize: -1
+      save_backend: npu
+      expert_chunk_size: 1
+      layer_routing:
+        - patterns:
+            - "*.self_attn.*"
+          wbits: 8
+      max_calib_samples: 16
+      blocksize: 256
+      actorder: true
+      scale_search:
+        moe:
+          method: awq
+          nbits: 4
+          grid: 20
+      rotation:
+        mode: hadamard
+        block_size: -1
+        seed: 2026
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 1
+      resume: false           # 冒烟不启用 resume（避免指纹/清理干扰）
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_path: "./outputs_smoke/qwen3_tiny_w4a8_rot"
+
+
+# cd /data/yult/llm_inference/npuslim && \
+# /data/yult/miniconda3/envs/npuslim/bin/python tools/run.py \
+#   -c configs/qwen3/gptq/qwen3-tiny-w4a8_moe_w8a8_rot.yaml
