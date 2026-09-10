@@ -156,3 +156,39 @@ def test_smooth_quant_requires_stats():
     gamma0 = layer.input_layernorm.weight.detach().clone()
     algo._apply_smooth_quant(layer, chunk=None)
     assert torch.equal(layer.input_layernorm.weight.detach(), gamma0)
+
+
+def test_smooth_quant_with_layerinfo_not_module():
+    """Regression: real pipeline passes a LayerInfo dataclass (not nn.Module) as
+    `layer`; _apply_smooth_quant must resolve modules from _runtime_model
+    (bug: _try_get_child on LayerInfo always returned None → silent no-op)."""
+    torch.manual_seed(11)
+    layer = _FakeSmoothLayer(hidden=8)
+    layer.name = "model.layers.2"
+    runtime = nn.Module()
+    runtime.model = nn.Module()
+    runtime.model.layers = nn.ModuleList([nn.Module(), nn.Module(), layer])
+
+    algo = GPTQAlgorithm(
+        wbits=4,
+        group_size=-1,
+        smooth_quant={"alpha": 0.5, "targets": [{"norm": "input_layernorm",
+                                                 "targets": ["self_attn.q_a_proj"]}]},
+    )
+    algo._runtime_model = runtime
+
+    gamma0 = layer.input_layernorm.weight.detach().clone()
+    w0 = layer.self_attn.q_a_proj.weight.detach().clone()
+    acc = [None]
+    layer.input_layernorm.register_forward_hook(
+        lambda m, i, o, acc=acc: algo._smooth_collect(o, acc)
+    )
+    layer(torch.randn(3, 4, 8))
+    algo._smooth_norm_stats["model.layers.2.input_layernorm"] = acc
+
+    class _LayerInfo:  # 模拟 chunk 的 LayerInfo（仅有 .name）
+        name = "model.layers.2"
+
+    algo._apply_smooth_quant(_LayerInfo(), chunk=None)
+    assert not torch.equal(layer.input_layernorm.weight.detach(), gamma0)
+    assert not torch.equal(layer.self_attn.q_a_proj.weight.detach(), w0)

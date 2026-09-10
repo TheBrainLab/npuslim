@@ -1382,7 +1382,12 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                 or getattr(getattr(handler, "layer", None), "_is_expert_slice", False)
             ):
                 continue
-            if getattr(handler, "_proj_type", None) != "down_proj":
+            # _proj_type: batched 在 handler 上；per-expert 在 handler.layer（slice linear）上
+            proj_type = (
+                handler._proj_type if is_batched
+                else getattr(handler.layer, "_proj_type", None)
+            )
+            if proj_type != "down_proj":
                 continue
             if is_batched:
                 for local_idx in range(handler._CH):
@@ -1408,7 +1413,16 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         # Resolve gate_up 3D per experts_module path (fused gate_up_proj)
         gate_up_by_path: Dict[str, nn.Parameter] = {}
         for handler in handlers.values():
-            proj_type = getattr(handler, "_proj_type", None)
+            is_batched = getattr(handler, "_is_batched_expert", False)
+            if not (
+                is_batched
+                or getattr(getattr(handler, "layer", None), "_is_expert_slice", False)
+            ):
+                continue
+            proj_type = (
+                handler._proj_type if is_batched
+                else getattr(handler.layer, "_proj_type", None)
+            )
             if proj_type != "gate_up_proj":
                 continue
             if getattr(handler, "_is_batched_expert", False):
@@ -1538,10 +1552,16 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         from ..scale_search import compute_weight_scale, smooth_scale
 
         alpha = float(self.smooth_quant_cfg.get("alpha", 0.5))
+        # 真实管线 layer 是 LayerInfo（chunk 数据类），模块需从运行时模型解析；
+        # 单测可能直接传 nn.Module，兼容两种。
+        if isinstance(layer, nn.Module):
+            layer_module = layer
+        else:
+            layer_module = _get_child_module(self._runtime_model, layer.name)
         n_pairs = 0
         for entry in self._smooth_norm_targets():
             norm_path = entry["norm"]
-            norm_module = self._try_get_child(layer, norm_path)
+            norm_module = self._try_get_child(layer_module, norm_path)
             if norm_module is None or not hasattr(norm_module, "weight"):
                 continue
             acc = self._smooth_norm_stats.get(f"{layer.name}.{norm_path}")
@@ -1552,7 +1572,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
             target_weights = []
             target_modules = []
             for tname in entry["targets"]:
-                tmod = self._try_get_child(layer, tname)
+                tmod = self._try_get_child(layer_module, tname)
                 if tmod is None or not hasattr(tmod, "weight"):
                     continue
                 target_modules.append(tmod)

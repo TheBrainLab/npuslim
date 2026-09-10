@@ -31,6 +31,12 @@ AlgorithmRegistry.register_lazy(
     "npuslim.qad.rotation_quant",
     aliases=["gptq_rotation", "gptq_rot"],
 )
+# E3：GPTQ + GLM-5.2 残差流旋转折叠（modelslim 复刻 Layer 1 配方，产物可部署）
+AlgorithmRegistry.register_lazy(
+    "GPTQGlmRotation",
+    "npuslim.qad.glm_rotation_quant",
+    aliases=["gptq_glm_rotation", "gptq_glmrot"],
+)
 
 __all__ = [
     "BaseAlgorithm",

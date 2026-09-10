@@ -171,6 +171,13 @@ def get_glm52_rotate_maps(
             cmds.append(RotateCommand(f"layers.{i}.mlp.shared_experts.up_proj", rot, right_rotate=True))
             cmds.append(RotateCommand(f"layers.{i}.mlp.shared_experts.down_proj", rot, right_rotate=False))
             cmds.append(RotateCommand(f"layers.{i}.mlp.gate", rot, right_rotate=True))
+        # DSA indexer（adapter 追加，model_adapter.py:407-415）：
+        #   wk / weights_proj 消费 input_layernorm 输出（R 空间）→ right rot
+        #   wq_b 消费 q_resid（rot_b lora 空间）→ right rot_b
+        # 缺此三件则 indexer 分数变化 → top-k 稀疏选择改变 → 模型函数破坏
+        cmds.append(RotateCommand(f"layers.{i}.self_attn.indexer.wk", rot, right_rotate=True))
+        cmds.append(RotateCommand(f"layers.{i}.self_attn.indexer.weights_proj", rot, right_rotate=True))
+        cmds.append(RotateCommand(f"layers.{i}.self_attn.indexer.wq_b", rot_b_proj, right_rotate=True))
     # MTP 层输入（与主层一致，层 77 处理完后接 MTP）
     cmds.append(RotateCommand("layers.77.embed_tokens", rot, right_rotate=True))
     # lm_head（model.norm 输出在旋转空间）
@@ -228,6 +235,10 @@ def _layer_commands(
         cmds.append(RotateCommand("mlp.shared_experts.up_proj", rot, right_rotate=True))
         cmds.append(RotateCommand("mlp.shared_experts.down_proj", rot, right_rotate=False))
         cmds.append(RotateCommand("mlp.gate", rot, right_rotate=True))
+    # DSA indexer（adapter 追加）：wk/weights_proj 消费 R 空间输入；wq_b 消费 rot_b 空间
+    cmds.append(RotateCommand("self_attn.indexer.wk", rot, right_rotate=True))
+    cmds.append(RotateCommand("self_attn.indexer.weights_proj", rot, right_rotate=True))
+    cmds.append(RotateCommand("self_attn.indexer.wq_b", rot_b_proj, right_rotate=True))
     # MLA 空间
     cmds.append(RotateCommand("self_attn.q_a_proj", rot_b_proj, right_rotate=False))
     cmds.append(RotateCommand("self_attn.q_b_proj", rot_b_proj, right_rotate=True))
@@ -259,11 +270,18 @@ def get_glm52_ln_fuse_map(
     """
     ln_map: Dict[str, List[str]] = {}
     for i in range(num_layers):
+        # adapter 追加 indexer.wk / indexer.weights_proj（model_adapter.py:393-400）
         ln_map[f"layers.{i}.input_layernorm"] = [
             f"layers.{i}.self_attn.q_a_proj",
             f"layers.{i}.self_attn.kv_a_proj_with_mqa",
+            f"layers.{i}.self_attn.indexer.wk",
+            f"layers.{i}.self_attn.indexer.weights_proj",
         ]
-        ln_map[f"layers.{i}.self_attn.q_a_layernorm"] = [f"layers.{i}.self_attn.q_b_proj"]
+        # adapter 追加 indexer.wq_b
+        ln_map[f"layers.{i}.self_attn.q_a_layernorm"] = [
+            f"layers.{i}.self_attn.q_b_proj",
+            f"layers.{i}.self_attn.indexer.wq_b",
+        ]
         ln_map[f"layers.{i}.self_attn.kv_a_layernorm"] = [f"layers.{i}.self_attn.kv_b_proj"]
         if i < first_k_dense_replace:
             ln_map[f"layers.{i}.post_attention_layernorm"] = [

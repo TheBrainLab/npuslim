@@ -117,6 +117,11 @@ class _FakeGlmLayer(nn.Module):
         self.self_attn.q_b_proj = nn.Linear(q_lora, H, bias=False)
         self.self_attn.kv_b_proj = nn.Linear(kv_lora, nope + v, bias=False)
         self.self_attn.o_proj = nn.Linear(v, H, bias=False)
+        # DSA indexer（n_heads=2, head_dim=4）：wq_b 吃 lora 空间、wk/weights_proj 吃 H 空间
+        self.self_attn.indexer = nn.Module()
+        self.self_attn.indexer.wq_b = nn.Linear(q_lora, 8, bias=False)
+        self.self_attn.indexer.wk = nn.Linear(H, 8, bias=False)
+        self.self_attn.indexer.weights_proj = nn.Linear(H, 2, bias=False)
         self.mlp = nn.Module()
         self.mlp.gate = nn.Linear(H, num_exp, bias=False)
         self.dense = dense
@@ -255,3 +260,36 @@ def test_fold_embed_and_final_equivalence():
     assert torch.allclose(y0, y1, atol=1e-2, rtol=1e-2)
     # 验证 model.norm γ → 1（quarot ln 融合）
     assert torch.allclose(m1.model.norm.weight.data, torch.ones(16), atol=1e-6)
+
+
+def test_fold_indexer_invariance():
+    """DSA indexer 折叠不变性：wq_b/wk/weights_proj 折叠后输出值逐元素保持。
+
+    adapter 旋转图含 indexer 三件套（model_adapter.py:407-415）：
+    wk/weights_proj right rot（消费 R 空间 norm 输出）+ input_layernorm γ 融合；
+    wq_b right rot_b（消费 rot_b lora 空间）+ q_a_layernorm γ 融合。
+    缺任何一件 indexer 分数变化 → top-k 稀疏选择改变。
+    """
+    torch.manual_seed(7)
+    rm = _mini_rm()
+    m0 = _FakeGlmLayer(dense=False)
+    import copy
+    m1 = copy.deepcopy(m0)
+    x = torch.randn(3, 16)
+    R = rm["rot"]
+
+    def indexer_signals(m, x):
+        h = m.input_layernorm(x)
+        qa_ln = m.self_attn.q_a_layernorm(m.self_attn.q_a_proj(h))
+        q = m.self_attn.indexer.wq_b(qa_ln)
+        k = m.self_attn.indexer.wk(h)
+        w = m.self_attn.indexer.weights_proj(h)
+        return q, k, w
+
+    with torch.no_grad():
+        s0 = indexer_signals(m0, x)
+        fold_glm52_layer(m1, 1, rm, num_layers=2, first_k_dense_replace=1,
+                         num_experts=2, qk_nope_head_dim=4, qk_rope_head_dim=4)
+        s1 = indexer_signals(m1, x @ R)
+    for name, a, b in zip(["wq_b", "wk", "weights_proj"], s0, s1):
+        assert torch.allclose(a, b, atol=1e-3, rtol=1e-3), f"{name} diff {(a-b).abs().max().item()}"

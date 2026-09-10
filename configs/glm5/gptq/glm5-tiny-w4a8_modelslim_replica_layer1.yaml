@@ -1,0 +1,87 @@
+metadata:
+  name: "GLM5_Tiny_W4A8_ModelslimReplica_Layer1"
+  description: "Layer 1 管线预演（tiny GLM-5.2：6 层 + MTP，8 专家，MLA 维度与全量一致——旋转矩阵同种子同尺寸）。验证 GPTQGlmRotation 折叠 + FLOAT 快照同步 + updown_awq + SSZ + SmoothQuant 全链。分钟级，单卡。"
+
+resources:
+  - id: glm5_tiny
+    type: GLM5
+    path: /data/yult/llm_inference/npuslim/workspace/tiny_glm5
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    device_map: cuda         # 本机预演用空闲 GPU（CUDA_VISIBLE_DEVICES 选定）；管线逻辑与设备无关
+
+  - id: calib_data
+    type: MixedDomain
+    data_path: dataset/calib/mixed_chat_code.jsonl
+    num_samples: 32            # 预演：管线验证用，精度不裁决
+    max_seq_length: 512
+
+recipe:
+  - name: "GPTQ_MoE_W4A8_Dense_W8A8_Tiny_ReplicaLayer1"
+    type: compressor
+    model: "@glm5_tiny"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 2
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQGlmRotation
+      wbits: 4
+      act_bits: 8
+      groupsize: -1
+      save_backend: npu
+      expert_chunk_size: 1
+      layer_routing:
+        - patterns:
+            - "*.self_attn.*"
+            - "*.mlp.shared_experts.*"
+            - "*.mlp.gate_proj"
+            - "*.mlp.up_proj"
+            - "*.mlp.down_proj"
+          wbits: 8
+      max_calib_samples: 32
+      blocksize: 256
+      actorder: true
+      quantize_mtp: false
+      save_mtp_debug: false
+      glm_rotation:
+        block_size: -1
+        seed: 2026
+      scale_search:
+        moe:
+          method: updown_awq
+          nbits: 4
+          grid: 20
+      smooth_quant:
+        alpha: 0.5
+        targets:
+          - norm: input_layernorm
+            targets:
+              - self_attn.q_a_proj
+              - self_attn.kv_a_proj_with_mqa
+          - norm: self_attn.q_a_layernorm
+            targets:
+              - self_attn.q_b_proj
+      expert_mode: ssz
+      ssz_step: 10
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 1
+      resume: true
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_npu"
+
+
+# 预演验收（全链冒烟）：
+#   1) 启动日志：glm_rotation built（hidden=6144/rot 各维度）+ 每层 "FLOAT 快照同步 N 个"
+#   2) embed 折叠日志 + model.norm γ→1/lm_head 折叠日志
+#   3) 产物保存成功（159 分片量级小：6 层）
+#   4) 产物 sanity：norm 权重全 1（除 input/q_a_layernorm 的 1/s）、router 值 ≠ 原始（已折叠）
+# cd /data/yult/llm_inference/npuslim && \
+# OMP_NUM_THREADS=48 HF_DATASETS_CACHE=/data/yult/llm_inference/npuslim/workspace/hf_datasets_cache \
+# CUDA_VISIBLE_DEVICES=7 nohup /data/yult/miniconda3/envs/npuslim/bin/python tools/run.py \
+#   -c configs/glm5/gptq/glm5-tiny-w4a8_modelslim_replica_layer1.yaml \
+#   > ./logs/run_tiny_w4a8_replica_layer1.log 2>&1 &
