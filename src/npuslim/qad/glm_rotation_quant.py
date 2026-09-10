@@ -138,7 +138,11 @@ class GPTQGlmRotationAlgorithm(GPTQAlgorithm):
             chunk.update_tensor(f"{module.name}.weight", folded)
             embed_mod = _get_child_module(self._runtime_model, module.name)
             if embed_mod is not None and hasattr(embed_mod, "weight"):
-                embed_mod.weight.data = folded.to(embed_mod.weight.dtype)
+                # embed 可能已被 _assign_runtime_tensors 迁移到运行时设备（NPU），
+                # folded 基于 chunk 张量（CPU）计算 → 必须迁到模块当前设备
+                embed_mod.weight.data = folded.to(
+                    device=embed_mod.weight.device, dtype=embed_mod.weight.dtype
+                )
             self._embed_folded = True
             logger.info(f"[{self._TAG}] embed_tokens folded (right rot {tuple(rot.shape)})")
             return
