@@ -293,3 +293,53 @@ def test_fold_indexer_invariance():
         s1 = indexer_signals(m1, x @ R)
     for name, a, b in zip(["wq_b", "wk", "weights_proj"], s0, s1):
         assert torch.allclose(a, b, atol=1e-3, rtol=1e-3), f"{name} diff {(a-b).abs().max().item()}"
+
+
+def test_rotate_weight_3d_chunked_equivalent():
+    """分块折叠（E=20 > _EXPERT_FOLD_CHUNK=16，循环边界 16+4）== 整块 fp32 计算。
+
+    回归：全量 GLM gate_up_proj [256,4096,6144] 整块 .float() = 24GiB → NPU OOM。
+    """
+    torch.manual_seed(6)
+    E, out, ins = 20, 8, 16
+    w0 = torch.randn(E, out, ins)
+    R = create_rot(QuaRotMode.HADAMARD, ins, block_size=-1, seed=7)
+    Rl = create_rot(QuaRotMode.HADAMARD, out, block_size=-1, seed=8)
+    wr = nn.Parameter(w0.clone())
+    rotate_weight_3d(wr, R, right_rotate=True)
+    assert torch.allclose(wr.data.float(), w0.float() @ R, atol=1e-4)
+    wl = nn.Parameter(w0.clone())
+    rotate_weight_3d(wl, Rl, right_rotate=False)
+    assert torch.allclose(wl.data.float(), Rl.T @ w0.float(), atol=1e-4)
+
+
+def test_fold_glm52_layer_chunked_experts_values():
+    """E=20（> _EXPERT_FOLD_CHUNK=16，循环边界 16+4）：直接校验分块 3D 折叠值。
+
+    不走 forward——假层用 r.argmax 选专家，E 大时 top-2 分差极小、argmax 易翻转，
+    会误报为折叠错误。这里对每个专家断言 gate_up/down 的 gamma 融合+旋转精确值。
+    """
+    import copy
+
+    torch.manual_seed(7)
+    layer = _FakeGlmLayer(num_exp=20, dense=False)
+    rm = _mini_rm()
+    R = rm["rot"]
+    gu0 = layer.mlp.experts.gate_up_proj.data.clone()
+    dn0 = layer.mlp.experts.down_proj.data.clone()
+    gamma_post = layer.post_attention_layernorm.weight.data.clone()
+    layer2 = copy.deepcopy(layer)
+    fold_glm52_layer(
+        layer2, 1, rm, num_layers=2, first_k_dense_replace=1, num_experts=20,
+        qk_nope_head_dim=4, qk_rope_head_dim=4,
+    )
+    # gate_up_proj: post_attn γ 融合（输入列 H 维）+ right rot
+    for e in range(20):
+        expected_gu = (gu0[e].float() * gamma_post.view(1, -1)) @ R
+        assert torch.allclose(layer2.mlp.experts.gate_up_proj.data[e].float(), expected_gu, atol=1e-4), f"gate_up[{e}]"
+    # down_proj: left rot（输出侧）
+    for e in range(20):
+        expected_dn = R.T @ dn0[e].float()
+        assert torch.allclose(layer2.mlp.experts.down_proj.data[e].float(), expected_dn, atol=1e-4), f"down[{e}]"
+    # post_attention_layernorm γ → 1
+    assert torch.allclose(layer2.post_attention_layernorm.weight.data, torch.ones_like(gamma_post), atol=1e-6)

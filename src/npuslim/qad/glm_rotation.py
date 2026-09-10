@@ -63,8 +63,15 @@ def rotate_linear(linear: nn.Module, rot: torch.Tensor, right_rotate: bool = Tru
             linear.bias.data = torch.matmul(rot.T.to(weight_data), bias_data).to(dtype=dtype)
 
 
-def rotate_weight_3d(weight: nn.Parameter, rot: torch.Tensor, right_rotate: bool = True) -> None:
-    """对 3D 融合 MoE 参数 [E, out, in] 逐专家应用旋转折叠（原地 copy_）。
+# 3D 融合专家参数 [E,*,*] 分块折叠的专家批大小：整块 .float() 会 OOM
+# （gate_up_proj [256,4096,6144] fp32 = 24GB）。分块后峰值 ~chunk*4096*6144*4*2。
+_EXPERT_FOLD_CHUNK = 16
+
+
+def rotate_weight_3d(
+    weight: nn.Parameter, rot: torch.Tensor, right_rotate: bool = True, chunk: int = _EXPERT_FOLD_CHUNK
+) -> None:
+    """对 3D 融合 MoE 参数 [E, out, in] 逐专家应用旋转折叠（原地 copy_，分块避免 OOM）。
 
     right_rotate: W ← W @ rot（输入侧，作用于 in 维）
     left_rotate:  W ← rot.T @ W（输出侧，作用于 out 维）
@@ -73,8 +80,7 @@ def rotate_weight_3d(weight: nn.Parameter, rot: torch.Tensor, right_rotate: bool
         rot = torch.block_diag(*rot)
     dtype = weight.data.dtype
     device = weight.data.device
-    w = weight.data.float()
-    dim_size = w.shape[2] if right_rotate else w.shape[1]
+    dim_size = weight.data.shape[2] if right_rotate else weight.data.shape[1]
     if dim_size != rot.shape[0]:
         block_num = dim_size // rot.shape[0]
         if dim_size % rot.shape[0] != 0:
@@ -82,12 +88,16 @@ def rotate_weight_3d(weight: nn.Parameter, rot: torch.Tensor, right_rotate: bool
                 f"rotate matrix dim {rot.shape[0]} must be a divisor of weight dim {dim_size}"
             )
         rot = torch.block_diag(*([rot] * block_num))
-    rot = rot.to(device)
-    if right_rotate:
-        w = torch.matmul(w, rot)  # [E, out, in] @ [in, in]
-    else:
-        w = torch.matmul(rot.T, w)  # [out, out] @ [E, out, in]
-    weight.data.copy_(w.to(dtype=dtype))
+    rot = rot.to(device=device, dtype=torch.float32)
+    n = weight.data.shape[0]
+    for start in range(0, n, chunk):
+        end = min(start + chunk, n)
+        w = weight.data[start:end].float()
+        if right_rotate:
+            w = torch.matmul(w, rot)  # [C, out, in] @ [in, in]
+        else:
+            w = torch.matmul(rot.T, w)  # [out, out] @ [C, out, in]
+        weight.data[start:end].copy_(w.to(dtype=dtype))
 
 
 def fuse_ln_linear(layernorms: List[nn.Module], linear_layers: List[nn.Module]) -> None:
@@ -341,8 +351,11 @@ def fold_glm52_layer(
             if isinstance(m, nn.Parameter):
                 # 3D 融合专家参数（gate_up_proj / down_proj 本体）
                 if m.ndim == 3:
-                    gamma = norm_mod.weight.data.float().to(m.device)
-                    m.data.copy_((m.data.float() * gamma.view(1, 1, -1)).to(m.dtype))
+                    gamma = norm_mod.weight.data.float().to(m.device).view(1, 1, -1)
+                    for s in range(0, m.data.shape[0], _EXPERT_FOLD_CHUNK):
+                        e = min(s + _EXPERT_FOLD_CHUNK, m.data.shape[0])
+                        w = m.data[s:e].float()
+                        m.data[s:e].copy_((w * gamma).to(m.data.dtype))
                     touched.append((t, "weight_3d"))
             elif hasattr(m, "weight"):
                 if m.weight.ndim == 2:
