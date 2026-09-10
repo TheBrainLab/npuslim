@@ -113,6 +113,8 @@ class BatchedGPTQModule:
         preproc_hessian: bool = True,
         hessian_device=None,
         rtn: bool = False,
+        ssz: bool = False,
+        ssz_step: int = 10,
     ):
         self._slice_linears = slice_linears
         self._CH = len(slice_linears)
@@ -124,6 +126,9 @@ class BatchedGPTQModule:
         self.preproc_hessian = bool(preproc_hessian)
         # E8: RTN mode for batched expert slices — skip Hessian compensation.
         self.rtn = bool(rtn)
+        # SSZ per-channel scale refinement (rtn base, ref: msmodelslim ssz.py)
+        self.ssz = bool(ssz)
+        self.ssz_step = int(ssz_step)
         self._hdev = hessian_device if hessian_device is not None else slice_linears[0].weight.device
 
         w0 = slice_linears[0].weight.data
@@ -296,10 +301,20 @@ class BatchedGPTQModule:
             f"shape=[{out},{in_}], experts=[{self._expert_start_idx}.."
             f"{self._expert_start_idx + CH - 1}]"
         )
+        if self.ssz:
+            logger.info(
+                f"[GPTQ] ssz scale refinement enabled (step={self.ssz_step}) "
+                f"for layer={layer_name}, CH={CH}"
+            )
         w = self._build_weight_batch().float().clone()  # [CH, out, in]
 
         q = torch.zeros_like(w)
         if self.groupsize != -1:
+            if self.ssz:
+                logger.warning(
+                    "[GPTQ] ssz scale refinement applies to per-channel "
+                    "(groupsize=-1) only; skipping for grouped path"
+                )
             self.scales = []
             self.zeros = []
             for i in range(0, in_, self.groupsize):
@@ -323,6 +338,12 @@ class BatchedGPTQModule:
             s, z = compute_scales_with_zero(
                 w.reshape(CH * out, in_), bits=self.wbits, sym=self.sym
             )
+            if self.ssz:
+                from ..ssz import ssz_calculate_scale
+
+                s = ssz_calculate_scale(
+                    w.reshape(CH * out, in_), s, bits=self.wbits, step=self.ssz_step
+                )
             self.scale = s.reshape(CH, out, 1)
             self.zero = z.reshape(CH, out, 1)
             q = quantize_with_scale_zero(w, self.scale, self.zero, bits=self.wbits)
@@ -507,6 +528,8 @@ class GPTQModule(BaseHessianModule):
         preproc_hessian: bool = True,
         hessian_device=None,
         rtn: bool = False,
+        ssz: bool = False,
+        ssz_step: int = 10,
     ):
         super().__init__(
             layer=layer,
@@ -522,6 +545,9 @@ class GPTQModule(BaseHessianModule):
         self.sym = bool(sym)
         # E8: RTN mode for expert slices — skip Hessian error compensation.
         self.rtn = bool(rtn)
+        # SSZ per-channel scale refinement (rtn base, ref: msmodelslim ssz.py)
+        self.ssz = bool(ssz)
+        self.ssz_step = int(ssz_step)
         if self.rtn:
             self.H = None  # Hessian never accumulated/consumed in rtn mode
 
@@ -569,10 +595,20 @@ class GPTQModule(BaseHessianModule):
         """
         _ = kwargs
         w = self.layer.weight.data.float().clone().to(self.dev)
+        if self.ssz:
+            logger.info(
+                f"[GPTQ] ssz scale refinement enabled (step={self.ssz_step}) "
+                f"for expert {getattr(self.layer, '_expert_idx', '?')}"
+            )
 
         if self.groupsize != -1:
             if not self.static_groups:
                 logger.warning("[GPTQ] rtn mode ignores static_groups=False; using static groups")
+            if self.ssz:
+                logger.warning(
+                    "[GPTQ] ssz scale refinement applies to per-channel "
+                    "(groupsize=-1) only; skipping for grouped path"
+                )
             for i in range(0, self.columns, self.groupsize):
                 scale, zero = compute_scales_with_zero(
                     w[:, i : i + self.groupsize], bits=self.wbits, sym=self.sym
@@ -580,9 +616,14 @@ class GPTQModule(BaseHessianModule):
                 self.scales.append(scale)
                 self.zeros.append(zero)
         else:
-            self.scale, self.zero = compute_scales_with_zero(
+            s, z = compute_scales_with_zero(
                 w, bits=self.wbits, sym=self.sym
             )
+            if self.ssz:
+                from ..ssz import ssz_calculate_scale
+
+                s = ssz_calculate_scale(w, s, bits=self.wbits, step=self.ssz_step)
+            self.scale, self.zero = s, z
 
         q = torch.zeros_like(w)
         if self.groupsize != -1:
@@ -1095,7 +1136,9 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         quantize_mtp: bool = False,
         save_mtp_debug: bool = False,
         scale_search: Optional[Dict] = None,
+        smooth_quant: Optional[Dict] = None,
         expert_mode: Optional[str] = None,
+        ssz_step: int = 10,
         **kwargs,
     ):
         if w_bits is not None:
@@ -1117,26 +1160,33 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         self.layer_routing = list(layer_routing) if layer_routing else None
         self._save_backend = save_backend
         self.scale_search_cfg = scale_search
+        # SmoothQuant (norm-linear) preprocessing: fold s = |X|^α / |W|^(1-α)
+        # into norm gain (÷s) + consumer linear weights (×s on input columns).
+        # Matches msmodelslim flex_smooth_quant NormLinearSubgraph semantics
+        # (per-input-channel scale, single s per norm across all targets).
+        self.smooth_quant_cfg = dict(smooth_quant) if smooth_quant else None
+        self._smooth_norm_stats: Dict[str, list] = {}
         # E8: expert-module quantization mode. None -> per-expert GPTQ (default);
         # "rtn" -> skip Hessian error compensation for MoE expert modules, plain
         # RTN quantization on the same scale/pack path (modelslim "AWQ + no GPTQ"
         # structural counterpart). Dense modules are unaffected.
+        # "ssz" -> rtn base + SSZ per-channel scale refinement (iterative LSQ,
+        # ref: msmodelslim core/quantizer/impl/ssz.py; modelslim W4A8 experts).
         if expert_mode is None:
             self.expert_mode = None
         else:
             expert_mode = str(expert_mode).lower()
-            if expert_mode == "ssz":
-                raise NotImplementedError(
-                    "[GPTQ] expert_mode='ssz' is phase-2 (iterative LSQ scale "
-                    "refinement; ref: msmodelslim core/quantizer/impl/ssz.py); "
-                    "only 'rtn' is supported now"
-                )
-            if expert_mode != "rtn":
+            if expert_mode not in ("rtn", "ssz"):
                 raise ValueError(
-                    f"[GPTQ] unsupported expert_mode: {expert_mode!r} (expected None or 'rtn')"
+                    f"[GPTQ] unsupported expert_mode: {expert_mode!r} "
+                    f"(expected None, 'rtn' or 'ssz')"
                 )
             self.expert_mode = expert_mode
-        self._expert_rtn = self.expert_mode == "rtn"
+        # Both rtn and ssz skip expert Hessian; ssz additionally refines the
+        # per-channel scale (SSZ) before quantization.
+        self._expert_rtn = self.expert_mode in ("rtn", "ssz")
+        self._expert_ssz = self.expert_mode == "ssz"
+        self.ssz_step = int(ssz_step)
 
     @property
     def _ascend_quant_type(self) -> str:
@@ -1204,12 +1254,19 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
             logger.info(
                 f"[{self._TAG}] scale_search enabled: {self.scale_search_cfg}"
             )
+        if self.smooth_quant_cfg:
+            logger.info(f"[{self._TAG}] smooth_quant enabled: {self.smooth_quant_cfg}")
         if self.expert_mode:
             logger.info(
                 f"[{self._TAG}] expert_mode={self.expert_mode}: MoE expert modules "
                 f"quantized with {self.expert_mode.upper()} (no Hessian compensation); "
                 f"dense modules unchanged"
             )
+            if self._expert_ssz:
+                logger.info(
+                    f"[{self._TAG}] ssz scale refinement step={self.ssz_step} "
+                    f"(iterative LSQ per-channel scale, ref: msmodelslim ssz.py)"
+                )
 
     def _apply_scale_search(self, layer, handlers, chunk) -> None:
         """Apply AWQ scale search to MoE expert handlers before GPTQ quantization.
@@ -1221,76 +1278,317 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         This is a float weight with improved quantization properties; GPTQ
         fasterquant then quantizes it normally. No post-quantize "divide by s"
         step is needed because s is folded into w_adjusted's values.
+
+        SmoothQuant (smooth_quant) preprocessing runs AFTER AWQ, matching
+        modelslim's processor order (flex_awq_ssz -> flex_smooth_quant).
         """
-        if not self.scale_search_cfg:
+        if not self.scale_search_cfg and not self.smooth_quant_cfg:
             return
 
-        moe_cfg = self.scale_search_cfg.get("moe")
-        if not moe_cfg:
-            return
+        moe_cfg = (self.scale_search_cfg or {}).get("moe")
+        method = (moe_cfg or {}).get("method", "awq")
+        if moe_cfg and method == "updown_awq":
+            self._apply_updown_awq(layer, handlers, moe_cfg)
+        elif moe_cfg and method == "awq":
+            nbits = int(moe_cfg.get("nbits", self.wbits))
+            grid = int(moe_cfg.get("grid", 20))
 
-        method = moe_cfg.get("method", "awq")
-        if method != "awq":
-            return
+            from ..scale_search import awq_search, awq_apply
 
-        nbits = int(moe_cfg.get("nbits", self.wbits))
-        grid = int(moe_cfg.get("grid", 20))
+            import time as _time
+            t_search = 0.0
+            n_search = 0
 
-        from ..scale_search import awq_search, awq_apply
+            for handler in handlers.values():
+                is_batched = getattr(handler, "_is_batched_expert", False)
+                is_expert = (
+                    is_batched
+                    or getattr(getattr(handler, "layer", None), "_is_expert_slice", False)
+                )
+                if not is_expert:
+                    continue
 
-        import time as _time
-        t_search = 0.0
-        n_search = 0
+                x_abs_mean = getattr(handler, "x_abs_mean", None)
+                if x_abs_mean is None:
+                    continue
 
-        for handler in handlers.values():
-            is_batched = getattr(handler, "_is_batched_expert", False)
-            is_expert = (
-                is_batched
-                or getattr(getattr(handler, "layer", None), "_is_expert_slice", False)
-            )
-            if not is_expert:
-                continue
-
-            x_abs_mean = getattr(handler, "x_abs_mean", None)
-            if x_abs_mean is None:
-                continue
-
-            if is_batched:
-                for local_e in range(handler._CH):
-                    sl = handler._slice_linears[local_e]
+                if is_batched:
+                    for local_e in range(handler._CH):
+                        sl = handler._slice_linears[local_e]
+                        w3d = sl._weight_3d
+                        e = sl._expert_idx
+                        w = w3d.data[e].float()
+                        xm = x_abs_mean[local_e].to(w.device)
+                        _t0 = _time.perf_counter()
+                        s = awq_search(w, xm, nbits=nbits, grid=grid)
+                        w_adjusted = awq_apply(w, s, nbits=nbits)
+                        t_search += _time.perf_counter() - _t0
+                        n_search += 1
+                        w3d.data[e].copy_(w_adjusted.to(w.dtype))
+                        # Update the slice linear's weight view to the new data
+                        sl.weight = torch.nn.Parameter(
+                            w3d.data[e], requires_grad=False
+                        )
+                else:
+                    sl = handler.layer
                     w3d = sl._weight_3d
                     e = sl._expert_idx
                     w = w3d.data[e].float()
-                    xm = x_abs_mean[local_e].to(w.device)
                     _t0 = _time.perf_counter()
-                    s = awq_search(w, xm, nbits=nbits, grid=grid)
+                    s = awq_search(w, x_abs_mean.to(w.device), nbits=nbits, grid=grid)
                     w_adjusted = awq_apply(w, s, nbits=nbits)
                     t_search += _time.perf_counter() - _t0
                     n_search += 1
                     w3d.data[e].copy_(w_adjusted.to(w.dtype))
-                    # Update the slice linear's weight view to the new data
                     sl.weight = torch.nn.Parameter(
                         w3d.data[e], requires_grad=False
                     )
+
+            if n_search:
+                logger.info(
+                    f"[{self._TAG}] AWQ scale_search: {layer.name}: {n_search} experts, "
+                    f"{t_search:.2f}s total, {t_search / n_search * 1000:.1f}ms/expert"
+                )
+
+        if self.smooth_quant_cfg:
+            self._apply_smooth_quant(layer, chunk)
+
+    def _apply_updown_awq(self, layer, handlers, moe_cfg) -> None:
+        """up-down middle-channel AWQ (modelslim flex_awq_ssz UpDown subgraph).
+
+        Scale s is searched per middle channel from the DOWN projection's input
+        activation abs-mean (= swiglu output, i.e. the middle activation — the
+        down handler's x_abs_mean already IS this statistic). Then folded:
+          - down:     W_dn <- RTN(W_dn * s_col) / s_col   (input-column scale)
+          - gate_up:  up half rows [I, 2I) <- W_gu[I:2I] * (1/s)
+        The gate half (rows [0, I)) is left untouched (swiglu nonlinearity).
+
+        Ref: msmodelslim processor/anti_outlier/awq/api.py::awq_impl_up_down +
+             common/subgraph_fusion.py::UpDownSubgraphFusion.
+        """
+        import time as _time
+
+        from ..scale_search import awq_apply, awq_search
+
+        nbits = int(moe_cfg.get("nbits", self.wbits))
+        grid = int(moe_cfg.get("grid", 20))
+
+        # Per-expert context: (experts_path, expert_idx) -> down w3d + middle mean
+        experts_ctx: Dict[tuple, Dict] = {}
+        for handler in handlers.values():
+            is_batched = getattr(handler, "_is_batched_expert", False)
+            if not (
+                is_batched
+                or getattr(getattr(handler, "layer", None), "_is_expert_slice", False)
+            ):
+                continue
+            if getattr(handler, "_proj_type", None) != "down_proj":
+                continue
+            if is_batched:
+                for local_idx in range(handler._CH):
+                    e = handler._expert_start_idx + local_idx
+                    ctx = experts_ctx.setdefault(
+                        (handler._experts_module_path, e), {}
+                    )
+                    ctx["down_w3d"] = handler._slice_linears[0]._weight_3d
+                    ctx["mid_mean"] = (
+                        handler.x_abs_mean[local_idx].cpu() / 1.0
+                    )
             else:
                 sl = handler.layer
-                w3d = sl._weight_3d
-                e = sl._expert_idx
-                w = w3d.data[e].float()
-                _t0 = _time.perf_counter()
-                s = awq_search(w, x_abs_mean.to(w.device), nbits=nbits, grid=grid)
-                w_adjusted = awq_apply(w, s, nbits=nbits)
-                t_search += _time.perf_counter() - _t0
-                n_search += 1
-                w3d.data[e].copy_(w_adjusted.to(w.dtype))
-                sl.weight = torch.nn.Parameter(
-                    w3d.data[e], requires_grad=False
+                ctx = experts_ctx.setdefault(
+                    (sl._experts_module_path, sl._expert_idx), {}
+                )
+                ctx["down_w3d"] = sl._weight_3d
+                ctx["mid_mean"] = handler.x_abs_mean.cpu() / 1.0
+
+        if not experts_ctx:
+            return
+
+        # Resolve gate_up 3D per experts_module path (fused gate_up_proj)
+        gate_up_by_path: Dict[str, nn.Parameter] = {}
+        for handler in handlers.values():
+            proj_type = getattr(handler, "_proj_type", None)
+            if proj_type != "gate_up_proj":
+                continue
+            if getattr(handler, "_is_batched_expert", False):
+                gate_up_by_path[handler._experts_module_path] = (
+                    handler._slice_linears[0]._weight_3d
+                )
+            else:
+                sl = handler.layer
+                gate_up_by_path[sl._experts_module_path] = sl._weight_3d
+
+        t_search = 0.0
+        n_search = 0
+        for (experts_path, e), ctx in experts_ctx.items():
+            down_w3d = ctx["down_w3d"]
+            mid = ctx["mid_mean"]
+            w = down_w3d.data[e].float()
+            _t0 = _time.perf_counter()
+            s = awq_search(w, mid, nbits=nbits, grid=grid)
+            w_adjusted = awq_apply(w, s, nbits=nbits)  # RTN(w*s)/s, columns
+            t_search += _time.perf_counter() - _t0
+            n_search += 1
+            down_w3d.data[e].copy_(w_adjusted.to(down_w3d.dtype))
+
+            gu_w3d = gate_up_by_path.get(experts_path)
+            if gu_w3d is not None:
+                I = gu_w3d.shape[1] // 2
+                inv_s = (1.0 / s).to(gu_w3d.dtype).view(-1, 1)
+                gu = gu_w3d.data[e].float()
+                gu[I:] = gu[I:] * inv_s
+                gu_w3d.data[e].copy_(gu.to(gu_w3d.dtype))
+            else:
+                logger.warning(
+                    f"[{self._TAG}] updown_awq: no fused gate_up_proj for "
+                    f"experts_module {experts_path}, expert {e} (up-half fold skipped)"
                 )
 
         if n_search:
             logger.info(
-                f"[{self._TAG}] AWQ scale_search: {layer.name}: {n_search} experts, "
+                f"[{self._TAG}] updown_awq: {layer.name}: {n_search} experts, "
                 f"{t_search:.2f}s total, {t_search / n_search * 1000:.1f}ms/expert"
+            )
+
+    # ---------------- SmoothQuant (norm-linear) ----------------
+    #
+    # Ref: msmodelslim processor/anti_outlier/flex_smooth/api.py::
+    #      flex_smooth_impl_norm_linear + common/subgraph_fusion.py::
+    #      NormLinearSubgraphFusion, and model/glm_5/quarot.py::get_ln_fuse_map.
+    #
+    # Scale s = |X|^α / |W|^(1-α) per input channel (α default 0.5, no search):
+    #   - w_scale: per-input-channel abs-max across ALL target linears of the
+    #     same norm (stacked, then max) — modelslim compute_multi_weight_scale.
+    #   - x_scale: per-channel abs-max of the norm OUTPUT (collected via hook).
+    #   - fold: norm gain γ ← γ/s ; every target linear weight cols ← ×s.
+    # The net function is identical; quantization happens on the smoothed W*s.
+    #
+    # Default scope (GLM-5.2, matching best_practice flex_smooth_quant
+    # "self_attn" + "input_layernorm"; post_attention_layernorm excluded):
+    #   input_layernorm -> q_a_proj, kv_a_proj_with_mqa
+    #   self_attn.q_a_layernorm -> self_attn.q_b_proj
+    #   self_attn.kv_a_layernorm -> self_attn.kv_b_proj
+
+    @staticmethod
+    def _try_get_child(layer, path):
+        """_get_child_module that tolerates missing modules (returns None)."""
+        try:
+            return _get_child_module(layer, path)
+        except AttributeError:
+            return None
+
+    DEFAULT_SMOOTH_NORM_TARGETS = [
+        {"norm": "input_layernorm",
+         "targets": ["self_attn.q_a_proj", "self_attn.kv_a_proj_with_mqa"]},
+        {"norm": "self_attn.q_a_layernorm", "targets": ["self_attn.q_b_proj"]},
+        {"norm": "self_attn.kv_a_layernorm", "targets": ["self_attn.kv_b_proj"]},
+    ]
+
+    def _smooth_norm_targets(self) -> list:
+        if not self.smooth_quant_cfg:
+            return []
+        targets = self.smooth_quant_cfg.get("targets")
+        return targets if targets else list(self.DEFAULT_SMOOTH_NORM_TARGETS)
+
+    def _collect_statistics(self, layer_module, handlers, *, layer_name, chunk_index):
+        """收集 SmoothQuant norm 输出 per-channel abs-max（叠加到父类统计收集）。"""
+        if not self.smooth_quant_cfg:
+            return super()._collect_statistics(
+                layer_module, handlers, layer_name=layer_name, chunk_index=chunk_index
+            )
+        self._smooth_norm_stats.clear()
+        hooks = []
+        for entry in self._smooth_norm_targets():
+            norm_module = self._try_get_child(layer_module, entry["norm"])
+            if norm_module is None or not hasattr(norm_module, "weight"):
+                continue
+            acc = [None]  # mutable holder: [hidden] running max, lazily created
+            self._smooth_norm_stats[f"{layer_name}.{entry['norm']}"] = acc
+            hooks.append(
+                norm_module.register_forward_hook(
+                    lambda module, inp, out, acc=acc: self._smooth_collect(out, acc)
+                )
+            )
+        try:
+            return super()._collect_statistics(
+                layer_module, handlers, layer_name=layer_name, chunk_index=chunk_index
+            )
+        finally:
+            for h in hooks:
+                h.remove()
+
+    @staticmethod
+    def _smooth_collect(out: torch.Tensor, acc: list) -> None:
+        """Running per-channel abs-max of a norm output into a [hidden] holder."""
+        t = out.float()
+        while t.dim() > 1:
+            t = t.amax(dim=0)
+        if acc[0] is None:
+            acc[0] = torch.zeros_like(t)
+        acc[0].copy_(torch.maximum(acc[0].to(t.device), t).to(acc[0].device))
+
+    def _apply_smooth_quant(self, layer, chunk) -> None:
+        """SmoothQuant fold for norm-linear pairs (post AWQ, pre quantization).
+
+        Folds s into 2D linear weights (columns ×s) and the norm gain (÷s),
+        then syncs the (FLOAT pass-through) norm snapshot so the saver persists
+        the smoothed γ — matching w4a8c8's non-all-1 norm values (§1.6.2 #3).
+        """
+        from ..scale_search import compute_weight_scale, smooth_scale
+
+        alpha = float(self.smooth_quant_cfg.get("alpha", 0.5))
+        n_pairs = 0
+        for entry in self._smooth_norm_targets():
+            norm_path = entry["norm"]
+            norm_module = self._try_get_child(layer, norm_path)
+            if norm_module is None or not hasattr(norm_module, "weight"):
+                continue
+            acc = self._smooth_norm_stats.get(f"{layer.name}.{norm_path}")
+            if acc is None or acc[0] is None:
+                continue
+            x_max = acc[0]
+
+            target_weights = []
+            target_modules = []
+            for tname in entry["targets"]:
+                tmod = self._try_get_child(layer, tname)
+                if tmod is None or not hasattr(tmod, "weight"):
+                    continue
+                target_modules.append(tmod)
+                target_weights.append(tmod.weight.detach().float())
+            if not target_weights:
+                continue
+
+            w_max = torch.stack(
+                [compute_weight_scale(w) for w in target_weights]
+            ).amax(dim=0)  # per-input-channel max across all targets
+            s = smooth_scale(x_max, w_max, alpha)
+
+            for tmod in target_modules:
+                w = tmod.weight.detach().float()
+                tmod.weight.data.copy_(
+                    (w * s.to(w.device).view(1, -1)).to(tmod.weight.dtype)
+                )
+            gamma = norm_module.weight.detach().float()
+            norm_module.weight.data.copy_(
+                (gamma / s.to(gamma.device)).to(norm_module.weight.dtype)
+            )
+
+            # Sync FLOAT pass-through norm snapshot (chunk copy != in-memory module)
+            if chunk is not None:
+                snap_name = f"{layer.name}.{norm_path}.weight"
+                snap = chunk.get_tensor(snap_name)
+                if snap is not None:
+                    chunk.update_tensor(
+                        snap_name, norm_module.weight.detach().cpu()
+                    )
+            n_pairs += 1
+
+        if n_pairs:
+            logger.info(
+                f"[{self._TAG}] smooth_quant: {layer.name}: {n_pairs} norm-linear "
+                f"pairs folded (alpha={alpha})"
             )
 
     def _pack_quant_linear_tensors(
@@ -1391,6 +1689,8 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                             preproc_hessian=self.preproc_hessian,
                             hessian_device=torch.device("cpu"),
                             rtn=self._expert_rtn,
+                            ssz=self._expert_ssz,
+                            ssz_step=self.ssz_step,
                         )
                 else:
                     # Per-expert: create num_experts GPTQModule handlers
@@ -1411,6 +1711,8 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                             preproc_hessian=self.preproc_hessian,
                             hessian_device=torch.device("cpu"),
                             rtn=self._expert_rtn,
+                            ssz=self._expert_ssz,
+                            ssz_step=self.ssz_step,
                         )
             else:
                 # Standard 2D Linear

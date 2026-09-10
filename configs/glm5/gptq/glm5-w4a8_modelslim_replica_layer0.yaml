@@ -1,0 +1,86 @@
+metadata:
+  name: "GLM5_W4A8_ModelslimReplica_Layer0"
+  description: "modelslim 复刻 Layer 0（无旋转）：up-down 中间通道 AWQ + SSZ scale 精修 + SmoothQuant + 专家 RTN 底座 + 稠密 W8A8 minmax。对标 w4a8c8 生产配方（best_practice.yaml）减 quarot。见 workspace/复刻modelslim计划.md"
+
+resources:
+  - id: glm5
+    type: GLM5
+    path: /data/yult/llm_inference/models/GLM-5.2-bf16/snapshots/master/
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    device_map: cpu           # cpu：量化主流程在 CPU 侧（Hessian/backfill），fasterquant 逐块上 GPU
+
+  - id: calib_data
+    type: MixedDomain          # 校准域差异已证非 ppl 差距来源（§1.6.2 证据#6）；先用现成 MixedDomain 48 条
+                              # 后续可替换为 modelslim mix_calib（GSM8K 数学/中文选择/阅读理解，48 条短样本）
+    data_path: dataset/calib/mixed_chat_code.jsonl
+    num_samples: 48           # Layer 0 对齐 modelslim 48 条短样本量级
+    max_seq_length: 1024      # 短于窗口的样本自动跳过（GPTQ 需等长无 padding 批次）
+
+recipe:
+  - name: "GPTQ_MoE_W4A8_Dense_W8A8_ReplicaLayer0"
+    type: compressor
+    model: "@glm5"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 4
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ
+      wbits: 4                # MoE 专家默认 W4A8_DYNAMIC（默认位宽）
+      act_bits: 8             # 激活 8-bit 动态量化 -> 输出 W4A8_DYNAMIC / W8A8_DYNAMIC
+      groupsize: -1           # per-channel（W4A8_DYNAMIC moe scheme 仅支持 per-channel）
+      save_backend: npu
+      expert_chunk_size: 1    # CH=1：per-expert 量化（RTN/SSZ 路径）
+      layer_routing:          # 稠密层覆写为 wbits=8（W8A8_DYNAMIC minmax，无 GPTQ，对齐 modelslim linear_quant）
+        - patterns:
+            - "*.self_attn.*"            # q_a/q_b/kv_a/o_proj + indexer.wq_b（kv_b_proj/wk/weights_proj 已由模型默认 FLOAT）
+            - "*.mlp.shared_experts.*"   # shared expert（checkpoint 实际属性名为复数 shared_experts）
+            - "*.mlp.gate_proj"          # dense MLP（first_k_dense_replace 层）；experts.*.gate_proj 不匹配
+            - "*.mlp.up_proj"
+            - "*.mlp.down_proj"
+          wbits: 8                        # eh_proj 属 MTP 层，同事产物保持 FLOAT，不列入
+      max_calib_samples: 48
+      blocksize: 256
+      actorder: true
+      quantize_mtp: false
+      save_mtp_debug: false
+      # 复刻组件 1：up-down 中间通道 AWQ（modelslim flex_awq_ssz UpDown 子图）
+      #   s 从 down 投影输入（中间激活 = swiglu 输出）abs-mean 网格搜索，
+      #   down 列×s、gate_up up 半行×1/s（gate 半不动，swiglu 非线性）。
+      # 变体：method: awq = 输入通道折叠（E6 证明有害，勿用）；无 AWQ = 删除本节
+      scale_search:
+        moe:
+          method: updown_awq
+          nbits: 4
+          grid: 20
+      # 复刻组件 2：SmoothQuant（modelslim flex_smooth_quant norm-linear）
+      #   s = |X|^0.5 / |W|^(1-0.5)，折进 norm gain（÷s）+ self_attn 消费 linear（×s 列）。
+      #   norm 权重以非全 1 形态落盘（对齐 w4a8c8 §1.6.2 证据#3）；post_attention_layernorm 不参与（对齐 best_practice exclude）
+      smooth_quant:
+        alpha: 0.5
+      # 复刻组件 3：专家 SSZ（modelslim linear_quant W4A8 per-channel ssz）
+      #   rtn 底座 + 迭代最小二乘 per-channel scale 精修（≤step 次），无 GPTQ Hessian 补偿
+      expert_mode: ssz
+      ssz_step: 10
+    ignore_layers: []         # 已由 GLM5 模型默认 skip（router gate / kv_b_proj / indexer）
+    execution:
+      mode: streaming
+      chunk_size: 1           # 流式加载层数分块（default: 1）
+      resume: true            # 断点续跑（default: true）：逐 chunk 自动落盘 checkpoint
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_npu"
+
+
+# Layer 0 复刻（modelslim 减 quarot）。判据 = wikitext ppl 相对 3.763 的改善，对标 3.482。
+# 变体开关（改配置即可，勿留重复键——坑③）：
+#   - updown_awq 关闭（纯 SSZ+RTN+SQ，M5-3 提示 AWQ 有害）：删 scale_search 节
+#   - 旋转（Layer 1/E3）：Layer 0 出数后叠加
+# cd /data/yult/llm_inference/npuslim && \
+# OMP_NUM_THREADS=48 \
+# CUDA_VISIBLE_DEVICES=7 HF_DATASETS_CACHE=/data/yult/llm_inference/npuslim/workspace/hf_datasets_cache \
+# nohup /data/yult/miniconda3/envs/npuslim/bin/python tools/run.py \
+#   -c configs/glm5/gptq/glm5-w4a8_modelslim_replica_layer0.yaml \
+#   > ./logs/run_glm5.2_w4a8_replica_layer0.log 2>&1 &
