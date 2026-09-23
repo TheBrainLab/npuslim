@@ -35,7 +35,7 @@ from npuslim.plugins.registry import package_version_range, register_patch
 
 @register_patch(
     target="vllm_ascend.quantization.method_adapters",
-    condition=package_version_range("vllm_ascend", max_version="0.20.1"),
+    condition=package_version_range("vllm_ascend", min_version="0.1.0"),
 )
 def patch_create_weights(module):
     """Patch AscendLinearMethod.create_weights to fix per-group param dimensions.

@@ -1,20 +1,24 @@
-"""Patch for vllm/model_executor/models/qwen3_moe.py
+"""Patch for vllm/model_executor/models/glm_moe_dsa.py
 
-This module patches Qwen3MoeModel.load_weights to handle quantized MoE
-expert weights stored in per-expert 2D format with NPU W4A16 suffixes
-(weight/weight_scale/weight_offset) or GPU GPTQ suffixes
-(qweight/qzeros/scales/g_idx).
+This module patches GlmMoeDsaForCausalLM.load_weights to handle W4A16
+quantization where MoE expert weights are stored as fused 3D tensors
+with weight/weight_scale/weight_offset suffixes.
 
 Root Cause:
-- NPUSlim outputs per-expert 2D naming: experts.0.gate_proj.weight
-- vLLM FusedMoE's expert_params_mapping maps these to 3D internal params
-- NPU W4A16 quantization uses weight/weight_scale/weight_offset suffixes
-  that the standard load_weights doesn't handle for expert weights
-- GPU GPTQ uses qweight/qzeros/scales/g_idx suffixes
-- GPU W4A16 uses _packed/_scale/_shape/_offset suffixes
+- NPUSlim outputs fused 3D naming: experts.gate_up_proj.weight [E,2I,H//8]
+- vLLM FusedMoE's expert_params_mapping expects per-expert naming:
+  experts.{i}.gate_proj.weight, which doesn't match the fused 3D format
+- W4A16 quantization registers params with _scale/_offset suffixes that
+  the standard load_weights doesn't handle for expert weights
+
+Solution:
+- For W4A16 expert weights: bypass expert_params_mapping and load directly
+- For non-expert weights: use the original stacked_params_mapping logic
+- Try multiple suffixes (_packed, "", _scale, _shape, _offset) to find params
 """
 
 from collections.abc import Iterable
+from typing import Any
 
 import torch
 from vllm.logger import init_logger
@@ -75,9 +79,6 @@ def _is_quantized(params_dict: dict) -> bool:
             # GPU GPTQ: qweight, qzeros, scales, g_idx
             if any(s in name for s in _GPU_GPTQ_SUFFIXES):
                 return True
-            # GPU W4A16: _packed, _scale, _shape, _offset
-            if "weight_packed" in name:
-                return True
     return False
 
 
@@ -92,11 +93,11 @@ def _is_expert_weight(name: str) -> bool:
 
 
 @register_patch(
-    target="vllm.model_executor.models.qwen3_moe",
+    target="vllm.model_executor.models.glm_moe_dsa",
     condition=package_version_range("vllm", min_version="0.1.0"),
 )
-def patch_qwen3_moe_load_weights(module):
-    """Patch Qwen3MoeModel.load_weights to handle quantized MoE experts.
+def patch_glm_moe_dsa_load_weights(module):
+    """Patch GlmMoeDsaForCausalLM.load_weights to handle quantized MoE experts.
 
     Supports both NPU W4A16 (weight/weight_scale/weight_offset) and
     GPU GPTQ (qweight/qzeros/scales/g_idx) quantization formats.
@@ -108,7 +109,7 @@ def patch_qwen3_moe_load_weights(module):
 
     # Find the model class that has load_weights
     model_cls = None
-    for cls_name in ("Qwen3MoeForCausalLM", "Qwen3MoeModel"):
+    for cls_name in ("GlmMoeDsaForCausalLM", "GlmMoeDsaModel", "DeepseekV2ForCausalLM", "DeepseekV2Model"):
         cls = getattr(module, cls_name, None)
         if cls is not None and hasattr(cls, "load_weights"):
             model_cls = cls
@@ -116,11 +117,12 @@ def patch_qwen3_moe_load_weights(module):
 
     if model_cls is None:
         patch_logger.warning(
-            "Could not find Qwen3Moe model class with load_weights, skipping patch"
+            "Could not find GlmMoeDsa model class with load_weights, skipping patch"
         )
         return
 
-    # Runtime signature compatibility check
+    # Runtime signature compatibility check: verify load_weights accepts
+    # a single iterable argument. If vLLM changes the signature, skip patch.
     import inspect
 
     sig = inspect.signature(model_cls.load_weights)
@@ -131,7 +133,7 @@ def patch_qwen3_moe_load_weights(module):
     ):
         patch_logger.warning(
             f"{model_cls.__name__}.load_weights signature {sig} is incompatible "
-            f"with the quantization patch (expected 1 positional arg). Skipping patch."
+            f"with the W4A16 patch (expected 1 positional arg). Skipping patch."
         )
         return
 
@@ -142,18 +144,10 @@ def patch_qwen3_moe_load_weights(module):
     ) -> set[str]:
         params_dict = dict(self.named_parameters())
 
-        # GPU standard GPTQ: vLLM >=0.27 uses FusedMoE params
-        # (routed_experts.w13_qweight / w2_qweight), which the legacy per-expert
-        # naming logic below does not handle. vLLM loads standard GPTQ checkpoints
-        # natively, so bypass the patch entirely for AutoGPTQConfig.
-        quant_config = getattr(self, "quant_config", None)
-        if quant_config is not None and type(quant_config).__name__ == "AutoGPTQConfig":
-            return original_load_weights(self, weights)
-
         # Check if quantization is used (NPU W4A16 or GPU GPTQ)
-        is_quant = _is_quantized(params_dict)
+        is_quantized = _is_quantized(params_dict)
 
-        if not is_quant:
+        if not is_quantized:
             # Use original implementation for non-quantized models
             return original_load_weights(self, weights)
 
@@ -173,6 +167,17 @@ def patch_qwen3_moe_load_weights(module):
             ("gate_up_proj", "up_proj", 1),
         ]
 
+        # MLA attention uses different projection names
+        # Check if MLA params exist and add mappings
+        if any("q_a_proj" in name for name in params_dict):
+            # GLM-5 uses MLA: q_a_proj + q_b_proj instead of q_proj
+            # kv_a_proj_with_mqa + kv_b_proj instead of k_proj/v_proj
+            stacked_params_mapping = [
+                # MLA doesn't stack q/k/v, so use minimal mapping
+                ("gate_up_proj", "gate_proj", 0),
+                ("gate_up_proj", "up_proj", 1),
+            ]
+
         loaded_params: set[str] = set()
 
         # Try to get expert_params_mapping (may not exist for all model classes)
@@ -184,13 +189,9 @@ def patch_qwen3_moe_load_weights(module):
                 pass
 
         for name, loaded_weight in weights:
-            # Handle KV cache quantization scales.
-            # Only ascend-style quant configs expose get_cache_scale();
-            # GPU GPTQ (AutoGPTQConfig) does not, so guard with getattr.
-            quant_config = getattr(self, "quant_config", None)
-            get_cache_scale = getattr(quant_config, "get_cache_scale", None)
-            if get_cache_scale is not None:
-                scale_name = get_cache_scale(name)
+            # Handle KV cache quantization scales
+            if getattr(self, "quant_config", None) is not None:
+                scale_name = getattr(self, "quant_config", None).get_cache_scale(name)
                 if scale_name is not None:
                     param = params_dict[scale_name]
                     weight_loader = getattr(
@@ -206,6 +207,8 @@ def patch_qwen3_moe_load_weights(module):
 
             # Handle expert weights (quantized: direct loading with suffix matching)
             if _is_expert_weight(name):
+                # For fused 3D checkpoint (experts.gate_up_proj.qweight),
+                # try direct name match first, then suffix-based matching
                 param_found = False
 
                 def _try_load(candidate, param, loaded_weight, **kwargs):
@@ -228,8 +231,8 @@ def patch_qwen3_moe_load_weights(module):
                             target_logger.warning(f"Failed to load {candidate}: {e}")
                     return False
 
-                # 1. Direct match (works for NPU W4A16: weight/weight_scale/weight_offset
-                #    and GPU GPTQ: qweight/qzeros/scales/g_idx)
+                # 1. Direct match (works for GPU GPTQ: qweight/qzeros/scales/g_idx
+                #    and NPU W4A16: weight/weight_scale/weight_offset)
                 if name in params_dict:
                     if not is_pp_missing_parameter(name, self):
                         param = params_dict[name]
@@ -367,6 +370,9 @@ def patch_qwen3_moe_load_weights(module):
                 loaded_params.add(name)
 
         # Check for unloaded expert parameters after processing all weights.
+        # Critical parameters (weight/qweight/weight_scale/scales) that are
+        # missing indicate a checkpoint-model mismatch and will cause silent
+        # inference errors if not caught here.
         unloaded_expert_params = []
         unloaded_critical = []
         for param_name in params_dict:
@@ -395,5 +401,13 @@ def patch_qwen3_moe_load_weights(module):
 
     model_cls.load_weights = patched_load_weights
     patch_logger.info(
-        f"Patched {model_cls.__name__}.load_weights for quantized MoE support"
+        f"Patched {model_cls.__name__}.load_weights for W4A16 MoE support"
     )
+
+
+# Also register for vLLM 0.23.0+ where GlmMoeDsaForCausalLM is in deepseek_v2
+from npuslim.plugins.registry import _PATCH_REGISTRY, PatchSpec
+_vllm_cond = package_version_range('vllm', min_version='0.1.0')
+_PATCH_REGISTRY.setdefault('vllm.model_executor.models.deepseek_v2', []).append(
+    PatchSpec(func=patch_glm_moe_dsa_load_weights, condition=_vllm_cond)
+)

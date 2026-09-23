@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from pathlib import Path
+from string import Formatter
 from typing import Any, Dict, Optional
 
 import torch
 from loguru import logger
+from safetensors import safe_open
 from safetensors.torch import save_file
 
 from npuslim.core.backend import bh
@@ -206,8 +209,10 @@ class StreamingHuggingFaceSaver(BaseSaver):
 
         shard_name = self.shard_name_pattern.format(self.shard_counter)
         shard_path = self.output_dir / shard_name
-
-        save_file(self.buffer, shard_path)
+        # Atomic write: crash mid-flush must not leave a corrupt shard file.
+        tmp_path = shard_path.with_name(shard_name + ".tmp")
+        save_file(self.buffer, str(tmp_path))
+        os.replace(tmp_path, shard_path)
         self._written_shards.add(shard_name)
 
         # Track weight map for index
@@ -222,6 +227,112 @@ class StreamingHuggingFaceSaver(BaseSaver):
         self.shard_counter += 1
 
         return shard_name
+
+    def resume_manifest(self) -> Dict[str, Any]:
+        """Snapshot of saver state for checkpoint (call after flush, buffer empty)."""
+        if self.buffer:
+            raise RuntimeError(
+                "[HFSaver] resume manifest requires an empty buffer; call flush() first"
+            )
+        return {
+            "shard_counter": self.shard_counter,
+            "written_shards": sorted(self._written_shards),
+            "weight_map": dict(self.weight_map),
+            "tensor_type_map": dict(self.tensor_type_map),
+        }
+
+    @staticmethod
+    def _make_shard_matcher(pattern: str) -> "re.Pattern[str]":
+        """Build a regex that extracts the numeric shard index from a shard filename."""
+        parts: list[str] = []
+        has_field = False
+        for literal, field_name, _spec, _conv in Formatter().parse(pattern):
+            parts.append(re.escape(literal))
+            if field_name is not None:
+                has_field = True
+                parts.append(r"(\d+)")
+        if not has_field:
+            raise ValueError(
+                f"shard_name_pattern must contain one numeric format field: {pattern}"
+            )
+        return re.compile("^" + "".join(parts) + "$")
+
+    def recover_from_disk(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
+        """Restore saver state from a checkpoint manifest of an interrupted run.
+
+        - Restores shard_counter / weight_map / tensor_type_map / written_shards;
+        - Deletes leftover *.tmp files and orphan shards flushed after the last
+          checkpoint commit (not referenced by the manifest);
+        - Validates every shard referenced by weight_map exists on disk.
+
+        Must be called before adding any tensor. Returns a summary dict.
+        """
+        if self.buffer:
+            raise RuntimeError(
+                "[HFSaver] recover_from_disk must be called before adding tensors"
+            )
+
+        matcher = self._make_shard_matcher(self.shard_name_pattern)
+        disk_shards: Dict[int, str] = {}
+        for entry in sorted(self.output_dir.iterdir()):
+            if not entry.is_file():
+                continue
+            if entry.name.endswith(".tmp"):
+                # Leftover of an interrupted atomic write.
+                entry.unlink()
+                logger.warning(f"[HFSaver] Removed leftover temp file: {entry.name}")
+                continue
+            m = matcher.match(entry.name)
+            if m:
+                disk_shards[int(m.group(1))] = entry.name
+
+        self.shard_counter = int(manifest.get("shard_counter", 0))
+        self._written_shards = set(manifest.get("written_shards", []))
+        self.weight_map = dict(manifest.get("weight_map", {}))
+        self.tensor_type_map = dict(manifest.get("tensor_type_map", {}))
+
+        # Orphan shards: on disk but flushed after the last checkpoint commit.
+        orphans = [name for name in disk_shards.values() if name not in self._written_shards]
+        for name in orphans:
+            (self.output_dir / name).unlink()
+        if orphans:
+            preview = ", ".join(sorted(orphans)[:4])
+            logger.warning(
+                f"[HFSaver] Removed {len(orphans)} orphan shard(s) flushed after last "
+                f"checkpoint: {preview}"
+            )
+
+        missing = sorted(
+            {
+                shard
+                for shard in self.weight_map.values()
+                if shard and not (self.output_dir / shard).exists()
+            }
+        )
+        if missing:
+            preview = ", ".join(missing[:4])
+            raise IOError(f"[HFSaver] Resume manifest references missing shard(s): {preview}")
+
+        # Keep counter beyond every written shard index (guards stale manifests).
+        for name in self._written_shards:
+            m = matcher.match(name)
+            if m:
+                self.shard_counter = max(self.shard_counter, int(m.group(1)) + 1)
+
+        if bh.has_npu and self.require_tensor_types_on_npu:
+            untyped = [k for k in self.weight_map if k not in self.tensor_type_map]
+            if untyped:
+                raise ValueError(
+                    f"[HFSaver] Resumed weight_map has {len(untyped)} tensor(s) without "
+                    "tensor_type entries; NPU output requires a manifest with "
+                    "tensor_type_map"
+                )
+
+        return {
+            "shards": len(self._written_shards),
+            "tensors": len(self.weight_map),
+            "orphan_shards_removed": len(orphans),
+        }
 
     def _build_index(self) -> Dict[str, Any]:
         indexed_shards = {shard for shard in self.weight_map.values()}

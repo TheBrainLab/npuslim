@@ -66,7 +66,7 @@ except ImportError:
 
 @register_patch(
     registrar=register_scheme("W4A16", "linear"),
-    condition=package_version_range("vllm_ascend", max_version="0.20.1"),
+    condition=package_version_range("vllm_ascend", min_version="0.1.0"),
 )
 class AscendW4A16LinearMethod(AscendLinearScheme):
     """Linear method for Ascend W4A16.

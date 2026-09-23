@@ -38,6 +38,7 @@ class ChunkLoader:
         block_name: str = "model.layers",
         pre_module_names: Optional[List[str]] = None,
         post_module_names: Optional[List[str]] = None,
+        num_layers: Optional[int] = None,
     ):
         self.model_path = Path(model_path)
         self.path_str = str(model_path)
@@ -48,6 +49,7 @@ class ChunkLoader:
         self.block_name = block_name
         self.pre_module_names = [name for name in (pre_module_names or []) if name]
         self.post_module_names = [name for name in (post_module_names or []) if name]
+        self.num_layers = int(num_layers) if num_layers is not None else None
 
         # Resolved state
         self._resolved_dir: Optional[Path] = None
@@ -116,6 +118,7 @@ class ChunkLoader:
         self._tensor_names = list(self._weight_map.keys())
         self._build_layer_tensor_map()
         self._build_aux_tensor_lists()
+        self._merge_extra_shard_tensors()
         self._validate_tensor_assignment()
         logger.info(
             f"[ChunkLoader] Loaded {checkpoint_format} index: {len(self._tensor_names)} tensors"
@@ -134,6 +137,7 @@ class ChunkLoader:
             self._tensor_names = list(tensor_names)
             self._build_layer_tensor_map()
             self._build_aux_tensor_lists()
+            self._merge_extra_shard_tensors()
             self._validate_tensor_assignment()
             logger.info(f"[ChunkLoader] Single shard: {len(tensor_names)} tensors")
         except Exception as e:
@@ -189,6 +193,9 @@ class ChunkLoader:
             if not match:
                 continue
             layer_idx = int(match.group(1))
+            # Skip layers beyond config's num_hidden_layers (e.g. NextN prediction layers)
+            if self.num_layers is not None and layer_idx >= self.num_layers:
+                continue
             layer_tensor_map.setdefault(layer_idx, []).append(tensor_name)
 
         self._layer_tensor_map = layer_tensor_map
@@ -246,6 +253,42 @@ class ChunkLoader:
                 f"Examples: {preview}. "
                 "These tensors will be preserved by CompressorTask backfill."
             )
+
+    def _merge_extra_shard_tensors(self) -> None:
+        """Merge tensors from .safetensors shards that are not referenced by the
+        index (e.g. GLM-5's mtp-others.safetensors, whose MTP weights live in a
+        separate file absent from model.safetensors.index.json).
+
+        Without this, such weights are invisible to backfill and silently dropped
+        from the quantized output (observed: model.layers.78.embed_tokens.weight
+        and shared_head.head.weight missing after GLM-5 W4A16 quantization).
+        """
+        if self._resolved_dir is None:
+            return
+        indexed_shards = set(self._weight_map.values())
+        merged = 0
+        for shard_path in sorted(self._resolved_dir.glob("*.safetensors")):
+            if shard_path.name in indexed_shards:
+                continue
+            try:
+                with safe_open(shard_path, framework="pt", device="cpu") as handle:
+                    for name in handle.keys():
+                        if name not in self._weight_map:
+                            self._weight_map[name] = shard_path.name
+                            merged += 1
+            except Exception as exc:
+                logger.debug(
+                    f"[ChunkLoader] Skipping extra shard {shard_path.name}: {exc}"
+                )
+        if merged:
+            self._tensor_names = list(self._weight_map.keys())
+            self._build_layer_tensor_map()
+            self._build_aux_tensor_lists()
+            logger.info(
+                f"[ChunkLoader] Merged {merged} tensors from extra shard(s) "
+                "not listed in the index"
+            )
+
 
     def _load_module_infos(self, module_tensor_map: Dict[str, List[str]]) -> List[ModuleInfo]:
         modules: List[ModuleInfo] = []
@@ -406,6 +449,12 @@ class ChunkLoader:
         if total_layers <= 0:
             return 0
         return (total_layers + self.chunk_size - 1) // self.chunk_size
+
+    def get_chunk_layer_indices(self, chunk_index: int) -> List[int]:
+        """Get global layer indices covered by a chunk (without loading tensors)."""
+        start = chunk_index * self.chunk_size
+        end = min(start + self.chunk_size, self.get_total_layers())
+        return self._layer_indices[start:end]
 
     def _load_layers(self, layer_indices: List[int], progress_desc: str) -> List[LayerInfo]:
         layers: List[LayerInfo] = []

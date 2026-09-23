@@ -16,7 +16,7 @@ dependencies = [
     "loguru",
     "datasets",
     "accelerate",
-    "transformers<5.0.0",
+    "transformers>=5.12,<6",
 ]
 
 [project.optional-dependencies]

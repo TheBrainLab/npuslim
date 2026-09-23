@@ -7,12 +7,12 @@ metadata:
 resources:
   - id: qwen
     type: Qwen3Model
-    path: /data/yult/llm_inference/models/Qwen3-0.6B
-    device_map: gpu
+    path: /data/yult/llm_inference/models/Qwen3-0.6B #Qwen/Qwen3-0.6B
+    device_map: gpu #cpu
 
   - id: calib_data
     type: C4Dataset
-    data_path: /data/yult/llm_inference/npuslim/dataset/c4/c4-train.00000.json.gz
+    data_path: dataset/c4/c4-train.00000.json.gz
     num_samples: 128
     max_seq_length: 2048
 
@@ -30,10 +30,11 @@ recipe:
       type: GPTQ
       wbits: 4
       groupsize: 128
+      save_backend: npu
     ignore_layers: []
     execution:
       mode: streaming
       chunk_size: 4
     saver:
       type: StreamingHuggingFaceSaver
-      save_dir: "./outputs"
+      save_dir: "./outputs_npu"

@@ -26,7 +26,7 @@ _K_TILE_INDEX = 8
 
 @register_patch(
     registrar=register_scheme("Sparse24", "linear"),
-    condition=package_version_range("vllm_ascend", max_version="0.20.1"),
+    condition=package_version_range("vllm_ascend", min_version="0.1.0"),
 )
 class AscendSparse24LinearMethod(AscendLinearScheme):
     """Linear scheme for 2:4 structured sparse weights on Ascend NPU.
