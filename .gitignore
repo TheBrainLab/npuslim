@@ -208,3 +208,11 @@ workspace
 # calibration data (large) and local backups
 dataset/c4/
 *.bak
+.omo/
+.trae/
+outputs_smoke/
+
+# personal notes (not for git, 0924)
+AGENTS.md
+# configs archive (backup only, not tracked)
+configs/glm5/gptq/_archived/
