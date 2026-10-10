@@ -155,10 +155,12 @@ def test_shard_matcher_extracts_numeric_index():
 
 def _saver_with_two_shards(output_dir: Path):
     saver = StreamingHuggingFaceSaver(output_dir=output_dir, size_threshold=1024)
-    saver.add_tensor("a.weight", torch.ones(4, dtype=torch.float32))
-    saver.add_tensor("b.weight", torch.ones(4, dtype=torch.float32))
+    # NPU 容器环境 has_npu=True：显式传 tensor_type（untyped 拒绝语义由
+    # test_recover_from_disk_rejects_untyped_tensors_on_npu 单独覆盖）
+    saver.add_tensor("a.weight", torch.ones(4, dtype=torch.float32), tensor_type="FLOAT")
+    saver.add_tensor("b.weight", torch.ones(4, dtype=torch.float32), tensor_type="FLOAT")
     saver.flush()
-    saver.add_tensor("c.weight", torch.ones(4, dtype=torch.float32))
+    saver.add_tensor("c.weight", torch.ones(4, dtype=torch.float32), tensor_type="FLOAT")
     saver.flush()
     return saver
 
@@ -194,7 +196,7 @@ def test_recover_from_disk_restores_state_and_removes_orphans(tmp_path):
     assert not (out / "model-00003.safetensors.tmp").exists()
 
     # New flush continues numbering after the deleted orphan.
-    recovered.add_tensor("d.weight", torch.ones(4, dtype=torch.float32))
+    recovered.add_tensor("d.weight", torch.ones(4, dtype=torch.float32), tensor_type="FLOAT")
     recovered.flush()
     assert (out / "model-00002.safetensors").exists()
 
@@ -227,7 +229,7 @@ def test_manifest_and_recover_require_clean_saver_state(tmp_path):
     saver = _saver_with_two_shards(out)
     manifest = saver.resume_manifest()
 
-    saver.add_tensor("pending.weight", torch.ones(4, dtype=torch.float32))
+    saver.add_tensor("pending.weight", torch.ones(4, dtype=torch.float32), tensor_type="FLOAT")
     with pytest.raises(RuntimeError, match="empty buffer"):
         saver.resume_manifest()
     with pytest.raises(RuntimeError, match="before adding tensors"):
