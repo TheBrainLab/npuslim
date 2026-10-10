@@ -14,7 +14,10 @@ def test_int8_dynamic_algorithm_registry():
     assert cls is INT8DynamicAlgorithm
 
 
-def test_int8_dynamic_quantizes_packed_moe_expert_params():
+def test_int8_dynamic_quantizes_2d_and_passes_through_fused_3d():
+    """当前契约（1010）：2D `.weight` → 量化 + `weight_scale` 落盘；3D 融合专家张量
+    不在本算法观测范围（ndim!=2 跳过——专家量化由 GPTQ 专家路径处理），
+    原样透传、无 `*_scale` 键（与 _collect_observer_layers 的 2D 收集语义一致）。"""
     algo = INT8DynamicAlgorithm(wbits=8, w_quant_method="per-channel")
     model_obj = SimpleNamespace(quantized=False)
     model_config = SimpleNamespace()
@@ -42,13 +45,15 @@ def test_int8_dynamic_quantizes_packed_moe_expert_params():
     algo.on_finish()
 
     tensors = out_chunk.layers[0].tensors
+    # 2D weight: quantized + scale tensor emitted
     assert "self_attn.q_proj.weight_scale" in tensors
-    assert "mlp.experts.gate_up_proj_scale" in tensors
-    assert "mlp.experts.down_proj_scale" in tensors
+    assert tensors["self_attn.q_proj.weight_scale"].shape == (16, 1)
+    assert tensors["self_attn.q_proj.weight"].shape == (16, 16)
+    # 3D fused expert tensors: pass-through, no scale keys at this algo level
+    assert "mlp.experts.gate_up_proj_scale" not in tensors
+    assert "mlp.experts.down_proj_scale" not in tensors
     assert tensors["mlp.experts.gate_up_proj"].shape == (4, 12, 16)
     assert tensors["mlp.experts.down_proj"].shape == (4, 16, 8)
-    assert tensors["mlp.experts.gate_up_proj_scale"].shape == (4, 12, 1)
-    assert tensors["mlp.experts.down_proj_scale"].shape == (4, 16, 1)
 
 
 def test_int8_dynamic_does_not_quantize_unrelated_3d_tensors():
