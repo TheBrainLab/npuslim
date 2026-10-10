@@ -4,13 +4,21 @@
 Usage: python3 phase2b_metrics.py [log_dir]   (default /home/yult/llm_infer_workspace/ylt)
 Output: <log_dir>/phase2b_metrics.csv  (full rewrite, idempotent)
 """
+# ===== Phase D 路径参数化（env 带默认回退；不改数值语义）=====
+import os as _pd_os
+SHARED = _pd_os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = _pd_os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = _pd_os.environ.get("YLT", SHARED + "/ylt")
+NPUSLIM_SRC = _pd_os.environ.get("NPUSLIM_SRC", YLT + "/npuslim/src")
+QAD_ROOT = _pd_os.environ.get("QAD_ROOT", YLT + "/glm52-qad")
+# =========================================================
 import csv
 import glob
 import re
 import statistics
 import sys
 
-LOG_DIR = sys.argv[1] if len(sys.argv) > 1 else "/home/yult/llm_infer_workspace/ylt"
+LOG_DIR = sys.argv[1] if len(sys.argv) > 1 else f"{SHARED_HOST}/ylt"
 TRAIN_LOG = f"{LOG_DIR}/phase2b_r0.log"
 MON_LOG = f"{LOG_DIR}/phase2b_mon.log"
 OUT = f"{LOG_DIR}/phase2b_metrics.csv"

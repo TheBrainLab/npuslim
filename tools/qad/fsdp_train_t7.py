@@ -10,6 +10,14 @@
         [--steps N] [--micro-tokens L] [--rank R] [--lr L]
 """
 from __future__ import annotations
+# ===== Phase D 路径参数化（env 带默认回退；不改数值语义）=====
+import os as _pd_os
+SHARED = _pd_os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = _pd_os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = _pd_os.environ.get("YLT", SHARED + "/ylt")
+NPUSLIM_SRC = _pd_os.environ.get("NPUSLIM_SRC", YLT + "/npuslim/src")
+QAD_ROOT = _pd_os.environ.get("QAD_ROOT", YLT + "/glm52-qad")
+# =========================================================
 
 import argparse
 import json
@@ -23,18 +31,18 @@ import torch
 import torch.distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
-sys.path.insert(0, "/home/yult/llm_infer_workspace/ylt/npuslim/src")
-sys.path.insert(0, "/home/yult/llm_infer_workspace/ylt/qwen3-qad/precompute")
+sys.path.insert(0, f"{SHARED_HOST}/ylt/npuslim/src")
+sys.path.insert(0, f"{SHARED_HOST}/ylt/qwen3-qad/precompute")
 
 from npuslim.qad.teacher_cache import TeacherCache, FetchedSample  # noqa: E402
 from npuslim.qad.kl_loss import kl_distill_loss    # noqa: E402
 from npuslim.qad.ste_experts import STEQwen3Experts, wrap_all_experts  # noqa: E402
 from precompute_logits import encode_one            # noqa: E402
 
-MODEL_DIR = "/home/yult/llm_infer_workspace/lichc/models/Qwen3-30B-A3B-Instruct-2507"
-CACHE = Path("/home/yult/llm_infer_workspace/ylt/qwen3-qad/precompute/logits_cache_topk100")
-TRAIN = Path("/home/yult/llm_infer_workspace/ylt/glm52-qad/qad_data/qad_train_v1.jsonl")
-CORPUS = Path("/home/yult/llm_infer_workspace/ylt/glm52-qad/glm52-qad-corpus/"
+MODEL_DIR = f"{SHARED_HOST}/lichc/models/Qwen3-30B-A3B-Instruct-2507"
+CACHE = Path(f"{SHARED_HOST}/ylt/qwen3-qad/precompute/logits_cache_topk100")
+TRAIN = Path(f"{SHARED_HOST}/ylt/glm52-qad/qad_data/qad_train_v1.jsonl")
+CORPUS = Path(f"{SHARED_HOST}/ylt/glm52-qad/glm52-qad-corpus/"
               "processed/corpus_v1_2026-08-27/clean")
 VOCAB = 151_936
 VCHUNK = 65536

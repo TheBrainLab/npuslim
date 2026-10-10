@@ -1,4 +1,12 @@
 #!/bin/bash
+
+# ===== Phase D 路径参数化（env 带默认回退）=====
+: "${SHARED:=/llm_infer_workspace}"
+: "${SHARED_HOST:=/home/yult/llm_infer_workspace}"
+: "${YLT:=$SHARED/ylt}"
+: "${NPUSLIM_SRC:=$YLT/npuslim/src}"
+: "${QAD_ROOT:=$YLT/glm52-qad}"
+# ==============================================
 # diag_launch.sh — QAD_DIAG=1 diagnostic run (backward-degradation localization)
 #
 # Runs the production trainer with diag_ep instrumentation on super2/3/4/5 (world=32).
@@ -17,8 +25,8 @@ SAVE_EVERY=${SAVE_EVERY:-0}
 SAVE_DIR=${SAVE_DIR:-ckpt_diag}
 
 PORT=29516
-H=/home/yult/llm_infer_workspace
-SH=/llm_infer_workspace
+H=${SHARED_HOST}
+SH=${SHARED}
 DEP=$SH/ylt/qad_deps/pkg
 ASSET=$SH/ylt/glm52-qad
 ARTIFACT=${ARTIFACT:-$SH/ylt/npuslim/outputs_npu/glm5/gptq/glm5-w4a8_modelslim_replica_layer1_5_path2_clip_seed1234}
@@ -101,7 +109,7 @@ fi
 ssh $NODE 'docker exec e6_noawq_env bash -c "python3 -c \"import os; os.open('"'"'/dev/davinci0'"'"', os.O_RDWR); print('"'"'davinci0 OK'"'"')\""' 2>&1 | head -1
 
 echo "[preflight] md5 gate on $NODE:"
-ssh $NODE "md5sum /home/yult/llm_infer_workspace/ylt/glm52-qad/diag_ep.py /home/yult/llm_infer_workspace/ylt/glm52-qad/ds_train_glm.py" 2>/dev/null
+ssh $NODE "md5sum ${SHARED_HOST}/ylt/glm52-qad/diag_ep.py ${SHARED_HOST}/ylt/glm52-qad/ds_train_glm.py" 2>/dev/null
 
 ssh $NODE "setsid nohup bash -c 'while true; do printf \"%s \" \$(date +%H:%M:%S); npu-smi info 2>/dev/null | grep -oE \"[0-9]+ */ *65536\" | tr \"\n\" \" \"; echo; sleep 30; done' > $mem_log 2>&1 < /dev/null &" 2>/dev/null
 echo "[diag] HBM sampler -> $mem_log"

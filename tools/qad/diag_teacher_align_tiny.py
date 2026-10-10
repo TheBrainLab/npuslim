@@ -1,7 +1,15 @@
+# ===== Phase D 路径参数化（env 带默认回退；不改数值语义）=====
+import os as _pd_os
+SHARED = _pd_os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = _pd_os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = _pd_os.environ.get("YLT", SHARED + "/ylt")
+NPUSLIM_SRC = _pd_os.environ.get("NPUSLIM_SRC", YLT + "/npuslim/src")
+QAD_ROOT = _pd_os.environ.get("QAD_ROOT", YLT + "/glm52-qad")
+# =========================================================
 import json, os, sys
-sys.path.insert(0, "/llm_infer_workspace/ylt/npuslim/src")
-sys.path.insert(0, "/llm_infer_workspace/ylt/glm52-qad/precompute")
-os.environ.setdefault("HF_HOME", "/llm_infer_workspace/hf_home")
+sys.path.insert(0, f"{SHARED}/ylt/npuslim/src")
+sys.path.insert(0, f"{SHARED}/ylt/glm52-qad/precompute")
+os.environ.setdefault("HF_HOME", f"{SHARED}/hf_home")
 os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -12,10 +20,10 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from precompute_logits import encode_one
 from npuslim.qad.teacher_cache import TeacherCache
 
-MODEL = "/llm_infer_workspace/ylt/npuslim/workspace/tiny_glm5"
-CORPUS = ("/llm_infer_workspace/ylt/glm52-qad/glm52-qad-corpus/"
+MODEL = f"{SHARED}/ylt/npuslim/workspace/tiny_glm5"
+CORPUS = (f"{SHARED}/ylt/glm52-qad/glm52-qad-corpus/"
           "processed/corpus_v1_2026-08-27/clean")
-CACHE = "/llm_infer_workspace/ylt/glm52-qad/precompute/logits_cache_tiny"
+CACHE = f"{SHARED}/ylt/glm52-qad/precompute/logits_cache_tiny"
 
 tok = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
 tc = TeacherCache(CACHE)

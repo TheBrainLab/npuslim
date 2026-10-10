@@ -12,6 +12,14 @@ W4A8 packing (npuslim gptq_algo.py::_pack_ascend / msmodelslim pack.py::w4a8_pac
   int4 values are two's complement [-8,7] stored as unsigned nibble [0,15].
 """
 from __future__ import annotations
+# ===== Phase D 路径参数化（env 带默认回退；不改数值语义）=====
+import os as _pd_os
+SHARED = _pd_os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = _pd_os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = _pd_os.environ.get("YLT", SHARED + "/ylt")
+NPUSLIM_SRC = _pd_os.environ.get("NPUSLIM_SRC", YLT + "/npuslim/src")
+QAD_ROOT = _pd_os.environ.get("QAD_ROOT", YLT + "/glm52-qad")
+# =========================================================
 
 import os
 import sys
@@ -20,12 +28,12 @@ import json
 import torch
 from safetensors import safe_open
 
-sys.path.insert(0, "/llm_infer_workspace/ylt/npuslim/src")
+sys.path.insert(0, f"{SHARED}/ylt/npuslim/src")
 from npuslim.qad.ste import fake_quant_weight
 
-MODEL_DIR = "/llm_infer_workspace/models/GLM-5.2-bf16/snapshots/master"
-ARTIFACT_DIR = "/llm_infer_workspace/ylt/npuslim/outputs_npu/glm5/gptq/glm5-w4a8_modelslim_replica_layer1_5_path2_clip_seed1234"
-CURRENT_ART = "/llm_infer_workspace/ylt/npuslim/outputs_npu/glm5/gptq/glm5-w4a8_replica_l0_clip_ssz"
+MODEL_DIR = f"{SHARED}/models/GLM-5.2-bf16/snapshots/master"
+ARTIFACT_DIR = f"{SHARED}/ylt/npuslim/outputs_npu/glm5/gptq/glm5-w4a8_modelslim_replica_layer1_5_path2_clip_seed1234"
+CURRENT_ART = f"{SHARED}/ylt/npuslim/outputs_npu/glm5/gptq/glm5-w4a8_replica_l0_clip_ssz"
 
 
 def load_index(artifact_dir):

@@ -16,6 +16,14 @@ RTN 臂（②）= eval_qad_ppl 的 baseline_lora0（同一探针核心，09-09 �
     --product-noawq /home/yult/llm_infer_workspace/ylt/npuslim/outputs_npu/stepB/norot_noawq \
     --output /home/yult/llm_infer_workspace/ylt/glm52-qad/eval_m53_fourarm.json
 """
+# ===== Phase D 路径参数化（env 带默认回退；不改数值语义）=====
+import os as _pd_os
+SHARED = _pd_os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = _pd_os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = _pd_os.environ.get("YLT", SHARED + "/ylt")
+NPUSLIM_SRC = _pd_os.environ.get("NPUSLIM_SRC", YLT + "/npuslim/src")
+QAD_ROOT = _pd_os.environ.get("QAD_ROOT", YLT + "/glm52-qad")
+# =========================================================
 
 import argparse
 import gc
@@ -40,7 +48,7 @@ def main() -> None:
     ap.add_argument("--product-awq", required=True)
     ap.add_argument("--product-noawq", required=True)
     ap.add_argument("--wikitext-dir",
-                    default="/home/yult/llm_infer_workspace/ylt/npuslim/workspace/wikitext-2-raw-v1")
+                    default=f"{SHARED_HOST}/ylt/npuslim/workspace/wikitext-2-raw-v1")
     ap.add_argument("--device-map", default="auto")
     ap.add_argument("--act-bits", type=int, default=8)
     ap.add_argument("--n-windows", type=int, default=32)

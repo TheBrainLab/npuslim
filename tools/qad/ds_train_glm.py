@@ -13,6 +13,14 @@
 # 启动（16 卡节点对，torchrun --nproc_per_node=16）:
 #   torchrun --nproc_per_node=16 ds_train_glm.py --steps N --micro-tokens L
 from __future__ import annotations
+# ===== Phase D 路径参数化（env 带默认回退；不改数值语义）=====
+import os as _pd_os
+SHARED = _pd_os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = _pd_os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = _pd_os.environ.get("YLT", SHARED + "/ylt")
+NPUSLIM_SRC = _pd_os.environ.get("NPUSLIM_SRC", YLT + "/npuslim/src")
+QAD_ROOT = _pd_os.environ.get("QAD_ROOT", YLT + "/glm52-qad")
+# =========================================================
 
 import argparse
 import datetime
@@ -27,9 +35,9 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
-sys.path.insert(0, "/llm_infer_workspace/ylt/npuslim/src")
-sys.path.insert(0, "/llm_infer_workspace/ylt/glm52-qad")
-sys.path.insert(0, "/llm_infer_workspace/ylt/glm52-qad/precompute")
+sys.path.insert(0, f"{SHARED}/ylt/npuslim/src")
+sys.path.insert(0, f"{SHARED}/ylt/glm52-qad")
+sys.path.insert(0, f"{SHARED}/ylt/glm52-qad/precompute")
 
 _QAD_PROFILE = os.environ.get("QAD_PROFILE") == "1"
 if _QAD_PROFILE:
@@ -75,13 +83,13 @@ from npuslim.qad.kl_loss import kl_distill_loss    # noqa: E402
 from npuslim.qad.ste_experts import STEQwen3Experts, wrap_all_experts_glm  # noqa: E402
 from precompute_logits import encode_one            # noqa: E402
 
-MODEL_DIR = os.environ.get("GLM_MODEL_DIR", "/llm_infer_workspace/models/GLM-5.2-bf16/snapshots/master")
+MODEL_DIR = os.environ.get("GLM_MODEL_DIR", f"{SHARED}/models/GLM-5.2-bf16/snapshots/master")
 CACHE = Path(os.environ.get("GLM_CACHE",
-    "/llm_infer_workspace/ylt/glm52-qad/precompute/logits_cache"))   # GLM teacher 缓存（415G/550.5M tokens；--max_len 8192 --top_k 100）
+    f"{SHARED}/ylt/glm52-qad/precompute/logits_cache"))   # GLM teacher 缓存（415G/550.5M tokens；--max_len 8192 --top_k 100）
 TRAIN = Path(os.environ.get("GLM_TRAIN",
-    "/llm_infer_workspace/ylt/glm52-qad/qad_data/qad_train_v1.jsonl"))
+    f"{SHARED}/ylt/glm52-qad/qad_data/qad_train_v1.jsonl"))
 ENC_WINDOW = int(os.environ.get("GLM_ENC_WINDOW", "8192"))   # 与 GLM teacher 缓存构建口径一致；tiny 冒烟可覆盖为 1024
-CORPUS = Path("/llm_infer_workspace/ylt/glm52-qad/glm52-qad-corpus/"
+CORPUS = Path(f"{SHARED}/ylt/glm52-qad/glm52-qad-corpus/"
               "processed/corpus_v1_2026-08-27/clean")
 VOCAB = 154_880     # GLM-5.2 config.vocab_size
 VCHUNK = 65536

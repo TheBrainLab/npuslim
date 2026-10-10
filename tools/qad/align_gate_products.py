@@ -23,6 +23,14 @@
     --products l0clipssz=...:src l0clip_lo05=...:src p2clip_seed1234=... \
     --samples 3:0,40:100,77:255 --out align_gate_report.json
 """
+# ===== Phase D 路径参数化（env 带默认回退；不改数值语义）=====
+import os as _pd_os
+SHARED = _pd_os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = _pd_os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = _pd_os.environ.get("YLT", SHARED + "/ylt")
+NPUSLIM_SRC = _pd_os.environ.get("NPUSLIM_SRC", YLT + "/npuslim/src")
+QAD_ROOT = _pd_os.environ.get("QAD_ROOT", YLT + "/glm52-qad")
+# =========================================================
 import argparse
 import json
 import os
@@ -31,11 +39,11 @@ import sys
 import torch
 from safetensors import safe_open
 
-sys.path.insert(0, "/llm_infer_workspace/ylt/npuslim/src")
+sys.path.insert(0, f"{SHARED}/ylt/npuslim/src")
 from npuslim.qad.ste import activation_dynamic_int8, fake_quant_weight  # noqa: E402
 
-BF16 = "/llm_infer_workspace/models/GLM-5.2-bf16/snapshots/master"
-_PROD_ROOT = "/llm_infer_workspace/ylt/npuslim/outputs_npu/glm5/gptq"
+BF16 = f"{SHARED}/models/GLM-5.2-bf16/snapshots/master"
+_PROD_ROOT = f"{SHARED}/ylt/npuslim/outputs_npu/glm5/gptq"
 DEFAULT_PRODUCTS = [
     f"L0={_PROD_ROOT}/glm5-w4a8_modelslim_replica_layer0_noawq_nosq:src",
     f"l0clipssz={_PROD_ROOT}/glm5-w4a8_replica_l0_clip_ssz:src",

@@ -6,6 +6,14 @@
 运行（e6 容器）：
   PYTHONPATH=/llm_infer_workspace/ylt/npuslim/src python3 align_ssz_gate.py
 """
+# ===== Phase D 路径参数化（env 带默认回退；不改数值语义）=====
+import os as _pd_os
+SHARED = _pd_os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = _pd_os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = _pd_os.environ.get("YLT", SHARED + "/ylt")
+NPUSLIM_SRC = _pd_os.environ.get("NPUSLIM_SRC", YLT + "/npuslim/src")
+QAD_ROOT = _pd_os.environ.get("QAD_ROOT", YLT + "/glm52-qad")
+# =========================================================
 import json
 import os
 import sys
@@ -13,11 +21,11 @@ import sys
 import torch
 from safetensors import safe_open
 
-sys.path.insert(0, "/llm_infer_workspace/ylt/npuslim/src")
+sys.path.insert(0, f"{SHARED}/ylt/npuslim/src")
 from npuslim.qad.ste import fake_quant_weight  # noqa: E402
 
-BF16 = "/llm_infer_workspace/models/GLM-5.2-bf16/snapshots/master"
-L0 = "/llm_infer_workspace/ylt/npuslim/outputs_npu/glm5/gptq/glm5-w4a8_modelslim_replica_layer0_noawq_nosq"
+BF16 = f"{SHARED}/models/GLM-5.2-bf16/snapshots/master"
+L0 = f"{SHARED}/ylt/npuslim/outputs_npu/glm5/gptq/glm5-w4a8_modelslim_replica_layer0_noawq_nosq"
 
 
 def idx(d):

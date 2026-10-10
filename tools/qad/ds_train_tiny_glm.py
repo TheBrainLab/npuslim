@@ -11,6 +11,14 @@
 # 启动（d_series_env，卡 3）:
 #   torchrun --nproc_per_node=1 ds_train_tiny_glm.py --steps 20 --save-every 20
 from __future__ import annotations
+# ===== Phase D 路径参数化（env 带默认回退；不改数值语义）=====
+import os as _pd_os
+SHARED = _pd_os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = _pd_os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = _pd_os.environ.get("YLT", SHARED + "/ylt")
+NPUSLIM_SRC = _pd_os.environ.get("NPUSLIM_SRC", YLT + "/npuslim/src")
+QAD_ROOT = _pd_os.environ.get("QAD_ROOT", YLT + "/glm52-qad")
+# =========================================================
 
 import argparse
 import datetime
@@ -25,18 +33,18 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
-sys.path.insert(0, "/llm_infer_workspace/ylt/npuslim/src")
-sys.path.insert(0, "/llm_infer_workspace/ylt/glm52-qad/precompute")
+sys.path.insert(0, f"{SHARED}/ylt/npuslim/src")
+sys.path.insert(0, f"{SHARED}/ylt/glm52-qad/precompute")
 
 from npuslim.qad.teacher_cache import TeacherCache  # noqa: E402
 from npuslim.qad.kl_loss import kl_distill_loss    # noqa: E402
 from npuslim.qad.ste_experts import STEQwen3Experts  # noqa: E402
 from precompute_logits import encode_one            # noqa: E402
 
-MODEL_DIR = os.environ.get("C3_MODEL_DIR", "/llm_infer_workspace/ylt/npuslim/workspace/tiny_glm5")
-CACHE = Path("/llm_infer_workspace/ylt/glm52-qad/precompute/logits_cache_tiny")
-TRAIN = Path("/llm_infer_workspace/ylt/glm52-qad/qad_data/tiny_train_v0.jsonl")
-CORPUS = Path("/llm_infer_workspace/ylt/glm52-qad/glm52-qad-corpus/"
+MODEL_DIR = os.environ.get("C3_MODEL_DIR", f"{SHARED}/ylt/npuslim/workspace/tiny_glm5")
+CACHE = Path(f"{SHARED}/ylt/glm52-qad/precompute/logits_cache_tiny")
+TRAIN = Path(f"{SHARED}/ylt/glm52-qad/qad_data/tiny_train_v0.jsonl")
+CORPUS = Path(f"{SHARED}/ylt/glm52-qad/glm52-qad-corpus/"
               "processed/corpus_v1_2026-08-27/clean")
 VOCAB = 154_880     # tiny_glm5 config.vocab_size
 VCHUNK = 65536
