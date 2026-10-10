@@ -1,16 +1,20 @@
 #!/bin/bash
+# ===== Phase D 路径参数化（env 带默认回退；不改数值语义）=====
+SHARED=${SHARED:-}
+SHARED_HOST=${SHARED_HOST:-/home/yult}
+# =========================================================
 # run_deploy_glm5_w4a8_artifact.sh - 通用 GLM-5.2 W4A8 产物双机部署（E6/E1-GLM/E2-GLM/E2b/E8 复用）
 # on C3_super1 (head) + C3_super3 (worker), dual-node TP=16 + EP, ray backend.
 # 参数（env 覆盖）: MODEL(容器内产物路径) / SERVED / CONTAINER
 # 内置: devopen 预检（坑⑨）+ layer_types 自动 patch（坑⑪，原始 npuslim GLM 产物一律带雷）
-# 注意（坑⑫）: 宿主侧 dtfs = /home/yult/llm_infer_workspace，容器内 = /llm_infer_workspace
+# 注意（坑⑫）: 宿主侧 dtfs = /home/yult，容器内 = 
 # Run ON C3_super1 (它可 ssh 本机 localhost 与 super3 yult@10.1.0.57, 已验证):
 #   ssh C3_super1 "setsid nohup env MODEL=... SERVED=... bash .../run_deploy_glm5_w4a8_artifact.sh > .../deploy_<tag>.log 2>&1 < /dev/null &"
 # Stop:  run with --stop
 set -uo pipefail
 
 PORT=8000
-MODEL="${MODEL:-/llm_infer_workspace/ylt/npuslim/outputs_npu/glm5/gptq/glm5-w4a8_noawq}"
+MODEL="${MODEL:-/ylt/npuslim/outputs_npu/glm5/gptq/glm5-w4a8_noawq}"
 SERVED="${SERVED:-glm5-w4a8-noawq-e6}"
 HEAD_IP="${HEAD_IP:-10.1.0.105}"       # C3_super1: ray head + APIServer
 WORKER_IP="${WORKER_IP:-10.1.0.57}"    # default C3_super3; 可覆盖为 super2=10.1.0.106（super3 被他人占用时）
@@ -18,8 +22,8 @@ HEAD_HOST="${HEAD_HOST:-yult@10.1.0.105}"
 WORKER_HOST="${WORKER_HOST:-yult@10.1.0.57}"
 CONTAINER="${CONTAINER:-e6_noawq_env}"    # same container name on both nodes
 IMAGE="vllm-ascend-npuslim:v0.23.0rc1-a3"
-SHARED_HOST="/home/yult/llm_infer_workspace"
-SHARED="/llm_infer_workspace"
+SHARED_HOST="/home/yult"
+SHARED=""
 IFNAME="enp66s0f1"        # 10.1.0.x iface on super1/super3 (verified 09-10)
 MAX_MODEL_LEN=8192
 MEM_UTIL=0.85
@@ -73,8 +77,8 @@ create_container_remote() {
 set -e
 IMAGE="vllm-ascend-npuslim:v0.23.0rc1-a3"
 CONTAINER="e6_noawq_env"
-SHARED_HOST="/home/yult/llm_infer_workspace"
-SHARED="/llm_infer_workspace"
+SHARED_HOST="/home/yult"
+SHARED=""
 docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "  ERROR: image missing"; exit 1; }
 state=$(docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo absent)
 case "$state" in

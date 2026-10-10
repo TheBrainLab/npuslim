@@ -1,4 +1,8 @@
 #!/bin/bash
+# ===== Phase D 路径参数化（env 带默认回退；不改数值语义）=====
+SHARED=${SHARED:-}
+SHARED_HOST=${SHARED_HOST:-/home/yult}
+# =========================================================
 # run_deploy_glm52_bf16_c3.sh - Deploy GLM-5.2 BF16 baseline on s1/s2/s3/s4 (10.1.0.105/106/57/47).
 # TP=32 + expert-parallel via Ray (s1=head+APIServer, s2/s3/s4=workers, 8 NPUs each).
 # Rebased from run_deploy_glm52_bf16_4node.sh (C3f super0-3) for C3 nodes (10.1.0.x, enp66s0f1):
@@ -15,22 +19,22 @@
 #   - pkill uses regex char-class [..] to avoid matching the invoking shell itself
 #   - health always checked on s1 localhost (local box cannot reach 10.1.0.105:9081 directly)
 #
-# Run ON s1 (HOST path for the script! /llm_infer_workspace only exists inside containers):
-#   ssh C3_super1 'nohup bash /home/yult/llm_infer_workspace/ylt/glm5.2_deploy/run_deploy_glm52_bf16_c3.sh > /tmp/deploy_glm52_bf16_c3.log 2>&1 &'
+# Run ON s1 (HOST path for the script!  only exists inside containers):
+#   ssh C3_super1 'nohup bash /home/yult/ylt/glm5.2_deploy/run_deploy_glm52_bf16_c3.sh > /tmp/deploy_glm52_bf16_c3.log 2>&1 &'
 # Stop (from s1):
-#   ssh C3_super1 'bash /home/yult/llm_infer_workspace/ylt/glm5.2_deploy/run_deploy_glm52_bf16_c3.sh --stop'
+#   ssh C3_super1 'bash /home/yult/ylt/glm5.2_deploy/run_deploy_glm52_bf16_c3.sh --stop'
 set -uo pipefail
 
 PORT="${PORT:-9081}"
-MODEL="/llm_infer_workspace/models/GLM-5.2-bf16/snapshots/master"   # container-side path (vllm serve)
-MODEL_HOST="${SHARED_HOST:-/home/yult/llm_infer_workspace}/models/GLM-5.2-bf16/snapshots/master"  # host-side path (preflight on s1 host)
+MODEL="/models/GLM-5.2-bf16/snapshots/master"   # container-side path (vllm serve)
+MODEL_HOST="${SHARED_HOST:-/home/yult}/models/GLM-5.2-bf16/snapshots/master"  # host-side path (preflight on s1 host)
 SERVED="glm5-bf16-4node"
 HEAD_IP="10.1.0.106"
 NODE_IPS=("10.1.0.106" "10.1.0.57" "10.1.0.47" "10.1.0.135")
 CONTAINER="glm5_bf16_env"
 IMAGE="vllm-ascend-npuslim:v0.23.0rc1-a3"
-SHARED_HOST="/home/yult/llm_infer_workspace"
-SHARED="/llm_infer_workspace"
+SHARED_HOST="/home/yult"
+SHARED=""
 IFNAME="enp66s0f1"                                     # 10.1.0.x iface on all 4 C3 nodes
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
 MEM_UTIL="${MEM_UTIL:-0.9}"
@@ -95,8 +99,8 @@ create_container_remote() {
 set -e
 IMAGE="vllm-ascend-npuslim:v0.23.0rc1-a3"
 CONTAINER="glm5_bf16_env"
-SHARED_HOST="/home/yult/llm_infer_workspace"
-SHARED="/llm_infer_workspace"
+SHARED_HOST="/home/yult"
+SHARED=""
 docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "  ERROR: image missing: $IMAGE"; exit 1; }
 state=$(docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo absent)
 case "$state" in

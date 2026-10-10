@@ -1,3 +1,9 @@
+
+# ===== Phase D 路径参数化（env 带默认回退）=====
+import os as _pd_os
+SHARED = _pd_os.environ.get("SHARED", "{SHARED}")
+SHARED_HOST = _pd_os.environ.get("SHARED_HOST", "/home/yult{SHARED}")
+YLT = _pd_os.environ.get("YLT", SHARED + "/ylt")
 """A7 Step B 评测：真实规模 W4A8 语义 ppl 对照（ROT vs NOROT，调研文档 §6.1 Step 5）。
 
 流程（自建路径，部署无关）：
@@ -215,7 +221,7 @@ def eval_ppl(model, tokenizer, n_windows: int = 16, seq: int = 256, seed: int = 
 def main() -> None:
     parser = argparse.ArgumentParser(description="A7 Step B: W4A8 语义 ppl 评测（ROT/NOROT 对照）")
     parser.add_argument("--checkpoint", default=None, help="量化产物目录（stepB/rot 或 norot）")
-    parser.add_argument("--model-path", default="/llm_infer_workspace/lichc/models/Qwen3-30B-A3B-Instruct-2507")
+    parser.add_argument("--model-path", default="{SHARED}/lichc/models/Qwen3-30B-A3B-Instruct-2507")
     parser.add_argument("--model-hub", default="ms")
     parser.add_argument("--rotated", action="store_true", help="应用 R1 旋转 hook（ROT 臂）")
     parser.add_argument("--r1-seed", type=int, default=2026)

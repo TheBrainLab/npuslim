@@ -1,3 +1,9 @@
+
+# ===== Phase D 路径参数化（env 带默认回退）=====
+import os as _pd_os
+SHARED = _pd_os.environ.get("SHARED", "{SHARED}")
+SHARED_HOST = _pd_os.environ.get("SHARED_HOST", "/home/yult{SHARED}")
+YLT = _pd_os.environ.get("YLT", SHARED + "/ylt")
 """M4 中期诊断：训练分布上的 KL 对拍（区分"训练无效" vs "分布特化"）。
 
 背景（2026-09-08 wikitext 探针结果）：QAD ckpt(1000/1500/2000) 在 wikitext 上
@@ -11,9 +17,9 @@
 样本：全数据集均匀 stride（跨域代表性），shard 聚簇取数。
 
 用法（容器内）：
-    PYTHONPATH=/llm_infer_workspace/ylt/npuslim/src python \
-        /llm_infer_workspace/ylt/npuslim/src/npuslim/qad/eval_qad_kl.py \
-        --n-samples 24 --output /llm_infer_workspace/ylt/glm52-qad/eval_qad_kl.json
+    PYTHONPATH={SHARED}/ylt/npuslim/src python \
+        {SHARED}/ylt/npuslim/src/npuslim/qad/eval_qad_kl.py \
+        --n-samples 24 --output {SHARED}/ylt/glm52-qad/eval_qad_kl.json
 """
 from __future__ import annotations
 
@@ -27,8 +33,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-sys.path.insert(0, "/llm_infer_workspace/ylt/npuslim/src")
-sys.path.insert(0, "/llm_infer_workspace/ylt/qwen3-qad/precompute")
+sys.path.insert(0, "{SHARED}/ylt/npuslim/src")
+sys.path.insert(0, "{SHARED}/ylt/qwen3-qad/precompute")
 
 from npuslim.qad.teacher_cache import TeacherCache            # noqa: E402
 from npuslim.qad.kl_loss import kl_distill_loss               # noqa: E402
@@ -36,10 +42,10 @@ from npuslim.qad.ste_experts import wrap_all_experts          # noqa: E402
 import npuslim.qad.ste_experts as _ste_exp                    # noqa: E402
 from precompute_logits import encode_one                      # noqa: E402
 
-MODEL_DIR = "/llm_infer_workspace/lichc/models/Qwen3-30B-A3B-Instruct-2507"
-CACHE = Path("/llm_infer_workspace/ylt/qwen3-qad/precompute/logits_cache_topk100")
-TRAIN = Path("/llm_infer_workspace/ylt/glm52-qad/qad_data/qad_train_v1.jsonl")
-CORPUS = Path("/llm_infer_workspace/ylt/glm52-qad/glm52-qad-corpus/"
+MODEL_DIR = "{SHARED}/lichc/models/Qwen3-30B-A3B-Instruct-2507"
+CACHE = Path("{SHARED}/ylt/qwen3-qad/precompute/logits_cache_topk100")
+TRAIN = Path("{SHARED}/ylt/glm52-qad/qad_data/qad_train_v1.jsonl")
+CORPUS = Path("{SHARED}/ylt/glm52-qad/glm52-qad-corpus/"
               "processed/corpus_v1_2026-08-27/clean")
 VOCAB, VCHUNK = 151_936, 65536
 
@@ -47,13 +53,13 @@ VOCAB, VCHUNK = 151_936, 65536
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpts", nargs="*", default=[
-        "", "/llm_infer_workspace/ylt/glm52-qad/ckpt_m4/step_001000.pt",
-        "/llm_infer_workspace/ylt/glm52-qad/ckpt_m4/step_002000.pt"])
+        "", "{SHARED}/ylt/glm52-qad/ckpt_m4/step_001000.pt",
+        "{SHARED}/ylt/glm52-qad/ckpt_m4/step_002000.pt"])
     ap.add_argument("--n-samples", type=int, default=24)
     ap.add_argument("--min-enc-len", type=int, default=256)
     ap.add_argument("--micro-tokens", type=int, default=2048)
     ap.add_argument("--rank", type=int, default=16)
-    ap.add_argument("--output", default="/llm_infer_workspace/ylt/glm52-qad/eval_qad_kl.json")
+    ap.add_argument("--output", default="{SHARED}/ylt/glm52-qad/eval_qad_kl.json")
     args = ap.parse_args()
 
     from transformers import AutoModelForCausalLM, AutoTokenizer

@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+
+# ===== Phase D 路径参数化（env 带默认回退）=====
+import os
+SHARED = os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = os.environ.get("YLT", SHARED + "/ylt")
 # -*- coding: utf-8 -*-
 """humaneval 截断重评：基于已落盘 samples，在幻觉标记处截断 completion 后重跑 code_eval。
 
@@ -15,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 os.environ["HF_ALLOW_CODE_EVAL"] = "1"
 # check_correctness 在同目录 execute.py（evaluate.metrics 不可用，直接从文件加载）
-_EXECUTE_PATH = "/llm_infer_workspace/ylt/qwen3_deploy/qwen3_30b_w4a8/execute.py"
+_EXECUTE_PATH = "{SHARED}/ylt/qwen3_deploy/qwen3_30b_w4a8/execute.py"
 _spec = importlib.util.spec_from_file_location("humaneval_execute", _EXECUTE_PATH)
 _execute = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_execute)

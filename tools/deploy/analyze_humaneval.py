@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+
+# ===== Phase D 路径参数化（env 带默认回退）=====
+import os
+SHARED = os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = os.environ.get("YLT", SHARED + "/ylt")
 # -*- coding: utf-8 -*-
 """humaneval 公平性排查：三版本（BF16/W4A8/w4a8c8）samples 对照分析。
 

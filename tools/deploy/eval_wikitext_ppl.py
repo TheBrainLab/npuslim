@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+
+# ===== Phase D 路径参数化（env 带默认回退）=====
+import os
+SHARED = os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = os.environ.get("YLT", SHARED + "/ylt")
 """Quick wikitext-2 word-perplexity via the RUNNING vLLM completions API.
 
 Mirrors lm_eval's `wikitext` task (EleutherAI/wikitext_document_level,
@@ -26,7 +32,7 @@ from dataclasses import dataclass
 
 API = "http://10.42.0.2:8000/v1/completions"
 MODEL = "glm5-w4a16"
-MODEL_DIR = "/llm_infer_workspace/ylt/models/glm5-w4a16_npu_0807"
+MODEL_DIR = "{SHARED}/ylt/models/glm5-w4a16_npu_0807"
 CONCURRENCY = 4
 
 

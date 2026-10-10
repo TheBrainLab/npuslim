@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+
+# ===== Phase D 路径参数化（env 带默认回退）=====
+import os
+SHARED = os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = os.environ.get("YLT", SHARED + "/ylt")
 # -*- coding: utf-8 -*-
 """reeval_humaneval_extract.py — humaneval 标准 extract_code 口径重评（可跑已落盘 samples）
 
@@ -11,7 +17,7 @@ import importlib.util
 import re
 import sys
 
-RH = "/llm_infer_workspace/ylt/npuslim/workspace/glm5.2_deploy/reeval_humaneval_trunc.py"
+RH = "{SHARED}/ylt/npuslim/workspace/glm5.2_deploy/reeval_humaneval_trunc.py"
 spec = importlib.util.spec_from_file_location("rh", RH)
 rh = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rh)
@@ -44,7 +50,7 @@ def extract_last(comp: str, prompt: str = "") -> str:
     return ms[-1] if ms else rh.truncate(comp)
 
 
-O = "/llm_infer_workspace/ylt/glm5.2_deploy/outputs"
+O = "{SHARED}/ylt/glm5.2_deploy/outputs"
 DEFAULT = [
     ("bf16", f"{O}/glm5_bf16_4task_hard/qdpv68r5/samples_humaneval_2026-09-03T23-39-35.499266.jsonl"),
     ("w4a8c8", f"{O}/glm5_w4a8c8_4task_hard/qdpv68r5/samples_humaneval_2026-09-04T05-36-06.906183.jsonl"),

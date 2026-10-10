@@ -1,8 +1,12 @@
 #!/bin/bash
+# ===== Phase D 路径参数化（env 带默认回退；不改数值语义）=====
+SHARED=${SHARED:-}
+SHARED_HOST=${SHARED_HOST:-/home/yult}
+# =========================================================
 # deploy_eval_artifact.sh — 部署一个产物 + 快评(wikitext+humaneval)；需在 HEAD 节点运行
 # required env: MODEL MODEL_HOST ART_DIR SERVED WORKER_IP WORKER_HOST HEAD_IP HEAD_HOST OUT MARK_DIR TAG
 set -uo pipefail
-H=/home/yult/llm_infer_workspace
+H=/home/yult
 DEPD=$H/ylt/npuslim/workspace/glm5.2_deploy
 LOG=$H/ylt/glm5.2_deploy/deploy_eval_${TAG}.log
 echo "[$TAG $(date '+%F %T')] deploy started" >> $LOG

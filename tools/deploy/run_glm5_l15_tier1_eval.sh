@@ -1,4 +1,8 @@
 #!/bin/bash
+# ===== Phase D 路径参数化（env 带默认回退；不改数值语义）=====
+SHARED=${SHARED:-}
+SHARED_HOST=${SHARED_HOST:-/home/yult}
+# =========================================================
 # run_glm5_l15_tier1_eval.sh - GLM-5.2 Layer-1.5 (C 产物) Tier-1 评测
 # 16 卡窗口 (super1+super3, e6_noawq_env, TP=16 ray), server 在 head 10.1.0.105:8000。
 # Tier-1 = round1 mmlu+gsm8k (5-shot conc=64 maxlen=8192) / round2 wikitext (ppl@1024 conc=2) /
@@ -15,10 +19,10 @@ PORT="${PORT:-8000}"
 HEAD_IP="${HEAD_IP:-10.1.0.105}"     # 默认 super1；Path 2 用 super5=10.1.0.135
 SERVER="http://${HEAD_IP}:${PORT}"
 BASE_URL="${SERVER}/v1/completions"
-MODEL_DIR="${MODEL_DIR:-/llm_infer_workspace/ylt/npuslim/outputs_npu/glm5/gptq/glm5-w4a8_modelslim_replica_layer1_5_npu}"
-CODEEVAL_DIR="/llm_infer_workspace/ylt/qwen3_deploy/qwen3_30b_w4a8"
-OUT="${OUT:-/llm_infer_workspace/ylt/glm5.2_deploy/outputs/glm5_w4a8_l15_4task_hard}"
-WORKDIR="/llm_infer_workspace/ylt/glm5.2_deploy"
+MODEL_DIR="${MODEL_DIR:-/ylt/npuslim/outputs_npu/glm5/gptq/glm5-w4a8_modelslim_replica_layer1_5_npu}"
+CODEEVAL_DIR="/ylt/qwen3_deploy/qwen3_30b_w4a8"
+OUT="${OUT:-/ylt/glm5.2_deploy/outputs/glm5_w4a8_l15_4task_hard}"
+WORKDIR="/ylt/glm5.2_deploy"
 MARK_DIR="${MARK_DIR:-/tmp/glm5_l15_tier1_markers}"
 
 mkdir -p "$MARK_DIR"
@@ -46,7 +50,7 @@ run_round() {
   local rc
   docker exec \
     -w "${WORKDIR}" \
-    -e HF_HOME=/llm_infer_workspace/hf_home \
+    -e HF_HOME=/hf_home \
     -e HF_DATASETS_OFFLINE=1 -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
     -e OPENAI_API_KEY=EMPTY -e TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
     -e VLLM_RPC_TIMEOUT=360000 \
