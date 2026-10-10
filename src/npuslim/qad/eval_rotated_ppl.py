@@ -190,9 +190,13 @@ def load_wikitext(split: str = "validation", max_chars: int = 2_000_000,
     if wikitext_dir:
         base = Path(wikitext_dir)
     else:
-        base = Path("/data/yult/llm_inference/npuslim/workspace/hf_home_4task/hub/") / \
-            "datasets--EleutherAI--wikitext_document_level" / "snapshots" / \
-            "647234772b9554e208af6c826f23b99e3cac88c8" / "wikitext-2-raw-v1"
+        # 数据源：WIKITEXT_HUB env 优先；默认回退 5090 本机 hf cache（历史调试路径，
+        # C3 上运行需设 WIKITEXT_HUB 或显式传 wikitext_dir）
+        base = Path(_pd_os.environ.get(
+            "WIKITEXT_HUB",
+            "/data/yult/llm_inference/npuslim/workspace/hf_home_4task/hub/"
+            "datasets--EleutherAI--wikitext_document_level/snapshots/"
+            "647234772b9554e208af6c826f23b99e3cac88c8/wikitext-2-raw-v1"))
     df = pd.read_parquet(base / f"wikitext-2-raw-v1-{split}.parquet")
     return "\n\n".join(df["page"].tolist())[:max_chars]
 

@@ -35,9 +35,10 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
-sys.path.insert(0, f"{SHARED}/ylt/npuslim/src")
-sys.path.insert(0, f"{SHARED}/ylt/glm52-qad")
-sys.path.insert(0, f"{SHARED}/ylt/glm52-qad/precompute")
+sys.path.insert(0, f"{QAD_ROOT}/precompute")
+sys.path.insert(0, QAD_ROOT)
+sys.path.insert(0, NPUSLIM_SRC)
+sys.path.insert(0, f"{YLT}/npuslim_repo/tools/qad")  # repo 单一源优先（diag_ep/prof_ste），运行时 glm52-qad 为回退
 
 _QAD_PROFILE = os.environ.get("QAD_PROFILE") == "1"
 if _QAD_PROFILE:

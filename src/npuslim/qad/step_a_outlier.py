@@ -27,6 +27,12 @@ modeling_qwen3_moe.py 每层）：
 """
 from __future__ import annotations
 
+# ===== Phase D 路径参数化（env 带默认回退）=====
+import os as _pd_os
+SHARED = _pd_os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = _pd_os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = _pd_os.environ.get("YLT", SHARED + "/ylt")
+
 import argparse
 import json
 import sys
@@ -150,7 +156,7 @@ def build_report(stats: Dict[str, torch.Tensor], meta: dict) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="A7 Step A: 残差流离群度测量")
-    parser.add_argument("--model-path", default="/data/yult/llm_inference/models/"
+    parser.add_argument("--model-path", default=f"{SHARED}/lichc/models/"
                         "Qwen3-30B-A3B-Instruct-2507")
     parser.add_argument("--model-hub", default="ms")
     parser.add_argument("--calib-path", default="dataset/calib/mixed_chat_code.jsonl")

@@ -5,7 +5,7 @@ set -uo pipefail
 
 REENC_DIR="/llm_infer_workspace/ylt/glm52-qad/reencode_run14_step600"
 SERVED="glm5-w4a8-reenc-run14-s600"
-DEPLOY_SCRIPT="/llm_infer_workspace/ylt/npuslim/workspace/glm5.2_deploy/run_deploy_glm5_w4a8_artifact.sh"
+DEPLOY_SCRIPT="/llm_infer_workspace/ylt/npuslim_repo/tools/deploy/run_deploy_glm5_w4a8_artifact.sh"
 
 echo "== deploy run14 step600 =="
 echo "HEAD=10.1.0.106 (super2)  WORKER=10.1.0.47 (super4)"

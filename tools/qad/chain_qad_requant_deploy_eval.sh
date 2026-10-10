@@ -17,8 +17,8 @@ REQ_LOG=$H/ylt/glm52-qad/requant_qad.log
 ART=glm5-w4a8_modelslim_replica_layer1_5_path2_qad_requant
 ART_DIR_HOST=$H/ylt/npuslim/outputs_npu/glm5/gptq/$ART
 MODEL_CT=/llm_infer_workspace/ylt/npuslim/outputs_npu/glm5/gptq/$ART
-DEPLOY=$H/ylt/npuslim/workspace/glm5.2_deploy/run_deploy_glm5_w4a8_artifact.sh
-EVAL=$H/ylt/npuslim/workspace/glm5.2_deploy/run_glm5_l15_tier1_eval.sh
+DEPLOY=$H/ylt/npuslim_repo/tools/deploy/run_deploy_glm5_w4a8_artifact.sh
+EVAL=$H/ylt/npuslim_repo/tools/deploy/run_glm5_l15_tier1_eval.sh
 # 评测节点：HEAD=super2(106) + WORKER=super4(47)（避开 super3 的 requant 卡0）
 HI=10.1.0.106; HH=yult@10.1.0.106
 WI=10.1.0.47;  WH=yult@10.1.0.47
