@@ -1,0 +1,65 @@
+metadata:
+  name: "GLM5_W4A8_ReplicaL0_ClipSearch_Lo05"
+  description: "L0（SSZ+RTN，无 AWQ/SQ/旋转）+ per-channel clip-search解耦对照（★ 09-15）：lo=0.5 + with_ssz=false——与 l0clip(0.65/false) 对照隔离 lo 效应，与 l0clipssz(0.5/true) 对照隔离 with_ssz 效应。见 workspace/W4A8_总结与规划0908.md §5.15"
+
+resources:
+  - id: glm5
+    type: GLM5
+    path: /llm_infer_workspace/models/GLM-5.2-bf16/snapshots/master
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    device_map: cpu
+
+  - id: calib_data
+    type: MixedDomain
+    data_path: dataset/calib/mixed_chat_code.jsonl
+    num_samples: 48
+    max_seq_length: 1024
+
+recipe:
+  - name: "GPTQ_MoE_W4A8_Dense_W8A8_ReplicaL0Clip"
+    type: compressor
+    model: "@glm5"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 4
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ
+      wbits: 4
+      act_bits: 8
+      groupsize: -1
+      save_backend: npu
+      expert_chunk_size: 1
+      layer_routing:
+        - patterns:
+            - "*.self_attn.*"
+            - "*.mlp.shared_experts.*"
+            - "*.mlp.gate_proj"
+            - "*.mlp.up_proj"
+            - "*.mlp.down_proj"
+          wbits: 8
+      max_calib_samples: 48
+      blocksize: 256
+      actorder: true
+      quantize_mtp: false
+      save_mtp_debug: false
+      expert_mode: ssz
+      ssz_step: 10
+      expert_clip_search:
+        lo: 0.5
+        hi: 1.0
+        steps: 20
+        with_ssz: false
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 1
+      resume: true
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_npu"
+
+# L0 + clip-search 单变量实验（§5.15-A）：判据 = 相对 L0 基线 3.5404 的改善。
+# clip-search 独立于 AWQ/SQ/旋转，与 QAD 的 SSZ 路径兼容（不改变落盘 schema，仅 s 数值）。

@@ -115,6 +115,7 @@ class BatchedGPTQModule:
         rtn: bool = False,
         ssz: bool = False,
         ssz_step: int = 10,
+        clip_search: Optional[Dict] = None,
     ):
         self._slice_linears = slice_linears
         self._CH = len(slice_linears)
@@ -129,6 +130,13 @@ class BatchedGPTQModule:
         # SSZ per-channel scale refinement (rtn base, ref: msmodelslim ssz.py)
         self.ssz = bool(ssz)
         self.ssz_step = int(ssz_step)
+        self.clip_cfg = dict(clip_search) if clip_search else None
+        self.omni_steps = int(clip_search.get("omni_steps", 0)) if clip_search else 0
+        if self.omni_steps > 0:
+            logger.warning(
+                "[GPTQ] omni refine is only wired for the per-expert 2D path "
+                "(expert_chunk_size=1); ignoring in BatchedGPTQModule"
+            )
         self._hdev = hessian_device if hessian_device is not None else slice_linears[0].weight.device
 
         w0 = slice_linears[0].weight.data
@@ -148,6 +156,7 @@ class BatchedGPTQModule:
             self.H = torch.zeros(self._CH, self.infeatures, self.infeatures, device=self._hdev)
         self.nsamples = torch.zeros(self._CH, device=self._hdev)
         self._x_abs_sum = torch.zeros(self._CH, self.infeatures, device=self._hdev)  # [CH, in] for scale search
+        self._x_abs_max = torch.zeros(self._CH, self.infeatures, device=self._hdev)  # [CH, in] abs-max (AWQ alpha-search stat)
         self.preproc_done = False
         self.last_metrics: Dict[str, float] = {}
         self._hinv_fallback: Optional[str] = None
@@ -173,6 +182,11 @@ class BatchedGPTQModule:
         ns = self.nsamples.clamp(min=1).to(self._hdev).view(-1, 1)  # [CH, 1]
         return self._x_abs_sum / ns  # [CH, in]
 
+    @property
+    def x_abs_max(self) -> torch.Tensor:
+        """Per-input-channel activation abs-max [CH, in] (AWQ alpha-search stat)."""
+        return self._x_abs_max
+
     def add_batch_for_expert(self, inp: torch.Tensor, local_idx: int) -> None:
         """Accumulate Hessian contribution on CPU.
 
@@ -190,6 +204,9 @@ class BatchedGPTQModule:
             inp = inp.t().to(self.dev, dtype=torch.float32)
             batch = inp.shape[1]
             self._x_abs_sum[local_idx] += inp.abs().sum(dim=1).to(self._hdev)
+            self._x_abs_max[local_idx] = torch.maximum(
+                self._x_abs_max[local_idx], inp.abs().amax(dim=1).to(self._hdev)
+            )
             self.nsamples[local_idx] += batch
             self.H = None  # Hessian intentionally unused in rtn mode
             return
@@ -201,6 +218,9 @@ class BatchedGPTQModule:
         batch = inp.shape[1]
         # Accumulate per-channel activation abs-mean for scale search (AWQ)
         self._x_abs_sum[local_idx] += inp.abs().sum(dim=1).to(self._hdev)
+        self._x_abs_max[local_idx] = torch.maximum(
+            self._x_abs_max[local_idx], inp.abs().amax(dim=1).to(self._hdev)
+        )
         contrib = inp.matmul(inp.t())  # [in, in] on GPU
         self.H[local_idx] += contrib.to(self._hdev)  # GPU -> CPU transfer
         self.nsamples[local_idx] += batch
@@ -343,6 +363,19 @@ class BatchedGPTQModule:
 
                 s = ssz_calculate_scale(
                     w.reshape(CH * out, in_), s, bits=self.wbits, step=self.ssz_step
+                )
+            if self.clip_cfg:
+                from ..ssz import clip_search_scale
+
+                s = clip_search_scale(
+                    w.reshape(CH * out, in_),
+                    s,
+                    bits=self.wbits,
+                    lo=float(self.clip_cfg.get("lo", 0.65)),
+                    hi=float(self.clip_cfg.get("hi", 1.0)),
+                    steps=int(self.clip_cfg.get("steps", 20)),
+                    with_ssz=bool(self.clip_cfg.get("with_ssz", False)),
+                    ssz_step=self.ssz_step,
                 )
             self.scale = s.reshape(CH, out, 1)
             self.zero = z.reshape(CH, out, 1)
@@ -509,6 +542,7 @@ class BatchedGPTQModule:
         self.H = None
         self._w_batch = None
         self._x_abs_sum = None
+        self._x_abs_max = None
 
 
 class GPTQModule(BaseHessianModule):
@@ -530,6 +564,7 @@ class GPTQModule(BaseHessianModule):
         rtn: bool = False,
         ssz: bool = False,
         ssz_step: int = 10,
+        clip_search: Optional[Dict] = None,
     ):
         super().__init__(
             layer=layer,
@@ -548,8 +583,15 @@ class GPTQModule(BaseHessianModule):
         # SSZ per-channel scale refinement (rtn base, ref: msmodelslim ssz.py)
         self.ssz = bool(ssz)
         self.ssz_step = int(ssz_step)
+        self.clip_cfg = dict(clip_search) if clip_search else None
         if self.rtn:
             self.H = None  # Hessian never accumulated/consumed in rtn mode
+
+        # OmniQuant 式激活感知 scale 精修（§6.9.2#3）：omni_steps>0 时 rtn 分支追加
+        # 捕获专家输入激活（低秩 X 形式），量化期对 clip+SSZ 的 scale 做梯度精修。
+        self.omni_steps = int(self.clip_cfg.get("omni_steps", 0)) if self.clip_cfg else 0
+        self.omni_lr = float(self.clip_cfg.get("omni_lr", 0.02)) if self.clip_cfg else 0.02
+        self._omni_x_chunks: Optional[List[torch.Tensor]] = [] if self.omni_steps > 0 else None
 
         self.scales: List[torch.Tensor] = []
         self.zeros: List[torch.Tensor] = []
@@ -571,11 +613,19 @@ class GPTQModule(BaseHessianModule):
             inp = inp.t().to(self.dev, dtype=torch.float32)
             batch = inp.shape[1]
             abs_sum = inp.abs().sum(dim=1).to(self._hdev)
+            abs_max = inp.abs().amax(dim=1).to(self._hdev)
             if self._x_abs_sum is None:
                 self._x_abs_sum = abs_sum
             else:
                 self._x_abs_sum += abs_sum
+            if self._x_abs_max is None:
+                self._x_abs_max = abs_max
+            else:
+                self._x_abs_max = torch.maximum(self._x_abs_max, abs_max)
             self.nsamples += batch
+            if self._omni_x_chunks is not None:
+                # 低秩 X 形式：channel-major [in, batch] fp16 CPU，量化期 cat 成 [in, n]
+                self._omni_x_chunks.append(inp.detach().to(dtype=torch.float16, device="cpu"))
             self.H = None  # Hessian intentionally unused in rtn mode
             return
         super().add_batch(inp, out)
@@ -609,6 +659,11 @@ class GPTQModule(BaseHessianModule):
                     "[GPTQ] ssz scale refinement applies to per-channel "
                     "(groupsize=-1) only; skipping for grouped path"
                 )
+            if self.omni_steps > 0:
+                logger.warning(
+                    "[GPTQ] omni refine applies to per-channel "
+                    "(groupsize=-1) only; skipping for grouped path"
+                )
             for i in range(0, self.columns, self.groupsize):
                 scale, zero = compute_scales_with_zero(
                     w[:, i : i + self.groupsize], bits=self.wbits, sym=self.sym
@@ -623,8 +678,40 @@ class GPTQModule(BaseHessianModule):
                 from ..ssz import ssz_calculate_scale
 
                 s = ssz_calculate_scale(w, s, bits=self.wbits, step=self.ssz_step)
+            if self.clip_cfg:
+                from ..ssz import clip_search_scale
+
+                s = clip_search_scale(
+                    w,
+                    s,
+                    bits=self.wbits,
+                    lo=float(self.clip_cfg.get("lo", 0.65)),
+                    hi=float(self.clip_cfg.get("hi", 1.0)),
+                    steps=int(self.clip_cfg.get("steps", 20)),
+                    with_ssz=bool(self.clip_cfg.get("with_ssz", False)),
+                    ssz_step=self.ssz_step,
+                )
+            if self.omni_steps > 0:
+                if not self._omni_x_chunks:
+                    logger.warning(
+                        "[GPTQ] omni refine requested but no expert activations captured; "
+                        "keeping clip+SSZ scale"
+                    )
+                else:
+                    from ..ssz import omni_refine_scale
+
+                    x_cm = torch.cat(self._omni_x_chunks, dim=1).to(self.dev)
+                    s = omni_refine_scale(
+                        w,
+                        s,
+                        x_cm,
+                        bits=self.wbits,
+                        steps=self.omni_steps,
+                        lr=self.omni_lr,
+                    )
             self.scale, self.zero = s, z
 
+        self._omni_x_chunks = None  # freed after per-channel omni consumption
         q = torch.zeros_like(w)
         if self.groupsize != -1:
             for i1 in range(0, self.columns, self.groupsize):
@@ -1139,6 +1226,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         smooth_quant: Optional[Dict] = None,
         expert_mode: Optional[str] = None,
         ssz_step: int = 10,
+        expert_clip_search: Optional[Dict] = None,
         **kwargs,
     ):
         if w_bits is not None:
@@ -1166,6 +1254,13 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         # (per-input-channel scale, single s per norm across all targets).
         self.smooth_quant_cfg = dict(smooth_quant) if smooth_quant else None
         self._smooth_norm_stats: Dict[str, list] = {}
+        self._smooth_norm_act: Dict[str, list] = {}
+        # Layer-1.5: producer->consumer subgraph SQ (up_down / linear_linear / ov).
+        # key=f"{layer_name}.{consumer_path}" -> (stype, sub_cfg, acc_list)
+        self._smooth_subgraph_stats: Dict[str, tuple] = {}
+        # FlexSmooth alpha/beta search inputs: per-subgraph activation samples
+        # (bounded token budget), used by alpha_beta_search to pick (α, β).
+        self._smooth_subgraph_act: Dict[str, list] = {}
         # E8: expert-module quantization mode. None -> per-expert GPTQ (default);
         # "rtn" -> skip Hessian error compensation for MoE expert modules, plain
         # RTN quantization on the same scale/pack path (modelslim "AWQ + no GPTQ"
@@ -1187,6 +1282,9 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         self._expert_rtn = self.expert_mode in ("rtn", "ssz")
         self._expert_ssz = self.expert_mode == "ssz"
         self.ssz_step = int(ssz_step)
+        # Opt-in per-channel clip-search on the expert (W4) scale (default off).
+        # Algorithm + rationale: ssz.clip_search_scale.
+        self._clip_cfg = dict(expert_clip_search) if expert_clip_search else None
 
     @property
     def _ascend_quant_type(self) -> str:
@@ -1292,6 +1390,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         elif moe_cfg and method == "awq":
             nbits = int(moe_cfg.get("nbits", self.wbits))
             grid = int(moe_cfg.get("grid", 20))
+            search_stat = str(moe_cfg.get("search_stat", "mean")).lower()
 
             from ..scale_search import awq_search, awq_apply
 
@@ -1313,14 +1412,22 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                     continue
 
                 if is_batched:
+                    xax = (
+                        getattr(handler, "x_abs_max", None)
+                        if search_stat == "max"
+                        else None
+                    )
                     for local_e in range(handler._CH):
                         sl = handler._slice_linears[local_e]
                         w3d = sl._weight_3d
                         e = sl._expert_idx
                         w = w3d.data[e].float()
                         xm = x_abs_mean[local_e].to(w.device)
+                        xm_search = (
+                            xax[local_e].to(w.device) if xax is not None else None
+                        )
                         _t0 = _time.perf_counter()
-                        s = awq_search(w, xm, nbits=nbits, grid=grid)
+                        s = awq_search(w, xm, nbits=nbits, grid=grid, x_search=xm_search)
                         w_adjusted = awq_apply(w, s, nbits=nbits)
                         t_search += _time.perf_counter() - _t0
                         n_search += 1
@@ -1334,8 +1441,18 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                     w3d = sl._weight_3d
                     e = sl._expert_idx
                     w = w3d.data[e].float()
+                    xm_search = None
+                    if search_stat == "max":
+                        xax = getattr(handler, "x_abs_max", None)
+                        xm_search = xax.to(w.device) if xax is not None else None
                     _t0 = _time.perf_counter()
-                    s = awq_search(w, x_abs_mean.to(w.device), nbits=nbits, grid=grid)
+                    s = awq_search(
+                        w,
+                        x_abs_mean.to(w.device),
+                        nbits=nbits,
+                        grid=grid,
+                        x_search=xm_search,
+                    )
                     w_adjusted = awq_apply(w, s, nbits=nbits)
                     t_search += _time.perf_counter() - _t0
                     n_search += 1
@@ -1358,23 +1475,36 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
 
         Scale s is searched per middle channel from the DOWN projection's input
         activation abs-mean (= swiglu output, i.e. the middle activation — the
-        down handler's x_abs_mean already IS this statistic). Then folded:
-          - down:     W_dn <- RTN(W_dn * s_col) / s_col   (input-column scale)
+        down handler's x_abs_mean already IS this statistic). Then folded as a
+        balanced scale (kept scaled, matching modelslim UpDownSubgraphFusion):
+          - down:     W_dn <- W_dn * s_col          (input-column scale, kept)
           - gate_up:  up half rows [I, 2I) <- W_gu[I:2I] * (1/s)
-        The gate half (rows [0, I)) is left untouched (swiglu nonlinearity).
+        s cancels in the overall computation (down x s · up x 1/s) and the normal
+        W4 quantization acts on the scaled W_dn (the AWQ benefit). The gate half
+        (rows [0, I)) is left untouched (swiglu nonlinearity).
 
-        Ref: msmodelslim processor/anti_outlier/awq/api.py::awq_impl_up_down +
-             common/subgraph_fusion.py::UpDownSubgraphFusion.
+        Ref: msmodelslim processor/anti_outlier/flex_smooth/api.py::
+             flex_awq_ssz_impl_up_down + common/subgraph_fusion.py::UpDownSubgraphFusion.
         """
         import time as _time
 
-        from ..scale_search import awq_apply, awq_search
+        from ..scale_search import awq_apply_scaled, awq_search
 
         nbits = int(moe_cfg.get("nbits", self.wbits))
         grid = int(moe_cfg.get("grid", 20))
+        # AWQ alpha-search statistic: modelslim flex_awq_ssz searches alpha with
+        # max|act|^alpha and applies the final scale with mean|act|^alpha
+        # (processor/anti_outlier/flex_smooth/api.py::flex_awq_ssz_impl_up_down
+        # -> search_scale/transform). "mean" keeps the legacy mean/mean behavior.
+        search_stat = str(moe_cfg.get("search_stat", "mean")).lower()
+        if search_stat not in ("mean", "max"):
+            raise ValueError(
+                f"scale_search.moe.search_stat must be 'mean' or 'max', got {search_stat!r}"
+            )
 
         # Per-expert context: (experts_path, expert_idx) -> down w3d + middle mean
         experts_ctx: Dict[tuple, Dict] = {}
+        n_skip = 0
         for handler in handlers.values():
             is_batched = getattr(handler, "_is_batched_expert", False)
             if not (
@@ -1389,23 +1519,38 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
             )
             if proj_type != "down_proj":
                 continue
+            # 未在校准中被路由到的专家 x_abs_mean 为 None（scale search 统计缺失）
+            # → 跳过（该专家不做 AWQ，保持原权重），与纯 "awq" 分支的 None 处理一致。
+            # 缺此保护会崩掉整个量化（GLM layer 57 实测，2026-09-12）。
             if is_batched:
+                xam = handler.x_abs_mean
+                if xam is None:
+                    n_skip += 1
+                    continue
+                xax = getattr(handler, "x_abs_max", None)
                 for local_idx in range(handler._CH):
                     e = handler._expert_start_idx + local_idx
                     ctx = experts_ctx.setdefault(
                         (handler._experts_module_path, e), {}
                     )
                     ctx["down_w3d"] = handler._slice_linears[0]._weight_3d
-                    ctx["mid_mean"] = (
-                        handler.x_abs_mean[local_idx].cpu() / 1.0
-                    )
+                    ctx["mid_mean"] = xam[local_idx].cpu() / 1.0
+                    if xax is not None:
+                        ctx["mid_max"] = xax[local_idx].cpu()
             else:
+                xam = handler.x_abs_mean
+                if xam is None:
+                    n_skip += 1
+                    continue
                 sl = handler.layer
                 ctx = experts_ctx.setdefault(
                     (sl._experts_module_path, sl._expert_idx), {}
                 )
                 ctx["down_w3d"] = sl._weight_3d
-                ctx["mid_mean"] = handler.x_abs_mean.cpu() / 1.0
+                ctx["mid_mean"] = xam.cpu() / 1.0
+                xax = getattr(handler, "x_abs_max", None)
+                if xax is not None:
+                    ctx["mid_max"] = xax.cpu()
 
         if not experts_ctx:
             return
@@ -1438,10 +1583,11 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
         for (experts_path, e), ctx in experts_ctx.items():
             down_w3d = ctx["down_w3d"]
             mid = ctx["mid_mean"]
+            mid_search = ctx.get("mid_max") if search_stat == "max" else None
             w = down_w3d.data[e].float()
             _t0 = _time.perf_counter()
-            s = awq_search(w, mid, nbits=nbits, grid=grid)
-            w_adjusted = awq_apply(w, s, nbits=nbits)  # RTN(w*s)/s, columns
+            s = awq_search(w, mid, nbits=nbits, grid=grid, x_search=mid_search)
+            w_adjusted = awq_apply_scaled(w, s)  # w*s, columns (scale-only, kept scaled)
             t_search += _time.perf_counter() - _t0
             n_search += 1
             down_w3d.data[e].copy_(w_adjusted.to(down_w3d.dtype))
@@ -1459,10 +1605,12 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                     f"experts_module {experts_path}, expert {e} (up-half fold skipped)"
                 )
 
-        if n_search:
+        if n_search or n_skip:
+            _skip = f" | skipped {n_skip} un-routed (no x_abs_mean)" if n_skip else ""
+            _per = (t_search / n_search * 1000) if n_search else 0.0
             logger.info(
                 f"[{self._TAG}] updown_awq: {layer.name}: {n_search} experts, "
-                f"{t_search:.2f}s total, {t_search / n_search * 1000:.1f}ms/expert"
+                f"{t_search:.2f}s total, {_per:.1f}ms/expert{_skip}"
             )
 
     # ---------------- SmoothQuant (norm-linear) ----------------
@@ -1502,8 +1650,24 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
     def _smooth_norm_targets(self) -> list:
         if not self.smooth_quant_cfg:
             return []
-        targets = self.smooth_quant_cfg.get("targets")
-        return targets if targets else list(self.DEFAULT_SMOOTH_NORM_TARGETS)
+        # Explicit "targets" key (even empty) overrides the default; key-absent
+        # falls back to DEFAULT so existing recipes keep their norm-linear SQ.
+        if "targets" in self.smooth_quant_cfg:
+            return self.smooth_quant_cfg["targets"]
+        return list(self.DEFAULT_SMOOTH_NORM_TARGETS)
+
+    def _smooth_subgraphs(self) -> list:
+        """Layer-1.5 producer->consumer SQ subgraphs (opt-in via smooth_quant.subgraphs).
+
+        Each entry: {type: up_down|linear_linear|ov, <producer key>, <consumer key>}.
+        Keys:
+          up_down:       producer=up, consumer=down   (gate untouched; routed experts use updown_awq)
+          linear_linear: producer=l1, consumer=l2      (y=l2(l1(x)))
+          ov:            producer=v, consumer=o        (MLA value->output)
+        """
+        if not self.smooth_quant_cfg:
+            return []
+        return self.smooth_quant_cfg.get("subgraphs", []) or []
 
     def _collect_statistics(self, layer_module, handlers, *, layer_name, chunk_index):
         """收集 SmoothQuant norm 输出 per-channel abs-max（叠加到父类统计收集）。"""
@@ -1512,18 +1676,55 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                 layer_module, handlers, layer_name=layer_name, chunk_index=chunk_index
             )
         self._smooth_norm_stats.clear()
+        self._smooth_norm_act.clear()
         hooks = []
         for entry in self._smooth_norm_targets():
             norm_module = self._try_get_child(layer_module, entry["norm"])
             if norm_module is None or not hasattr(norm_module, "weight"):
                 continue
             acc = [None]  # mutable holder: [hidden] running max, lazily created
+            act_holder: list = []
             self._smooth_norm_stats[f"{layer_name}.{entry['norm']}"] = acc
-            hooks.append(
-                norm_module.register_forward_hook(
-                    lambda module, inp, out, acc=acc: self._smooth_collect(out, acc)
-                )
-            )
+            self._smooth_norm_act[f"{layer_name}.{entry['norm']}"] = act_holder
+
+            def _norm_hook(module, inp, out, _acc=acc, _hold=act_holder):
+                self._smooth_collect(out, _acc)
+                self._smooth_collect_act(out, _hold)
+                return None  # ★ 必须返回 None：forward_hook 返回非 None 会替换模块输出
+
+            hooks.append(norm_module.register_forward_hook(_norm_hook))
+        # Layer-1.5 subgraph intermediate capture: pre-hook on each consumer module,
+        # recording per-channel abs-max of its INPUT (= producer output / the
+        # intermediate activation being smoothed).
+        self._smooth_subgraph_stats.clear()
+        self._smooth_subgraph_act.clear()
+        for sub in self._smooth_subgraphs():
+            stype = sub.get("type")
+            if stype == "ov":
+                consumer_path = sub.get("o") or sub.get("consumer")
+            elif stype == "up_down":
+                consumer_path = sub.get("down") or sub.get("consumer")
+            elif stype == "linear_linear":
+                consumer_path = sub.get("l2") or sub.get("consumer")
+            else:
+                continue
+            if not consumer_path:
+                continue
+            consumer_mod = self._try_get_child(layer_module, consumer_path)
+            if consumer_mod is None or not hasattr(consumer_mod, "weight"):
+                continue
+            acc = [None]
+            key = f"{layer_name}.{consumer_path}"
+            act_holder: list = []
+            self._smooth_subgraph_stats[key] = (stype, sub, acc)
+            self._smooth_subgraph_act[key] = act_holder
+
+            def _pre_hook(module, args, _acc=acc, _hold=act_holder):
+                if args and isinstance(args[0], torch.Tensor):
+                    self._smooth_collect(args[0], _acc)
+                    self._smooth_collect_act(args[0], _hold)
+
+            hooks.append(consumer_mod.register_forward_pre_hook(_pre_hook))
         try:
             return super()._collect_statistics(
                 layer_module, handlers, layer_name=layer_name, chunk_index=chunk_index
@@ -1535,12 +1736,84 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
     @staticmethod
     def _smooth_collect(out: torch.Tensor, acc: list) -> None:
         """Running per-channel abs-max of a norm output into a [hidden] holder."""
-        t = out.float()
+        t = out.float().abs()
         while t.dim() > 1:
             t = t.amax(dim=0)
         if acc[0] is None:
             acc[0] = torch.zeros_like(t)
         acc[0].copy_(torch.maximum(acc[0].to(t.device), t).to(acc[0].device))
+
+    def _smooth_collect_act(self, out: torch.Tensor, holder: list) -> None:
+        """Collect up to ``act_sample_tokens`` activation rows for the α/β search.
+
+        Stored on CPU in bf16 (the searcher casts to float32). Total per subgraph
+        is bounded by the config's ``act_sample_tokens`` (default 512) so the
+        grid search stays cheap; the reference uses the full activations.
+        """
+        cap = int((self.smooth_quant_cfg or {}).get("act_sample_tokens", 512))
+        have = sum(int(t.shape[0]) for t in holder)
+        if have >= cap:
+            return
+        x = out.detach()
+        if x.dim() > 2:
+            x = x.reshape(-1, x.shape[-1])
+        n = min(int(x.shape[0]), cap - have)
+        if n <= 0:
+            return
+        holder.append(x[:n].to("cpu", dtype=torch.bfloat16))
+
+    def _check_scale_health(self, s: torch.Tensor, where: str) -> None:
+        """Warn when a SmoothQuant scale leaves the healthy range [1e-2, 1e2].
+
+        An extremely small s scales the consumer's weight columns to ~0 so the
+        int8 weight quant rounds them away (dead channels → garbage output); it
+        almost always indicates a broken activation statistic (e.g. the missing
+        ``abs`` in ``_smooth_collect``, fixed 2026-09-12).
+        """
+        n_small = int((s < 1e-2).sum())
+        n_large = int((s > 1e2).sum())
+        if n_small or n_large:
+            logger.warning(
+                f"[{self._TAG}] smooth_quant scale health {where}: "
+                f"{n_small} ch < 1e-2, {n_large} ch > 1e2 "
+                f"(min={float(s.min()):.3e}, max={float(s.max()):.3e}, n={s.numel()})"
+            )
+
+    def _flex_smooth_scale(self, act_key, x_scale, w_scale, search_weights,
+                           default_alpha: float, where: str):
+        """Layer-1.5 SQ scale: searched (alpha,beta) when enabled, else fixed alpha.
+
+        msmodelslim's flex_smooth_quant leaves alpha/beta unset in the production
+        recipe, so each subgraph runs ``FlexSmoothAlphaBetaSearcher`` (grid step
+        0.05: phase-1 searches alpha with beta=1-alpha, phase-2 searches beta).
+        Opt-in via ``smooth_quant.alpha_beta_search: true``.
+        """
+        from ..scale_search import smooth_scale, smooth_scale_ab
+
+        cfg = self.smooth_quant_cfg or {}
+        if cfg.get("alpha_beta_search"):
+            act = (self._smooth_subgraph_act.get(act_key)
+                   or self._smooth_norm_act.get(act_key))
+            if act:
+                from ..alpha_beta_search import FlexSmoothAlphaBetaSearcher
+
+                act_t = torch.cat(act, dim=0).float().cpu()
+                w_t = search_weights.detach().float().cpu()
+                searcher = FlexSmoothAlphaBetaSearcher(
+                    act_sym=True, search_step=float(cfg.get("search_step", 0.05))
+                )
+                a, b, mse = searcher.search_alpha_beta(act_t, w_t)
+                logger.info(
+                    f"[{self._TAG}] flex_smooth a/b search {where}: "
+                    f"alpha={a:.2f} beta={b:.2f} mse={mse:.6f} "
+                    f"(tokens={int(act_t.shape[0])})"
+                )
+                return smooth_scale_ab(x_scale, w_scale, a, b)
+            logger.warning(
+                f"[{self._TAG}] alpha_beta_search enabled but no act samples for "
+                f"{where}; fallback fixed alpha={default_alpha}"
+            )
+        return smooth_scale(x_scale, w_scale, default_alpha)
 
     def _apply_smooth_quant(self, layer, chunk) -> None:
         """SmoothQuant fold for norm-linear pairs (post AWQ, pre quantization).
@@ -1583,7 +1856,12 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
             w_max = torch.stack(
                 [compute_weight_scale(w) for w in target_weights]
             ).amax(dim=0)  # per-input-channel max across all targets
-            s = smooth_scale(x_max, w_max, alpha)
+            s = self._flex_smooth_scale(
+                f"{layer.name}.{norm_path}", x_max, w_max,
+                torch.cat(target_weights, dim=0), alpha,
+                f"{layer.name}:{norm_path}",
+            )
+            self._check_scale_health(s, f"{layer.name}:{norm_path}")
 
             for tmod in target_modules:
                 w = tmod.weight.detach().float()
@@ -1605,11 +1883,156 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                     )
             n_pairs += 1
 
-        if n_pairs:
+        # --- Layer-1.5 subgraph SQ folds (up_down / linear_linear / ov) ---
+        n_sub = self._apply_subgraph_sq(layer, layer_module, alpha, chunk)
+
+        if n_pairs or n_sub:
             logger.info(
-                f"[{self._TAG}] smooth_quant: {layer.name}: {n_pairs} norm-linear "
-                f"pairs folded (alpha={alpha})"
+                f"[{self._TAG}] smooth_quant: {layer.name}: {n_pairs} norm-linear + "
+                f"{n_sub} subgraph pairs folded (alpha={alpha})"
             )
+
+    def _apply_subgraph_sq(self, layer, layer_module, alpha, chunk) -> int:
+        """Fold producer->consumer SQ subgraphs (Layer-1.5). Returns #folded.
+
+        Consumes the per-consumer intermediate abs-max captured in
+        ``_smooth_subgraph_stats`` (pre-hooks) + the consumer weight scale,
+        computes s = smooth_scale(x, w, alpha), then folds:
+          consumer.weight input-col  *= s
+          producer.weight  output-row *= 1/s
+        (ov additionally aligns the MLA v-channel head layout.)
+        """
+        from ..scale_search import compute_weight_scale, smooth_scale
+
+        n_sub = 0
+        for sub in self._smooth_subgraphs():
+            stype = sub.get("type")
+            if stype == "up_down":
+                prod_path = sub.get("up") or sub.get("producer")
+                cons_path = sub.get("down") or sub.get("consumer")
+            elif stype == "linear_linear":
+                prod_path = sub.get("l1") or sub.get("producer")
+                cons_path = sub.get("l2") or sub.get("consumer")
+            elif stype == "ov":
+                prod_path = sub.get("v") or sub.get("producer")
+                cons_path = sub.get("o") or sub.get("consumer")
+            else:
+                continue
+            if not prod_path or not cons_path:
+                continue
+            acc_entry = self._smooth_subgraph_stats.get(f"{layer.name}.{cons_path}")
+            if acc_entry is None:
+                continue
+            acc = acc_entry[2]
+            if acc is None or acc[0] is None:
+                logger.warning(
+                    f"[{self._TAG}] smooth_quant subgraph {stype}: no intermediate "
+                    f"stats for {layer.name}.{cons_path} (skip)"
+                )
+                continue
+            x_scale = acc[0].float()
+            cons_mod = self._try_get_child(layer_module, cons_path)
+            prod_mod = self._try_get_child(layer_module, prod_path)
+            if cons_mod is None or prod_mod is None:
+                continue
+            w_scale = compute_weight_scale(cons_mod.weight.detach())
+            if w_scale.numel() != x_scale.numel():
+                # ov producer/consumer channel mismatch is handled by the caller via
+                # head-dim reshape; for the clean cases dims must match.
+                if stype != "ov":
+                    logger.warning(
+                        f"[{self._TAG}] smooth_quant subgraph {stype}: dim mismatch "
+                        f"x={x_scale.numel()} w={w_scale.numel()} (skip)"
+                    )
+                    continue
+            s = self._flex_smooth_scale(
+                f"{layer.name}.{cons_path}", x_scale, w_scale,
+                cons_mod.weight.detach(), alpha, f"{layer.name}:{cons_path}",
+            )
+            self._check_scale_health(s, f"{layer.name}:{cons_path}")
+            if stype == "ov":
+                self._sq_fold_ov(layer_module, cons_mod, prod_mod, s,
+                                 sub.get("num_heads"), sub.get("kv_heads"),
+                                 prod_path, cons_path)
+            else:
+                self._sq_fold_pair(cons_mod, prod_mod, s)
+            # ★ Sync chunk snapshots for the FLOAT pass-through producer/consumer.
+            # e.g. kv_b_proj is FLOAT (model default skip); its in-memory fold must be
+            # written back to the chunk or the saved artifact keeps the ORIGINAL weight
+            # while o_proj (quantized) is folded → ov function broken → garbage output
+            # (found 2026-09-12). Quantized targets are harmlessly overwritten by packing.
+            # Mirrors the norm-linear fold's norm snapshot sync.
+            if chunk is not None:
+                for _p, _m in ((prod_path, prod_mod), (cons_path, cons_mod)):
+                    for _suf in ("weight", "bias"):
+                        _attr = getattr(_m, _suf, None)
+                        if _attr is None:
+                            continue
+                        _n = f"{layer.name}.{_p}.{_suf}"
+                        if chunk.get_tensor(_n) is not None:
+                            chunk.update_tensor(_n, _attr.detach().cpu())
+            n_sub += 1
+        return n_sub
+
+    @staticmethod
+    def _sq_fold_pair(cons_mod, prod_mod, s) -> None:
+        """SmoothQuant fold for a clean producer->consumer linear pair.
+
+        consumer.weight input-col *= s ; producer.weight output-row *= 1/s
+        (+ producer.bias *= 1/s if present). Net function preserved.
+        """
+        from ..scale_search import awq_apply_scaled
+        s_dev = s.to(cons_mod.weight.device)
+        cdtype = cons_mod.weight.dtype
+        pdtype = prod_mod.weight.dtype
+        cons_mod.weight.data.copy_(
+            awq_apply_scaled(cons_mod.weight.detach(), s_dev).to(cdtype)
+        )
+        inv = (1.0 / s_dev).to(pdtype)
+        prod_mod.weight.data.copy_(
+            (prod_mod.weight.detach().float() * inv.view(-1, 1)).to(pdtype)
+        )
+        if prod_mod.bias is not None:
+            prod_mod.bias.data.copy_(
+                (prod_mod.bias.detach().float() * inv).to(prod_mod.bias.dtype)
+            )
+
+    def _sq_fold_ov(self, layer_module, o_mod, v_mod, s, num_heads, kv_heads,
+                    v_path, o_path) -> None:
+        """MLA ov fold: o_proj input-col *= s ; kv_b_proj v-output-row *= 1/s.
+
+        v is the last ``v_head_dim`` channels of each head group in kv_b_proj's
+        output [num_heads*(qk_nope+v_head)]. Requires v_mod == kv_b_proj and a
+        head-structured s; falls back to the clean pair fold when shapes align.
+        """
+        from ..scale_search import awq_apply_scaled
+        try:
+            cfg = getattr(self._runtime_model, "config", None) or getattr(layer_module, "config", None)
+            v_head = getattr(cfg, "v_head_dim", None)
+            qk_nope = getattr(cfg, "qk_nope_head_dim", None)
+            nh = num_heads or getattr(cfg, "num_attention_heads", None)
+            if v_head and qk_nope and nh:
+                per_head = qk_nope + v_head
+                # s is per o_proj input channel = [num_heads * v_head]; reshape to
+                # the per-head v slice [nh, v_head] and scale those kv_b_proj rows.
+                s_v = s.to(v_mod.weight.device).float().view(nh, v_head)
+                # o_proj input-col ×s
+                o_mod.weight.data.copy_(
+                    awq_apply_scaled(o_mod.weight.detach(), s.to(o_mod.weight.device)).to(o_mod.weight.dtype)
+                )
+                inv = (1.0 / s_v)
+                w = v_mod.weight.detach().float().view(nh, per_head, -1)
+                w[:, -v_head:, :] = w[:, -v_head:, :] * inv.unsqueeze(-1)
+                v_mod.weight.data.copy_(w.reshape(v_mod.weight.shape).to(v_mod.weight.dtype))
+                if v_mod.bias is not None:
+                    vb = v_mod.bias.detach().float().view(nh, per_head)
+                    vb[:, -v_head:] = vb[:, -v_head:] * inv
+                    v_mod.bias.data.copy_(vb.reshape(v_mod.bias.shape).to(v_mod.bias.dtype))
+                return
+        except Exception as e:  # noqa: BLE001 - never break quant on an ov edge case
+            logger.warning(f"[{self._TAG}] smooth_quant ov: head-dim fold failed ({e}); "
+                           f"falling back to clean pair fold")
+        self._sq_fold_pair(o_mod, v_mod, s)
 
     def _pack_quant_linear_tensors(
         self,
@@ -1711,6 +2134,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                             rtn=self._expert_rtn,
                             ssz=self._expert_ssz,
                             ssz_step=self.ssz_step,
+                            clip_search=self._clip_cfg,
                         )
                 else:
                     # Per-expert: create num_experts GPTQModule handlers
@@ -1733,6 +2157,7 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                             rtn=self._expert_rtn,
                             ssz=self._expert_ssz,
                             ssz_step=self.ssz_step,
+                            clip_search=self._clip_cfg,
                         )
             else:
                 # Standard 2D Linear

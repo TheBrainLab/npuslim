@@ -1,0 +1,84 @@
+metadata:
+  name: "GLM5_W4A8_ReplicaL0_Clip_Lo05_Omni_QAD_Requant_E2"
+  description: >-
+    E2 requant（★ 0924 草稿，E2 训练完成后更新 model path 并复核）：在 E2 合并模型
+    （底座 l0_clip_lo05_omni 反量化 + E2 deploy 复合 LoRA delta）上做重量化。
+    ★★ 管线对齐原则（0924 STEP4 教训）：algorithm 段完整沿用
+    glm5-w4a8_replica_l0_clip_lo05_omni.yaml（GPTQ + expert_mode ssz + ssz_step 10 +
+    expert_clip_search lo0.5/hi1.0/steps20/with_ssz false + omni 60步/lr0.02 +
+    actorder/blocksize256/layer_routing wbits8）——requant 量化器与底座产物管线
+    同配置 = 零新误差的前提。反面教材（qad_requant.yaml，STEP4）：省略 expert_mode
+    → 专家走"完整 GPTQ" → 48 校准样本的专家激活稀疏 → Hessian 病态 → 补偿输出
+    与 δ 无关（cos=-0.16）+ post 复合 δ 的 70% 亚网格丢失 → 四维崩坏
+    （he 0.4085/ppl≈5.88）。type 用 GPTQ（l0 系管线），非 GPTQGlmRotation。
+    execution.resume: false（坑㊳ fsync wedged 教训）。
+
+resources:
+  - id: glm5
+    type: GLM5
+    path: /llm_infer_workspace/ylt/glm52-qad/merged_l0omni_e2_bf16
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    device_map: cpu
+
+  - id: calib_data
+    type: MixedDomain
+    data_path: dataset/calib/mixed_chat_code.jsonl
+    num_samples: 48
+    max_seq_length: 1024
+
+recipe:
+  - name: "GPTQ_MoE_W4A8_Dense_W8A8_E2_Requant"
+    type: compressor
+    model: "@glm5"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 4
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ
+      wbits: 4
+      act_bits: 8
+      groupsize: -1
+      save_backend: npu
+      expert_chunk_size: 1
+      layer_routing:
+        - patterns:
+            - "*.self_attn.*"
+            - "*.mlp.shared_experts.*"
+            - "*.mlp.gate_proj"
+            - "*.mlp.up_proj"
+            - "*.mlp.down_proj"
+          wbits: 8
+      max_calib_samples: 48
+      blocksize: 256
+      actorder: true
+      quantize_mtp: false
+      save_mtp_debug: false
+      expert_mode: ssz
+      ssz_step: 10
+      expert_clip_search:
+        lo: 0.5
+        hi: 1.0
+        steps: 20
+        with_ssz: false
+        omni_steps: 60
+        omni_lr: 0.02
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 1
+      resume: false
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_npu"
+
+# ★ E2 管线对齐检查清单（发射前逐项核对）：
+# ① algorithm.type = GPTQ（l0 系）非 GPTQGlmRotation ✓
+# ② expert_mode: ssz + ssz_step: 10 ✓（与 l0_clip_lo05_omni 逐项一致）
+# ③ expert_clip_search: lo0.5/hi1.0/steps20/with_ssz false + omni 60/0.02 ✓
+# ④ layer_routing wbits:8 的 patterns 与 l0_clip_lo05_omni 一致 ✓
+# ⑤ actorder/blocksize256/max_calib_samples48 ✓
+# ⑥ model.path = E2 的 merge 输出（E2 训练完成后回填）
+# ⑦ 对照基线 = l0_clip_lo05_omni 的历史四维（R1.5 3/4 + he 0.9695，勿重评本体）

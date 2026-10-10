@@ -1,0 +1,97 @@
+metadata:
+  name: "GLM5_W4A8_ModelslimReplica_Layer1_5_Path2_Clip_Seed42_Omni"
+  description: >-
+    ★ 09-16 晚：seed × omni 交互分离（omni 路线增益来源归因）。底座 = p2clip + omni 精修（omni_steps=60/lr=0.02），
+    旋转 seed 从 1234 换为 42——与 s1234_omni（he-trunc 0.9695，全场最佳）构成纯 seed 单变量对。
+    目的：判定 omni 路线的 he 突破（+1.83pp 超靶）究竟来自 ① omni 精修本身，还是 ② seed1234 × omni 的交互。
+    若 seed42_omni 的 he 仍 ≥0.96 → omni 增益稳健（reject seed 依赖）；若显著回落 → 存在 seed×omni 交互。
+    见 workspace/W4A8_总结与规划0908.md §6.9.2#3 / §6.8.6
+
+resources:
+  - id: glm5
+    type: GLM5
+    path: /llm_infer_workspace/models/GLM-5.2-bf16/snapshots/master
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    device_map: cpu
+
+  - id: calib_data
+    type: MixedDomain
+    data_path: dataset/calib/mixed_chat_code.jsonl
+    num_samples: 48
+    max_seq_length: 1024
+
+recipe:
+  - name: "GPTQ_MoE_W4A8_Dense_W8A8_ReplicaLayer1_5_Path2_Clip_Seed42_Omni"
+    type: compressor
+    model: "@glm5"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 4
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQGlmRotation
+      wbits: 4
+      act_bits: 8
+      groupsize: -1
+      save_backend: npu
+      expert_chunk_size: 1
+      layer_routing:
+        - patterns:
+            - "*.self_attn.*"
+            - "*.mlp.shared_experts.*"
+            - "*.mlp.gate_proj"
+            - "*.mlp.up_proj"
+            - "*.mlp.down_proj"
+          wbits: 8
+      max_calib_samples: 48
+      blocksize: 256
+      actorder: true
+      quantize_mtp: false
+      save_mtp_debug: false
+      glm_rotation:
+        block_size: -1
+        seed: 42
+      scale_search:
+        moe:
+          method: updown_awq
+          nbits: 4
+          grid: 20
+      smooth_quant:
+        alpha: 0.5
+        alpha_beta_search: true
+        search_step: 0.05
+        act_sample_tokens: 8192
+        targets:
+          - norm: input_layernorm
+            targets:
+              - self_attn.q_a_proj
+              - self_attn.kv_a_proj_with_mqa
+          - norm: self_attn.q_a_layernorm
+            targets:
+              - self_attn.q_b_proj
+        subgraphs:
+          - {type: up_down, up: "mlp.up_proj", down: "mlp.down_proj"}
+          - {type: up_down, up: "mlp.shared_experts.up_proj", down: "mlp.shared_experts.down_proj"}
+          - {type: ov, v: "self_attn.kv_b_proj", o: "self_attn.o_proj"}
+      expert_mode: ssz
+      ssz_step: 10
+      expert_clip_search:
+        lo: 0.5
+        hi: 1.0
+        steps: 20
+        with_ssz: true
+        omni_steps: 60
+        omni_lr: 0.02
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 1
+      resume: true
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_npu"
+
+# 单变量：s1234_omni → seed42_omni（唯一差异 = glm_rotation.seed）
+# 判据：he-trunc 是否保持 ≥0.96（omni 稳健）或显著回落（存在 seed×omni 交互）。

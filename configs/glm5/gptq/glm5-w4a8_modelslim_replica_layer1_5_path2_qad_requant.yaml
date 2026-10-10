@@ -1,0 +1,61 @@
+metadata:
+  name: "GLM5_W4A8_ModelslimReplica_QAD_Requant_Path2"
+  description: >-
+    QAD M5 closure requant（★ 09-22）：在合并模型（底座 p2clip_s1234 反量化 + step-2000
+    QAD LoRA delta，折叠后空间）上做全链重量化。skip-fold：旋转/SQ/AWQ 折叠已折进合并
+    权重，故本配置故意省略 glm_rotation / smooth_quant / scale_search 块（三实例先例：
+    NOROT 臂、nosq 臂、noAWQ 臂均跑过对应缺块配置）。专家模式省略 expert_mode →
+    完整 GPTQ（Hessian 补偿，delta 表达机制，Qwen3-30B M5 先例）。校准统计在合并
+    权重上全新采集（§3.5-B2 教训：不做"只重量化受影响张量"捷径）。
+
+resources:
+  - id: glm5
+    type: GLM5
+    path: /llm_infer_workspace/ylt/glm52-qad/merged_p2clip_s1234_qad2000_bf16
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    device_map: cpu
+
+  - id: calib_data
+    type: MixedDomain
+    data_path: dataset/calib/mixed_chat_code.jsonl
+    num_samples: 48
+    max_seq_length: 1024
+
+recipe:
+  - name: "GPTQ_MoE_W4A8_Dense_W8A8_QAD_Requant"
+    type: compressor
+    model: "@glm5"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 4
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQGlmRotation
+      wbits: 4
+      act_bits: 8
+      groupsize: -1
+      save_backend: npu
+      expert_chunk_size: 1
+      layer_routing:
+        - patterns:
+            - "*.self_attn.*"
+            - "*.mlp.shared_experts.*"
+            - "*.mlp.gate_proj"
+            - "*.mlp.up_proj"
+            - "*.mlp.down_proj"
+          wbits: 8
+      max_calib_samples: 48
+      blocksize: 256
+      actorder: true
+      quantize_mtp: false
+      save_mtp_debug: false
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 1
+      resume: false
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_npu"

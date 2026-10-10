@@ -144,6 +144,7 @@ class BaseHessianModule:
         self._dead_mask: Optional[torch.Tensor] = None
         self._hinv_fallback: Optional[str] = None
         self._x_abs_sum: Optional[torch.Tensor] = None  # [in] running abs sum for scale search
+        self._x_abs_max: Optional[torch.Tensor] = None  # [in] running abs max (modelslim AWQ alpha-search stat)
 
     @property
     def x_abs_mean(self) -> Optional[torch.Tensor]:
@@ -151,6 +152,13 @@ class BaseHessianModule:
         if self._x_abs_sum is None or self.nsamples == 0:
             return None
         return self._x_abs_sum / self.nsamples
+
+    @property
+    def x_abs_max(self) -> Optional[torch.Tensor]:
+        """Per-input-channel activation abs-max (modelslim AWQ alpha-search stat)."""
+        if self._x_abs_max is None or self.nsamples == 0:
+            return None
+        return self._x_abs_max
 
     def add_batch(self, inp: torch.Tensor, out: torch.Tensor) -> None:
         _ = out
@@ -178,10 +186,15 @@ class BaseHessianModule:
         # Keep the accumulator on _hdev (like H): expert weights may be offloaded
         # to CPU after statistics collection while self.dev stays cuda.
         abs_sum = inp.abs().sum(dim=1).to(self._hdev)  # [in]
+        abs_max = inp.abs().amax(dim=1).to(self._hdev)  # [in]
         if self._x_abs_sum is None:
             self._x_abs_sum = abs_sum
         else:
             self._x_abs_sum += abs_sum
+        if self._x_abs_max is None:
+            self._x_abs_max = abs_max
+        else:
+            self._x_abs_max = torch.maximum(self._x_abs_max, abs_max)
         self.H *= self.nsamples / (self.nsamples + batch)
         self.nsamples += batch
         inp = math.sqrt(2 / self.nsamples) * inp
@@ -259,4 +272,5 @@ class BaseHessianModule:
         self.Losses = None
         self.Trace = None
         self._x_abs_sum = None
+        self._x_abs_max = None
         bh.empty_cache()

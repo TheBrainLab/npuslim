@@ -280,6 +280,9 @@ def _make_updown_handlers():
 
 
 def test_updown_awq_folds_down_columns_and_up_rows():
+    """Balanced AWQ fold (modelslim UpDownSubgraphFusion): down = W_d*s, up = W_u/s,
+    gate half untouched. s cancels in the product, so down[h,i]*up[i,h] must equal
+    the original dn_orig[h,i]*gu_orig[i,h]."""
     algo = GPTQAlgorithm(wbits=4, group_size=-1)
     weight_gu, weight_dn, handlers = _make_updown_handlers()
     gu_orig = weight_gu.data.clone()
@@ -288,24 +291,20 @@ def test_updown_awq_folds_down_columns_and_up_rows():
     algo._apply_updown_awq(_FakeLayer(), handlers, cfg)
 
     I = 2  # intermediate dim
-    # gate half rows [0, I) untouched (swiglu nonlinearity)
-    assert torch.equal(weight_gu.data[0, :I].float(), gu_orig[0, :I].float())
-    assert torch.equal(weight_gu.data[1, :I].float(), gu_orig[1, :I].float())
-    # up half rows [I, 2I) folded: W_gu[I:] * (1/s) per middle channel
-    assert not torch.allclose(weight_gu.data[0, I:].float(), gu_orig[0, I:].float(), atol=1e-6)
-    # down weight folded (values changed)
-    assert not torch.allclose(weight_dn.data[0].float(), dn_orig[0].float(), atol=1e-6)
-    assert not torch.allclose(weight_dn.data[1].float(), dn_orig[1].float(), atol=1e-6)
-    # fold is per-expert: both experts must be processed
     for e in (0, 1):
-        assert not torch.allclose(weight_dn.data[e].float(), dn_orig[e].float(), atol=1e-6)
+        # gate half rows [0, I) untouched (swiglu nonlinearity)
+        assert torch.equal(weight_gu.data[e, :I].float(), gu_orig[e, :I].float())
+        prod_new = weight_dn.data[e].float() * weight_gu.data[e, I:].float().T
+        prod_orig = dn_orig[e].float() * gu_orig[e, I:].float().T
+        assert torch.allclose(prod_new, prod_orig, rtol=1e-4, atol=1e-5), (
+            f"expert {e}: balanced fold broken (down*up not preserved)"
+        )
 
 
 def test_updown_awq_respects_middle_activation_significance():
-    """Down columns with high activation abs-mean get pulled toward the grid."""
     algo = GPTQAlgorithm(wbits=4, group_size=-1)
     weight_gu, weight_dn, handlers = _make_updown_handlers()
-    # expert 1's middle activation is 5x larger -> different fold direction
+    # expert 1's middle activation is 5x larger -> different per-channel scale
     cfg = {"method": "updown_awq", "nbits": 4, "grid": 20}
     algo._apply_updown_awq(_FakeLayer(), handlers, cfg)
     # sanity: scales positive, weights finite
@@ -331,3 +330,84 @@ def test_updown_awq_config_routing():
     )
     assert algo.scale_search_cfg["moe"]["method"] == "updown_awq"
     assert algo._expert_rtn is True
+
+
+def test_batched_module_rtn_accumulates_x_abs_max():
+    """AWQ max-stat: _x_abs_max tracks per-middle-channel running abs-max."""
+    torch.manual_seed(21)
+    weight_dn = torch.nn.Parameter(torch.randn(2, 6, 2))
+    dn_slices = [
+        _ExpertSliceLinear(weight_dn, e, "down_proj", "mlp.experts") for e in range(2)
+    ]
+    mod = BatchedGPTQModule(
+        dn_slices, wbits=4, groupsize=-1, sym=True, percdamp=0.01,
+        preproc_hessian=True, hessian_device=torch.device("cpu"), rtn=True,
+    )
+    mid0 = torch.randn(5, 2) + 3.0
+    mid1 = torch.randn(7, 2) * 5.0
+    mod.add_batch_for_expert(mid0, 0)
+    mod.add_batch_for_expert(mid1, 1)
+    assert mod.x_abs_max is not None
+    assert torch.allclose(mod.x_abs_max[0], mid0.abs().amax(dim=0), atol=1e-6)
+    assert torch.allclose(mod.x_abs_max[1], mid1.abs().amax(dim=0), atol=1e-6)
+    mid0b = torch.randn(4, 2) * 0.1
+    mod.add_batch_for_expert(mid0b, 0)
+    assert torch.allclose(
+        mod.x_abs_max[0],
+        torch.maximum(mid0.abs().amax(dim=0), mid0b.abs().amax(dim=0)),
+        atol=1e-6,
+    )
+
+
+def test_updown_awq_maxstat_search_fold_balanced():
+    """search_stat='max' (modelslim flex_awq_ssz): α searched on max|act| while the
+    returned scale stays mean|act|^α; the balanced fold down*s / up/s must cancel."""
+    algo = GPTQAlgorithm(wbits=4, group_size=-1)
+    weight_gu, weight_dn, handlers = _make_updown_handlers()
+    dn = handlers["dn"]
+    assert dn.x_abs_max is not None and float(dn.x_abs_max.abs().sum()) > 0.0
+    gu_orig = weight_gu.data.clone()
+    dn_orig = weight_dn.data.clone()
+    cfg = {"method": "updown_awq", "nbits": 4, "grid": 21, "search_stat": "max"}
+    algo._apply_updown_awq(_FakeLayer(), handlers, cfg)
+    I = 2
+    for e in (0, 1):
+        prod_new = weight_dn.data[e].float() * weight_gu.data[e, I:].float().T
+        prod_orig = dn_orig[e].float() * gu_orig[e, I:].float().T
+        assert torch.allclose(prod_new, prod_orig, rtol=1e-4, atol=1e-5)
+    assert torch.isfinite(weight_dn.data).all()
+
+
+def test_updown_awq_maxstat_passes_abs_max_as_search_stat(monkeypatch):
+    """search_stat='max': each expert search must receive x_search=abs-max while the
+    applied scale is built from abs-mean (modelslim flex_awq_ssz semantics)."""
+    from npuslim.algorithms.quantization import scale_search as ss
+
+    calls = []
+    real = ss.awq_search
+
+    def spy(w, x_scale, nbits=4, grid=20, eps=1e-8, x_search=None):
+        calls.append(
+            (
+                x_scale.detach().clone(),
+                None if x_search is None else x_search.detach().clone(),
+            )
+        )
+        return real(w, x_scale, nbits=nbits, grid=grid, eps=eps, x_search=x_search)
+
+    monkeypatch.setattr(ss, "awq_search", spy)
+    algo = GPTQAlgorithm(wbits=4, group_size=-1)
+    _, _, handlers = _make_updown_handlers()
+    dn = handlers["dn"]
+    cfg = {"method": "updown_awq", "nbits": 4, "grid": 21, "search_stat": "max"}
+    algo._apply_updown_awq(_FakeLayer(), handlers, cfg)
+
+    assert len(calls) == 2, f"expected 2 expert searches, got {len(calls)}"
+    for local_idx, (x_scale_seen, x_search_seen) in enumerate(calls):
+        assert x_search_seen is not None, "x_search not passed for search_stat=max"
+        assert torch.allclose(x_search_seen, dn.x_abs_max[local_idx]), (
+            f"expert {local_idx}: x_search != x_abs_max"
+        )
+        assert torch.allclose(x_scale_seen, dn.x_abs_mean[local_idx]), (
+            f"expert {local_idx}: x_scale != x_abs_mean"
+        )

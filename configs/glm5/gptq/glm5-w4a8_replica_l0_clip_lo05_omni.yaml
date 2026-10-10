@@ -1,0 +1,73 @@
+metadata:
+  name: "GLM5_W4A8_ReplicaL0_ClipSearch_Lo05_Omni"
+  description: >-
+    ★ 09-16 晚：L0 族 × omni 精修（跨底座泛化验证）。底座 = l0_clip_lo05（L0：SSZ+RTN，无旋转/AWQ/SQ；
+    clip-search lo=0.5 + with_ssz=false）——该臂 he-trunc 达 0.9573~0.9634（L0 族最佳）但 ppl 受
+    伤（3.4935/3.4957）。叠加 expert_clip_search.omni_steps=60/lr=0.02（OmniQuant 式块级可学习 scale 精修，
+    与 Path2 的 s1234_omni 同参数）——验证 omni 修 ppl 的能力是否跨底座泛化：
+    若成立 → 得"ppl+he 双修"新组合候选。见 workspace/W4A8_总结与规划0908.md §6.9.2#3 / §6.8.6
+
+resources:
+  - id: glm5
+    type: GLM5
+    path: /llm_infer_workspace/models/GLM-5.2-bf16/snapshots/master
+    trust_remote_code: true
+    low_cpu_mem_usage: true
+    device_map: cpu
+
+  - id: calib_data
+    type: MixedDomain
+    data_path: dataset/calib/mixed_chat_code.jsonl
+    num_samples: 48
+    max_seq_length: 1024
+
+recipe:
+  - name: "GPTQ_MoE_W4A8_Dense_W8A8_ReplicaL0Clip_Omni"
+    type: compressor
+    model: "@glm5"
+    dataloader:
+      dataset: "@calib_data"
+      batch_size: 4
+      shuffle: true
+      pin_memory: true
+    algorithm:
+      type: GPTQ
+      wbits: 4
+      act_bits: 8
+      groupsize: -1
+      save_backend: npu
+      expert_chunk_size: 1
+      layer_routing:
+        - patterns:
+            - "*.self_attn.*"
+            - "*.mlp.shared_experts.*"
+            - "*.mlp.gate_proj"
+            - "*.mlp.up_proj"
+            - "*.mlp.down_proj"
+          wbits: 8
+      max_calib_samples: 48
+      blocksize: 256
+      actorder: true
+      quantize_mtp: false
+      save_mtp_debug: false
+      expert_mode: ssz
+      ssz_step: 10
+      expert_clip_search:
+        lo: 0.5
+        hi: 1.0
+        steps: 20
+        with_ssz: false
+        omni_steps: 60
+        omni_lr: 0.02
+    ignore_layers: []
+    execution:
+      mode: streaming
+      chunk_size: 1
+      resume: true
+    saver:
+      type: StreamingHuggingFaceSaver
+      save_dir: "./outputs_npu"
+
+# 单变量：l0_clip_lo05 + omni（唯一差异 = omni_steps/omni_lr）
+# 判据：① ppl 是否从 3.4935/3.4957 向 BF16 上界 3.3210 靠拢（omni ppl 修复能力跨底座验证）；
+#       ② he-trunc 是否保持 0.9573+（omni 是否损失 L0 族的 he 优势）。

@@ -805,6 +805,17 @@ class BaseHessianAlgorithm(BaseQuantizationAlgorithm):
                         )
                     self._prev_topk_indices[start:end] = topk_cpu
         self._inps, self._outs = self._outs, self._inps
+        if os.environ.get("NPUSLIM_RESUME_DEBUG"):
+            try:
+                _isum = float(self._inps.float().sum())
+                _t = self._prev_topk_indices
+                _tsum = int(_t.float().sum()) if _t is not None else -1
+                logger.info(
+                    f"[RESUME-DBG] {layer_name}: inps_sum={_isum:.6f} "
+                    f"inps_shape={list(self._inps.shape)} topk_sum={_tsum}"
+                )
+            except Exception as _e:  # noqa: BLE001
+                logger.warning(f"[RESUME-DBG] {layer_name}: dump failed ({_e})")
 
     def _validate_chunk_order(self, chunk) -> None:
         if not chunk.layers:
@@ -866,6 +877,17 @@ class BaseHessianAlgorithm(BaseQuantizationAlgorithm):
         tmp_path = path.with_name(path.name + ".tmp")
         torch.save(payload, tmp_path)
         os.replace(tmp_path, path)
+        if os.environ.get("NPUSLIM_RESUME_DEBUG"):
+            try:
+                _is = float(self._inps.float().sum()) if self._inps is not None else None
+                _ts = (int(self._prev_topk_indices.float().sum())
+                       if self._prev_topk_indices is not None else None)
+                logger.info(
+                    f"[RESUME-DBG-SAVE] next_layer={self._next_expected_layer_index} "
+                    f"inps_sum={_is} topk_sum={_ts}"
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     def load_resume_state(self, path) -> Optional[int]:
         """Restore state saved by save_resume_state. Returns next expected layer index."""
@@ -903,6 +925,19 @@ class BaseHessianAlgorithm(BaseQuantizationAlgorithm):
             f"topk={'None' if topk is None else list(topk.shape)}, "
             f"next_layer={self._next_expected_layer_index}"
         )
+        if os.environ.get("NPUSLIM_RESUME_DEBUG"):
+            try:
+                _is = float(self._inps.float().sum())
+                _ts = (int(self._prev_topk_indices.float().sum())
+                       if self._prev_topk_indices is not None else None)
+                _lk = {k: (float(v.float().sum()) if torch.is_tensor(v) else v)
+                       for k, v in self._layer_kwargs.items()}
+                logger.info(
+                    f"[RESUME-DBG-LOAD] next_layer={self._next_expected_layer_index} "
+                    f"inps_sum={_is} topk_sum={_ts} layer_kwargs={_lk}"
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return self._next_expected_layer_index
 
     def _apply_scale_search(self, layer, handlers, chunk) -> None:
