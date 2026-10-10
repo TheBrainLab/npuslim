@@ -98,6 +98,11 @@ class FakeAlgo:
         if self.fail_at is not None and chunk.chunk_index >= self.fail_at:
             raise RuntimeError(f"simulated interruption at chunk {chunk.chunk_index}")
         self.next_layer = chunk.layers[-1].index + 1
+        # NPU 容器环境契约：CompressorTask 要求算法为 chunk 内每个张量提供
+        # metadata['tensor_types']（真实算法由 _build_chunk_tensor_types 生成）
+        chunk.metadata["tensor_types"] = {
+            name: "FLOAT" for name in chunk.all_tensors().keys()
+        }
         return chunk
 
     def save_resume_state(self, path):
