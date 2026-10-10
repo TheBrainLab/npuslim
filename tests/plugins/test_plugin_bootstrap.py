@@ -83,4 +83,6 @@ def test_plugin_registry_import_does_not_require_vllm(monkeypatch):
 
     module = importlib.import_module("npuslim.plugins.registry")
 
-    assert module.logger is not None
+    # 1010 契约：registry 的日志接口已从模块级 `logger` 收敛为
+    # `patch_logger`（npuslim.plugins.logging）；vLLM 不在场时仍可导入并具备日志能力
+    assert module.patch_logger is not None
