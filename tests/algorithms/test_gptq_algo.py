@@ -19,7 +19,7 @@ def test_gptq_update_metadata_cuda(monkeypatch):
     model_config = SimpleNamespace()
     algo.set_runtime_context(model_obj=model_obj, model_config=model_config)
 
-    monkeypatch.setattr(bh, "name", "cuda")
+    monkeypatch.setattr(bh, "_name", "cuda")
     algo._update_quantization_metadata()
 
     assert model_obj.quantized is True
@@ -37,7 +37,7 @@ def test_gptq_update_metadata_npu(monkeypatch):
     model_config = SimpleNamespace(quantization_config={"old": True})
     algo.set_runtime_context(model_obj=model_obj, model_config=model_config)
 
-    monkeypatch.setattr(bh, "name", "npu")
+    monkeypatch.setattr(bh, "_name", "npu")
     algo._update_quantization_metadata()
 
     assert model_obj.quantized is True
@@ -51,7 +51,7 @@ def test_gptq_update_metadata_npu(monkeypatch):
 
 
 def test_gptq_pack_quant_linear_tensors_cuda(monkeypatch):
-    monkeypatch.setattr(bh, "name", "cuda")
+    monkeypatch.setattr(bh, "_name", "cuda")
     algo = GPTQAlgorithm(wbits=4, group_size=2)
 
     linear = torch.nn.Linear(8, 4, bias=False)
@@ -82,7 +82,7 @@ def test_gptq_pack_quant_linear_tensors_cuda(monkeypatch):
 
 
 def test_gptq_process_chunk_does_not_require_full_model(monkeypatch):
-    monkeypatch.setattr(bh, "name", "cuda")
+    monkeypatch.setattr(bh, "_name", "cuda")
     algo = GPTQAlgorithm(wbits=4, group_size=2, max_calib_samples=8)
 
     class _DummyLayer(torch.nn.Module):
@@ -164,7 +164,7 @@ def test_gptq_sanitize_layer_kwargs_disables_cache():
 
 
 def test_gptq_process_chunk_skips_unresolvable_moe_target(monkeypatch):
-    monkeypatch.setattr(bh, "name", "cuda")
+    monkeypatch.setattr(bh, "_name", "cuda")
     algo = GPTQAlgorithm(wbits=4, group_size=2, max_calib_samples=8)
 
     class _NonSubscriptableExperts(torch.nn.Module):
@@ -241,7 +241,7 @@ def test_gptq_process_chunk_skips_unresolvable_moe_target(monkeypatch):
 
 
 def test_gptq_on_start_calls_model_runtime_adapter(monkeypatch):
-    monkeypatch.setattr(bh, "name", "cuda")
+    monkeypatch.setattr(bh, "_name", "cuda")
     algo = GPTQAlgorithm(wbits=4, group_size=2, max_calib_samples=8)
 
     class _DummyLayer(torch.nn.Module):
