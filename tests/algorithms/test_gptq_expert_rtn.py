@@ -144,12 +144,13 @@ def test_rtn_pack_path_compatible():
         g_idx=g_idx,
     )
     assert set(packed.keys()) == {
-        "mlp.experts.0.gate_up_proj.qweight",
-        "mlp.experts.0.gate_up_proj.qzeros",
-        "mlp.experts.0.gate_up_proj.scales",
-        "mlp.experts.0.gate_up_proj.g_idx",
+        "mlp.experts.0.gate_up_proj.weight",
+        "mlp.experts.0.gate_up_proj.weight_scale",
+        "mlp.experts.0.gate_up_proj.weight_offset",
     }
-    assert packed["mlp.experts.0.gate_up_proj.g_idx"].tolist() == [0, 0, 0, 0, 1, 1, 1, 1]
+    # ascendv1 打包契约（对齐 modelslim）：per-group scale 布局保留分组信息
+    # （g_idx 不再单独落盘，分组索引折叠进 weight_scale 的 (out, n_groups) 形状）
+    assert tuple(packed["mlp.experts.0.gate_up_proj.weight_scale"].shape) == (4, 2)
 
 
 def test_rtn_matches_reference_rtn():
@@ -236,11 +237,11 @@ def test_ssz_pack_path_compatible():
         g_idx=g_idx,
     )
     assert set(packed.keys()) == {
-        "mlp.experts.0.gate_up_proj.qweight",
-        "mlp.experts.0.gate_up_proj.qzeros",
-        "mlp.experts.0.gate_up_proj.scales",
-        "mlp.experts.0.gate_up_proj.g_idx",
+        "mlp.experts.0.gate_up_proj.weight",
+        "mlp.experts.0.gate_up_proj.weight_scale",
+        "mlp.experts.0.gate_up_proj.weight_offset",
     }
+    # ascendv1 打包契约：per-channel（group_size=-1）→ weight_scale 形状 (out, 1)
 
 
 def test_ssz_grouped_path_skipped():
