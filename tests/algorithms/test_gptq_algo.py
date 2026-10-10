@@ -13,6 +13,7 @@ def test_gptq_algorithm_registry():
     assert cls is GPTQAlgorithm
 
 
+@pytest.mark.skipif(bh.has_npu, reason="metadata 分支按硬件能力（has_npu）选择，NPU 容器内 cuda 分支不可达")
 def test_gptq_update_metadata_cuda(monkeypatch):
     algo = GPTQAlgorithm(wbits=4, group_size=128, actorder=True)
     model_obj = SimpleNamespace(quantized=False)
@@ -68,16 +69,14 @@ def test_gptq_pack_quant_linear_tensors_cuda(monkeypatch):
     )
 
     assert set(packed.keys()) == {
-        "self_attn.q_proj.qweight",
-        "self_attn.q_proj.qzeros",
-        "self_attn.q_proj.scales",
-        "self_attn.q_proj.g_idx",
+        "self_attn.q_proj.weight",
+        "self_attn.q_proj.weight_scale",
+        "self_attn.q_proj.weight_offset",
     }
     assert set(packed_quant_names) == {
-        "self_attn.q_proj.qweight",
-        "self_attn.q_proj.qzeros",
-        "self_attn.q_proj.scales",
-        "self_attn.q_proj.g_idx",
+        "self_attn.q_proj.weight",
+        "self_attn.q_proj.weight_scale",
+        "self_attn.q_proj.weight_offset",
     }
 
 
@@ -143,10 +142,8 @@ def test_gptq_process_chunk_does_not_require_full_model(monkeypatch):
     algo.on_finish()
 
     keys = set(out_chunk.layers[0].tensors.keys())
-    assert "self_attn.q_proj.qweight" in keys
-    assert "self_attn.q_proj.qzeros" in keys
-    assert "self_attn.q_proj.scales" in keys
-    assert "self_attn.q_proj.g_idx" in keys
+    assert "self_attn.q_proj.weight" in keys
+    assert "self_attn.q_proj.weight_scale" in keys
 
 
 def test_gptq_sanitize_layer_kwargs_disables_cache():
@@ -233,10 +230,8 @@ def test_gptq_process_chunk_skips_unresolvable_moe_target(monkeypatch):
     algo.on_finish()
 
     keys = set(out_chunk.layers[0].tensors.keys())
-    assert "self_attn.q_proj.qweight" in keys
-    assert "self_attn.q_proj.qzeros" in keys
-    assert "self_attn.q_proj.scales" in keys
-    assert "self_attn.q_proj.g_idx" in keys
+    assert "self_attn.q_proj.weight" in keys
+    assert "self_attn.q_proj.weight_scale" in keys
     assert "mlp.experts.0.down_proj.weight" in keys
 
 
