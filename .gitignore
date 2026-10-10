@@ -216,3 +216,5 @@ outputs_smoke/
 AGENTS.md
 # configs archive (backup only, not tracked)
 configs/glm5/gptq/_archived/
+# tiny configs & model weights（不跟踪，轻量验证用）
+configs/glm5/gptq/tiny/

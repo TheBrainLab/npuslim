@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 os.environ["HF_ALLOW_CODE_EVAL"] = "1"
 # check_correctness 在同目录 execute.py（evaluate.metrics 不可用，直接从文件加载）
-_EXECUTE_PATH = "{SHARED}/ylt/qwen3_deploy/qwen3_30b_w4a8/execute.py"
+_EXECUTE_PATH = f"{SHARED}/ylt/qwen3_deploy/qwen3_30b_w4a8/execute.py"
 _spec = importlib.util.spec_from_file_location("humaneval_execute", _EXECUTE_PATH)
 _execute = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_execute)

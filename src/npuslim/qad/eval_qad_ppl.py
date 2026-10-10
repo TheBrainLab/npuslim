@@ -1,9 +1,4 @@
 
-# ===== Phase D 路径参数化（env 带默认回退）=====
-import os as _pd_os
-SHARED = _pd_os.environ.get("SHARED", "{SHARED}")
-SHARED_HOST = _pd_os.environ.get("SHARED_HOST", "/home/yult{SHARED}")
-YLT = _pd_os.environ.get("YLT", SHARED + "/ylt")
 """M4 中期探针：QAD LoRA ckpt 的 wikitext-2 ppl（部署语义，多臂单次加载）。
 
 与 §9.3 基线（GPTQ W4A8 NOROT 11.9525，32 窗口 × 256 seq）语义对齐：
@@ -23,13 +18,18 @@ rank 自动从首个 ckpt 的 args 读取（训练 --rank 16 → scaling=64/16=4
 
 用法（容器内单进程；device_map 分摊多 NPU，单卡 bf16 61GB+LoRA 太紧）：
     python -m npuslim.qad.eval_qad_ppl \
-        --model-path /home/yult{SHARED}/lichc/models/Qwen3-30B-A3B-Instruct-2507 \
-        --ckpts "" /home/yult{SHARED}/ylt/glm52-qad/ckpt_m4/step_001000.pt \
-                  /home/yult{SHARED}/ylt/glm52-qad/ckpt_m4/step_002000.pt \
-        --wikitext-dir /home/yult{SHARED}/ylt/npuslim/workspace/wikitext-2-raw-v1 \
-        --device-map auto --output /home/yult{SHARED}/ylt/glm52-qad/eval_qad_mid.json
+        --model-path /home/yult/llm_infer_workspace/lichc/models/Qwen3-30B-A3B-Instruct-2507 \
+        --ckpts "" /home/yult/llm_infer_workspace/ylt/glm52-qad/ckpt_m4/step_001000.pt \
+                  /home/yult/llm_infer_workspace/ylt/glm52-qad/ckpt_m4/step_002000.pt \
+        --wikitext-dir /home/yult/llm_infer_workspace/ylt/npuslim/workspace/wikitext-2-raw-v1 \
+        --device-map auto --output /home/yult/llm_infer_workspace/ylt/glm52-qad/eval_qad_mid.json
 """
 from __future__ import annotations
+# ===== Phase D 路径参数化（env 带默认回退）=====
+import os as _pd_os
+SHARED = _pd_os.environ.get("SHARED", "/llm_infer_workspace")
+SHARED_HOST = _pd_os.environ.get("SHARED_HOST", "/home/yult/llm_infer_workspace")
+YLT = _pd_os.environ.get("YLT", SHARED + "/ylt")
 
 import argparse
 import json
@@ -85,11 +85,11 @@ def set_lora_state(model, sd: dict | None) -> tuple[int, int]:
 def main() -> None:
     ap = argparse.ArgumentParser(description="M4 中期探针：QAD ckpt wikitext ppl（部署语义）")
     ap.add_argument("--model-path",
-                    default="/home/yult{SHARED}/lichc/models/Qwen3-30B-A3B-Instruct-2507")
+                    default=f"{SHARED_HOST}/lichc/models/Qwen3-30B-A3B-Instruct-2507")
     ap.add_argument("--ckpts", nargs="*", default=[""],
                     help='断点列表；"" 表示 LoRA=0 基线臂，其余为 ckpt_*.pt 路径')
     ap.add_argument("--wikitext-dir",
-                    default="/home/yult{SHARED}/ylt/npuslim/workspace/wikitext-2-raw-v1")
+                    default=f"{SHARED_HOST}/ylt/npuslim/workspace/wikitext-2-raw-v1")
     ap.add_argument("--device-map", default="auto",
                     help='auto=多 NPU 分摊；单卡装不下 61GB bf16 + LoRA')
     ap.add_argument("--act-bits", type=int, default=8)

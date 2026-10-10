@@ -1,7 +1,7 @@
 #!/bin/bash
 # ===== Phase D 路径参数化（env 带默认回退；不改数值语义）=====
-SHARED=${SHARED:-}
-SHARED_HOST=${SHARED_HOST:-/home/yult}
+: "${SHARED:=/llm_infer_workspace}"
+: "${SHARED_HOST:=/home/yult/llm_infer_workspace}"
 # =========================================================
 # run_glm52_bf16_eval_c3.sh - GLM-5.2 BF16 baseline eval on s1/s2/s3/s4 (10.1.0.x) TP=32 server.
 # 口径与 GLM-5.2 W4A8 C3 测评（run_glm52_w4a8_eval_c3.sh）完全一致，保证公平对比：
@@ -21,11 +21,11 @@ CONTAINER="glm5_bf16_env"
 PORT="${PORT:-9081}"
 SERVER="http://localhost:${PORT}"
 BASE_URL="${SERVER}/v1/completions"
-MODEL_DIR="/models/GLM-5.2-bf16/snapshots/master"
-CODEEVAL_DIR="/ylt/qwen3_deploy/qwen3_30b_w4a8"
-OUT="${OUT:-/ylt/glm5.2_deploy/outputs/glm5_bf16_4task_hard}"
-OUT7="${OUT7:-/ylt/glm5.2_deploy/outputs/glm5_bf16_7task}"
-WORKDIR="/ylt/glm5.2_deploy"
+MODEL_DIR="${SHARED}/models/GLM-5.2-bf16/snapshots/master"
+CODEEVAL_DIR="${SHARED}/ylt/qwen3_deploy/qwen3_30b_w4a8"
+OUT="${OUT:-${SHARED}/ylt/glm5.2_deploy/outputs/glm5_bf16_4task_hard}"
+OUT7="${OUT7:-${SHARED}/ylt/glm5.2_deploy/outputs/glm5_bf16_7task}"
+WORKDIR="${SHARED}/ylt/glm5.2_deploy"
 MARK_DIR="${MARK_DIR:-/tmp/glm52_bf16_c3_markers}"
 
 mkdir -p "$MARK_DIR"
@@ -56,7 +56,7 @@ run_round() {
   local rc
   docker exec \
     -w "${WORKDIR}" \
-    -e HF_HOME=/hf_home \
+    -e HF_HOME=${SHARED}/hf_home \
     -e HF_DATASETS_OFFLINE=1 -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
     -e OPENAI_API_KEY=EMPTY -e TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
     -e VLLM_RPC_TIMEOUT=360000 \

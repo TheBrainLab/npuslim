@@ -17,7 +17,7 @@ import importlib.util
 import re
 import sys
 
-RH = "{SHARED}/ylt/npuslim/workspace/glm5.2_deploy/reeval_humaneval_trunc.py"
+RH = f"{SHARED}/ylt/npuslim_repo/tools/deploy/reeval_humaneval_trunc.py"
 spec = importlib.util.spec_from_file_location("rh", RH)
 rh = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rh)
@@ -50,7 +50,7 @@ def extract_last(comp: str, prompt: str = "") -> str:
     return ms[-1] if ms else rh.truncate(comp)
 
 
-O = "{SHARED}/ylt/glm5.2_deploy/outputs"
+O = f"{SHARED}/ylt/glm5.2_deploy/outputs"
 DEFAULT = [
     ("bf16", f"{O}/glm5_bf16_4task_hard/qdpv68r5/samples_humaneval_2026-09-03T23-39-35.499266.jsonl"),
     ("w4a8c8", f"{O}/glm5_w4a8c8_4task_hard/qdpv68r5/samples_humaneval_2026-09-04T05-36-06.906183.jsonl"),
