@@ -116,7 +116,8 @@ def main() -> None:
                     if n.endswith(".Bgu") or n.endswith(".Bdn"):
                         p.zero_()
             return
-        sd = torch.load(ck, map_location="cpu", weights_only=False)["sd"]
+        _ck = torch.load(ck, map_location="cpu", weights_only=False)
+        sd = _ck["sd"] if isinstance(_ck, dict) and "sd" in _ck else _ck
         with torch.no_grad():
             for k, v in sd.items():
                 lora_params[k].data.copy_(v.to(lora_params[k].dtype))

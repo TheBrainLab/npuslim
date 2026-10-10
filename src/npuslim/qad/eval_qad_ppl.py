@@ -107,8 +107,9 @@ def main() -> None:
     rank = 16
     for c in args.ckpts:
         if c:
-            rank = int(torch.load(c, map_location="cpu", weights_only=False)
-                       ["args"].get("rank", 16))
+            _ck = torch.load(c, map_location="cpu", weights_only=False)
+            if isinstance(_ck, dict) and "args" in _ck and isinstance(_ck["args"], dict):
+                rank = int(_ck["args"].get("rank", 16))
             break
     print(f"[probe] STE 包装（rank={rank}, scaling={64.0 / rank}）...", flush=True)
     wrapped = wrap_all_experts(model, rank=rank, vectorized=True,
@@ -122,8 +123,11 @@ def main() -> None:
     results = []
     for ck in args.ckpts:
         tag = "baseline_lora0" if not ck else Path(ck).stem
-        sd = None if not ck else torch.load(ck, map_location="cpu",
-                                            weights_only=False)["sd"]
+        if not ck:
+            sd = None
+        else:
+            _ck = torch.load(ck, map_location="cpu", weights_only=False)
+            sd = _ck["sd"] if isinstance(_ck, dict) and "sd" in _ck else _ck
         got, n_miss = set_lora_state(model, sd)
         if ck and (got != len(sd) or n_miss):
             print(f"[probe][{tag}] WARN 装载 {got}/{len(sd)} 缺失 {n_miss}", flush=True)

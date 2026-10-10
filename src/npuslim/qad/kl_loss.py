@@ -35,23 +35,10 @@ def _chunked_logsumexp(z: torch.Tensor, chunk: int = 32768) -> torch.Tensor:
     return m + torch.log(s.clamp_min(1e-38))
 
 
-def kl_distill_loss(
-    student_logits: torch.Tensor,          # [B, V] 未经 softmax 的输出（已除 tau 由调用方或此处处理）
-    teacher_topk_ids: torch.Tensor,        # [B, K] int64
-    teacher_topk_logprobs: torch.Tensor,   # [B, K] float（log_softmax 截断值）
-    vocab_size: int,
-    mode: str = "forward",                 # forward | reverse
-    tau: float = 1.0,
-    chunk: int = 32768,
-) -> torch.Tensor:
-    """top-K 截断 KL 蒸馏 loss（标量）。
-
-    forward KL = Σ_t p_t·(log p_t - s_lp) + rest·(log_rest - log q_rest)
-    reverse KL = Σ_t q_t·(s_lp - log p_t) + q_rest·(log q_rest - log_rest)
-    其中 s_lp = student 在 teacher top-K 位置上的 logprob（/tau 后），
-    q_rest = 1 - Σ_t exp(s_lp)，log_rest = log(rest) - log(V-K)。
-    """
-    assert mode in ("forward", "reverse"), mode
+def _per_row_fwd_rev(student_logits: torch.Tensor, teacher_topk_ids: torch.Tensor,
+                     teacher_topk_logprobs: torch.Tensor, vocab_size: int,
+                     tau: float, chunk: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """逐行 forward/reverse KL（top-K + 均匀尾近似）。返回 (fwd[B], rev[B])。"""
     student_logits = student_logits.float()
     b, v = student_logits.shape
     k = teacher_topk_ids.shape[-1]
@@ -74,10 +61,67 @@ def kl_distill_loss(
     q_rest = 1.0 - q_sum
     log_q_rest = torch.log(q_rest.clamp_min(1e-12))
 
-    if mode == "forward":
-        kl_topk = (p * (log_p - s_lp)).sum(dim=-1)
-        kl_rest = rest * (log_rest - log_q_rest)
-    else:
-        kl_topk = (q * (s_lp - log_p)).sum(dim=-1)
-        kl_rest = q_rest * (log_q_rest - log_rest)
-    return (kl_topk + kl_rest).mean()
+    fwd = (p * (log_p - s_lp)).sum(dim=-1) + rest * (log_rest - log_q_rest)
+    rev = (q * (s_lp - log_p)).sum(dim=-1) + q_rest * (log_q_rest - log_rest)
+    return fwd, rev
+
+
+def _teacher_label_conf(teacher_topk_ids: torch.Tensor, teacher_topk_logprobs: torch.Tensor,
+                        label_ids: torch.Tensor, vocab_size: int) -> torch.Tensor:
+    """p_teacher(label)：label ∈ top-K → 其概率 exp(log_p)；否则均匀尾 rest/(V-K)。"""
+    log_p = teacher_topk_logprobs.float()
+    p = torch.exp(log_p)
+    rest = (1.0 - p.sum(dim=-1)).clamp_min(0.0)
+    v_rest = max(vocab_size - teacher_topk_ids.shape[-1], 1)
+    tail_conf = rest / v_rest
+    match = teacher_topk_ids == label_ids.unsqueeze(-1)        # [B, K]
+    in_topk = match.any(dim=-1)                                # [B]
+    pos = match.float().argmax(dim=-1)                         # 首个匹配位（未匹配行为 0，弃用）
+    conf_topk = torch.gather(p, dim=-1, index=pos.unsqueeze(-1)).squeeze(-1)
+    return torch.where(in_topk, conf_topk, tail_conf)
+
+
+def kl_distill_loss(
+    student_logits: torch.Tensor,          # [B, V] 未经 softmax 的输出（已除 tau 由调用方或此处处理）
+    teacher_topk_ids: torch.Tensor,        # [B, K] int64
+    teacher_topk_logprobs: torch.Tensor,   # [B, K] float（log_softmax 截断值）
+    vocab_size: int,
+    mode: str = "forward",                 # forward | reverse
+    tau: float = 1.0,
+    chunk: int = 32768,
+) -> torch.Tensor:
+    """top-K 截断 KL 蒸馏 loss（标量）。
+
+    forward KL = Σ_t p_t·(log p_t - s_lp) + rest·(log_rest - log q_rest)
+    reverse KL = Σ_t q_t·(s_lp - log p_t) + q_rest·(log q_rest - log_rest)
+    其中 s_lp = student 在 teacher top-K 位置上的 logprob（/tau 后），
+    q_rest = 1 - Σ_t exp(s_lp)，log_rest = log(rest) - log(V-K)。
+    """
+    assert mode in ("forward", "reverse"), mode
+    fwd, rev = _per_row_fwd_rev(student_logits, teacher_topk_ids, teacher_topk_logprobs,
+                                vocab_size, tau, chunk)
+    return (fwd if mode == "forward" else rev).mean()
+
+
+def cakld_distill_loss(
+    student_logits: torch.Tensor,          # [B, V]
+    teacher_topk_ids: torch.Tensor,        # [B, K] int64
+    teacher_topk_logprobs: torch.Tensor,   # [B, K] float（log_softmax 截断值）
+    label_ids: torch.Tensor,               # [B] 真实 next token（cache 列 0）
+    vocab_size: int,
+    tau: float = 1.0,
+    chunk: int = 32768,
+) -> torch.Tensor:
+    """CAKLD（Contextual Asymmetric KL，AngelSlim loss.py cakld 语义）：
+    按 teacher 对 label 的置信度逐 token 混合 forward/reverse KL。
+
+    conf_t = p_teacher(label_t)：
+      label_t ∈ teacher top-K → 其概率 exp(log_p)（精确）
+      label_t ∈ 尾部        → 均匀尾近似 rest/(V-K)
+    loss_t = conf_t·rev_kl_t + (1−conf_t)·fwd_kl_t
+    （teacher 置信 → reverse 偏 mode-seeking；不确定 → forward 偏 mode-covering）
+    """
+    fwd, rev = _per_row_fwd_rev(student_logits, teacher_topk_ids, teacher_topk_logprobs,
+                                vocab_size, tau, chunk)
+    conf = _teacher_label_conf(teacher_topk_ids, teacher_topk_logprobs, label_ids, vocab_size)
+    return (conf * rev + (1.0 - conf) * fwd).mean()

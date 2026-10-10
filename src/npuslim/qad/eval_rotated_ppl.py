@@ -148,10 +148,9 @@ def rebuild_model_weights(model, dequant: Dict[str, torch.Tensor], device: Optio
 # ---------------- eval hooks ----------------
 
 def fake_quant_act_per_token(x: torch.Tensor, bits: int = 8) -> torch.Tensor:
-    """per-token 动态 int8 fake-quant（W4A8 部署语义，与 tiny A7 同实现）。"""
-    qmax = 2 ** (bits - 1) - 1
-    s = x.float().abs().amax(dim=-1, keepdim=True).clamp_min(1e-8) / qmax
-    return (x.float() / s).round().clamp(-qmax - 1, qmax).mul_(s).to(x.dtype)
+    """per-token 动态 int8 fake-quant（别名 → npuslim.qad.ste.activation_dynamic_int8，单一语义源）。"""
+    from npuslim.qad.ste import activation_dynamic_int8
+    return activation_dynamic_int8(x, bits)
 
 
 def register_eval_hooks(model, r1: Optional[torch.Tensor], act_bits: int) -> List:
