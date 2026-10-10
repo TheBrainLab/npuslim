@@ -9,7 +9,11 @@ from npuslim.savers.hf_saver import StreamingHuggingFaceSaver
 
 def test_hf_saver_streaming_writes_shards_and_index(tmp_path):
     output_dir = tmp_path / "out"
-    saver = StreamingHuggingFaceSaver(output_dir=output_dir, size_threshold=16)
+    # NPU 容器环境下 has_npu=True 且 require_tensor_types_on_npu 默认开启——
+    # 本测试只验证流式分片/index 逻辑，显式关掉 tensor_type 门保持环境无关
+    saver = StreamingHuggingFaceSaver(
+        output_dir=output_dir, size_threshold=16, require_tensor_types_on_npu=False
+    )
 
     saver.add_tensor("model.layers.0.a.weight", torch.ones(4, dtype=torch.float32))
     saver.add_tensor("model.layers.0.b.weight", torch.ones(4, dtype=torch.float32))
@@ -55,7 +59,9 @@ def test_hf_saver_copies_non_weight_aux_files_from_source(tmp_path):
     (source_dir / "custom_code.py").write_text("x=1\n", encoding="utf-8")
 
     output_dir = tmp_path / "out"
-    saver = StreamingHuggingFaceSaver(output_dir=output_dir, size_threshold=1024)
+    saver = StreamingHuggingFaceSaver(
+        output_dir=output_dir, size_threshold=1024, require_tensor_types_on_npu=False
+    )
     saver.set_source(source_dir, model_hub="hf", model_kwargs={})
     saver.finalize()
 
