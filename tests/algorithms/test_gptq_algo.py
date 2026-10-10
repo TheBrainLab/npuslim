@@ -236,43 +236,6 @@ def test_gptq_process_chunk_skips_unresolvable_moe_target(monkeypatch):
     assert "mlp.experts.0.down_proj.weight" in keys
 
 
-def test_gptq_on_start_calls_model_runtime_adapter(monkeypatch):
-    monkeypatch.setattr(bh, "_name", "cuda")
-    algo = GPTQAlgorithm(wbits=4, group_size=2, max_calib_samples=8)
-
-    class _DummyLayer(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.self_attn = torch.nn.Module()
-            self.self_attn.q_proj = torch.nn.Linear(32, 32, bias=False)
-
-        def forward(self, hidden_states, **kwargs):
-            _ = kwargs
-            return (self.self_attn.q_proj(hidden_states),)
-
-    class _DummyRuntime(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.model = torch.nn.Module()
-            self.model.layers = torch.nn.ModuleList([_DummyLayer()])
-
-    runtime_model = _DummyRuntime()
-    called = {"ok": False}
-
-    def _adapt(model):
-        called["ok"] = True
-        return model
-
-    model_obj = SimpleNamespace(
-        block_name="model.layers",
-        prepare_empty_model=lambda: runtime_model,
-        release_empty_model=lambda: None,
-        adapt_gptq_runtime_model=_adapt,
-    )
-    model_config = SimpleNamespace()
-    algo.set_runtime_context(model_obj=model_obj, model_config=model_config)
-
-    algo.on_start()
-    algo.on_finish()
-
-    assert called["ok"] is True
+# NOTE: test_gptq_on_start_calls_model_runtime_adapter 已删除——
+#       adapt_gptq_runtime_model 运行时适配钩子已从 GPTQAlgorithm 移除
+#       （src 全树 0 命中，1010 核查）；若该钩子在未来重新引入，恢复本测试。

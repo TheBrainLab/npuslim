@@ -2160,8 +2160,9 @@ class GPTQAlgorithm(BaseHessianAlgorithm):
                             clip_search=self._clip_cfg,
                         )
             else:
-                # Standard 2D Linear
-                submodule = _get_child_module(layer_module, module_rel_name)
+                # Standard 2D Linear（容错解析：模块链不可解析（如半初始化/独立专家布局）
+                # 时优雅跳过——与 _try_get_child 的 SQ 路径语义一致）
+                submodule = self._try_get_child(layer_module, module_rel_name)
                 if not isinstance(submodule, nn.Linear):
                     continue
                 hessian_device = None
