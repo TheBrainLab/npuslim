@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from npuslim.algorithms.quantization.gptq.gptq_algo import GPTQAlgorithm
