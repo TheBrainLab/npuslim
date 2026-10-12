@@ -23,8 +23,6 @@ def load(path):
             n_err += 1
             continue
         recs[k] = int(r["refusal"])
-        recs[k + "_x"] = r["resp"][:1]  # noop keep
-    recs = {k: v for k, v in recs.items() if not isinstance(v, str)}
     return recs, n_err
 
 
