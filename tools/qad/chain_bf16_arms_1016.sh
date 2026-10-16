@@ -17,6 +17,7 @@ DEPLOY="$HOSTDIR/ylt/npuslim_repo/tools/deploy/deploy_glm52_bf16_4node_eval.sh"
 OUT="$HOSTDIR/ylt/glm52-qad/audit1009"
 TASK_DIR=/llm_infer_workspace/ylt/glm52-qad/mbpp_longctx
 QAD_C=/llm_infer_workspace/ylt/npuslim_repo/tools/qad
+QAD_H=/home/yult/llm_infer_workspace/ylt/npuslim_repo/tools/qad
 HEAD_HOST=yult@10.1.0.106
 CONTAINER=glm5_bf16_env
 PORT=9081
@@ -35,7 +36,7 @@ stop_all(){
 # ---------------- arm 1: router probe (eager) ----------------
 if [ ! -f "$OUT/router_dump/router_bf16.pt" ]; then
   log "=== arm1: BF16 deploy (eager, router dump, 4K ctx) ==="
-  ROUTER_DUMP="/llm_infer_workspace/ylt/glm52-qad/audit1009/router_dump/router_bf16.pt" ROUTER_CALLS=1 \
+  ROUTER_DUMP="/llm_infer_workspace/ylt/glm52-qad/audit1009/router_dump/router_bf16.pt" ROUTER_CALLS=4 \
     MAX_MODEL_LEN=4096 MEM_UTIL=0.90 ENFORCE_EAGER=1 MAX_NUM_BATCHED_TOKENS=2048 MAX_NUM_SEQS=8 \
     bash "$DEPLOY" >>"$LOG" 2>&1 && log "arm1 deploy OK" || log "arm1 DEPLOY FAILED"
   log "=== arm1: router probe (fixed wikitext 2048-token prompt) ==="
@@ -45,20 +46,25 @@ if [ ! -f "$OUT/router_dump/router_bf16.pt" ]; then
   stop_all
 fi
 
-# ---------------- arm 2: P2a 32K mbpp (non-eager) ----------------
+# ---------------- arm 2: P2a 32K mbpp (eager, MEM_UTIL 0.95) ----------------
 if [ ! -d "$OUT/lctx_bf16" ]; then
-  log "=== arm2: BF16 deploy (non-eager, 36K ctx) ==="
-  ROUTER_DUMP="" MAX_MODEL_LEN=36864 MEM_UTIL=0.92 ENFORCE_EAGER=0 MAX_NUM_BATCHED_TOKENS=2048 MAX_NUM_SEQS=32 \
-    bash "$DEPLOY" >>"$LOG" 2>&1 && log "arm2 deploy OK" || log "arm2 DEPLOY FAILED"
-  log "=== arm2: metric preflight ==="
-  if HEAD_HOST="$HEAD_HOST" CONTAINER="$CONTAINER" TASK_DIR="$TASK_DIR" bash "$QAD_C/preflight_metric_1016.sh" >>"$LOG" 2>&1; then
-    log "preflight OK (metric self-test = 1.0)"
+  log "=== arm2: BF16 deploy (eager, 36K ctx, MEM_UTIL=0.95) ==="
+  if ROUTER_DUMP="" MAX_MODEL_LEN=36864 MEM_UTIL=0.95 ENFORCE_EAGER=1 MAX_NUM_BATCHED_TOKENS=2048 MAX_NUM_SEQS=8 \
+       bash "$DEPLOY" >>"$LOG" 2>&1; then
+    log "arm2 deploy OK"
   else
-    log "arm2 PREFLIGHT FAILED (metric broken) - see log"
+    log "arm2 DEPLOY FAILED - skipping eval (see log)"
+    stop_all
   fi
-  log "=== arm2: lm_eval mbpp_longctx (32K prefix) ==="
-  ssh_long "$HEAD_HOST" "docker exec -w $TASK_DIR $CONTAINER bash $TASK_DIR/run_lm_eval.sh $MODEL $PORT 6 36864 /llm_infer_workspace/ylt/glm52-qad/audit1009/lctx_bf16" >>"$LOG" 2>&1
-  log "lm_eval rc=$?"
+  log "=== arm2: metric preflight ==="
+  if HEAD_HOST="$HEAD_HOST" CONTAINER="$CONTAINER" TASK_DIR="$TASK_DIR" bash "$QAD_H/preflight_metric_1016.sh" >>"$LOG" 2>&1; then
+    log "preflight OK (metric self-test = 1.0)"
+    log "=== arm2: lm_eval mbpp_longctx (32K prefix) ==="
+    ssh_long "$HEAD_HOST" "docker exec -w $TASK_DIR $CONTAINER bash $TASK_DIR/run_lm_eval.sh $MODEL $PORT 6 36864 /llm_infer_workspace/ylt/glm52-qad/audit1009/lctx_bf16" >>"$LOG" 2>&1
+    log "lm_eval rc=$?"
+  else
+    log "arm2 PREFLIGHT FAILED (metric broken) - skipping eval"
+  fi
   stop_all
 fi
 
