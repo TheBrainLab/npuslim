@@ -104,6 +104,15 @@ INNER
 }
 for ip in "${NODE_IPS[@]}"; do create_container_remote "$ip" || { echo "container FAILED on $ip" >&2; exit 1; }; done
 
+echo "== [2.5/5] npuslim + patches + warmup (all nodes) =="
+for ip in "${NODE_IPS[@]}"; do
+  for p in patch_deepseek_v2_loader.py patch_npu_fx_compiler.py patch_lm_eval_mbpp_utils_1016.py; do
+    ssh_q "yult@${ip}" "docker exec ${CONTAINER} python3 ${SHARED}/ylt/npuslim/tools/serve/patches/${p} 2>&1 | tail -1 | sed 's/^/    [${ip} ${p}] /'"
+  done
+  ssh_q "yult@${ip}" "docker exec ${CONTAINER} bash -lc \"git config --global --add safe.directory '*' 2>/dev/null || true; NPUSLIM_SKIP_OPS=1 pip install --no-build-isolation --no-deps --root-user-action=ignore -e ${SHARED}/ylt/npuslim 2>&1 | tail -1\""
+  ssh_q "yult@${ip}" "docker exec ${CONTAINER} bash -lc \"timeout 900 python3 -c 'import torch, torch_npu, ray, vllm, vllm_ascend' 2>&1 | tail -1 | sed 's/^/    [${ip} warmup] /'\""
+done
+
 COMMON_ENV=(-e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
     -e NPUSLIM_PLUGIN_ENABLE=1
     -e GLOO_SOCKET_IFNAME=${IFNAME} -e HCCL_SOCKET_IFNAME=${IFNAME} -e TP_SOCKET_IFNAME=${IFNAME}
@@ -112,7 +121,11 @@ COMMON_ENV=(-e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
     -e HCCL_IF_BASE_PORT=60000 -e TASK_QUEUE_ENABLE=1
     -e VLLM_ASCEND_ENABLE_FLASHCOMM1=${FLASHCOMM:-1}
     -e VLLM_RPC_TIMEOUT=360000 -e VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3000
-    -e HCCL_EXEC_TIMEOUT=2000 -e HCCL_CONNECT_TIMEOUT=1200)
+    -e HCCL_EXEC_TIMEOUT=2000 -e HCCL_CONNECT_TIMEOUT=1200
+    -e NPUSLIM_ROUTER_DUMP=${ROUTER_DUMP:-}
+    -e NPUSLIM_ROUTER_TOPK=${ROUTER_TOPK:-8}
+    -e NPUSLIM_ROUTER_CALLS=${ROUTER_CALLS:-1}
+    -e NPUSLIM_ROUTER_RANK=${ROUTER_RANK:-0})
 
 echo "== [3/5] ray cluster =="
 RAY_EXTRA="--runtime-env-agent-port=18080 --dashboard-agent-listen-port=18081 --dashboard-agent-grpc-port=18082 --ray-client-server-port=18083 --metrics-export-port=18084"

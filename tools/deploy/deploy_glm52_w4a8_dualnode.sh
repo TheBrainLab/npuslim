@@ -29,6 +29,9 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-262144}"
 MEM_UTIL="${MEM_UTIL:-0.85}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-2048}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-16}"
+ROUTED_ARG=""
+[ "${ROUTED_EXPERTS:-0}" = "1" ] && ROUTED_ARG="--enable-return-routed-experts"
+[ "${ENFORCE_EAGER:-0}" = "1" ] && ROUTED_ARG="$ROUTED_ARG --enforce-eager"
 RAY_PORT=6379
 LOG_INNER="/tmp/vllm_${SERVED}.log"
 
@@ -90,6 +93,7 @@ MNT="\$MNT -v \${SHARED_HOST}:\${SHARED}"
 docker run -d --name "\$CONTAINER" --privileged=true --restart no --net=host --shm-size=10g \
   \$DEV \$MNT -e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 -e OMP_NUM_THREADS=48 \
   -e HF_HOME=\${SHARED}/hf_home -e HF_DATASETS_OFFLINE=1 -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
+  -e RAY_worker_register_timeout_seconds=180 \
   -w "\${SHARED}/ylt" "\$IMAGE" /bin/bash -lc "sleep infinity" >/dev/null 2>&1
 echo "  container started"
 INNER
@@ -102,10 +106,15 @@ sleep 4
 
 echo "== [3/6] patches + editable npuslim (both) =="
 for h in "$HEAD_HOST" "$WORKER_HOST"; do
-  for p in patch_deepseek_v2_loader.py patch_npu_fx_compiler.py; do
+  for p in patch_deepseek_v2_loader.py patch_npu_fx_compiler.py patch_lm_eval_mbpp_utils_1016.py; do
     ssh_q "$h" "docker exec ${CONTAINER} python3 ${SHARED}/ylt/npuslim/tools/serve/patches/${p} 2>&1 | tail -1 | sed 's/^/    [${h} ${p}] /'"
   done
   ssh_q "$h" "docker exec ${CONTAINER} bash -lc \"git config --global --add safe.directory '*' 2>/dev/null || true; NPUSLIM_SKIP_OPS=1 pip install --no-build-isolation --no-deps --root-user-action=ignore -e ${SHARED}/ylt/npuslim 2>&1 | tail -1\""
+  # Warm up Python byte-code caches (first import compiles them).  A freshly
+  # created container otherwise makes the vLLM ray workers miss ray's
+  # worker-registration timeout (observed 2026-10-16 on a recreated .47:
+  # raylet "have not registered within the timeout" -> engine hung at 0/16 NPU).
+  ssh_q "$h" "docker exec ${CONTAINER} bash -lc \"timeout 900 python3 -c 'import torch, torch_npu, ray, vllm, vllm_ascend' 2>&1 | tail -1 | sed 's/^/    [${h} warmup] /'\""
 done
 
 COMMON_ENV=(-e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
@@ -115,6 +124,10 @@ COMMON_ENV=(-e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
     -e HCCL_BUFFSIZE=512 -e HCCL_OP_EXPANSION_MODE=AIV
     -e HCCL_IF_BASE_PORT=60000 -e TASK_QUEUE_ENABLE=1
     -e VLLM_ASCEND_ENABLE_FLASHCOMM1=1
+    -e NPUSLIM_ROUTER_DUMP=${ROUTER_DUMP:-}
+    -e NPUSLIM_ROUTER_TOPK=${ROUTER_TOPK:-8}
+    -e NPUSLIM_ROUTER_CALLS=${ROUTER_CALLS:-1}
+    -e NPUSLIM_ROUTER_RANK=${ROUTER_RANK:-0}
     -e VLLM_RPC_TIMEOUT=360000 -e VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3000
     -e HCCL_EXEC_TIMEOUT=2000 -e HCCL_CONNECT_TIMEOUT=1200)
 
@@ -141,6 +154,7 @@ serve_cmd="vllm serve ${MODEL} \
     --max-num-seqs ${MAX_NUM_SEQS} \
     --enable-chunked-prefill \
     --return-tokens-as-token-ids \
+    ${ROUTED_ARG} \
     --host 0.0.0.0 --port ${PORT} 2>&1 | tee ${LOG_INNER}"
 ssh_q "$HEAD_HOST" "docker exec -d ${COMMON_ENV[@]} -e VLLM_HOST_IP=${HEAD_IP} ${CONTAINER} bash -lc 'nohup ${serve_cmd} > ${LOG_INNER}.nohup 2>&1'" || { echo "vllm launch FAILED" >&2; exit 1; }
 
