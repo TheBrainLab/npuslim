@@ -30,15 +30,23 @@ for path in FILES:
         print(f"NO-OP (pattern not found): {path}")
         continue
 
+    # Idempotency guard: if the previous non-empty line is `try:` the needle is
+    # already wrapped (the old position-based check silently failed and re-applied
+    # the patch on every deploy -> 23x nesting -> Python "too many statically
+    # nested blocks", which broke engine init on 2026-10-15).
+    prev_lines = [ln for ln in src[:src.index(needle)].split("\n") if ln.strip()]
+    if prev_lines and prev_lines[-1].strip() == "try:":
+        print(f"NO-OP (already guarded): {path}")
+        continue
+    n_guards = src.count("except (ValueError, AttributeError):")
+    if n_guards:
+        print(f"WARNING: {path} already contains {n_guards} guard(s); skipping to avoid corruption")
+        continue
+
     # Extract the surrounding indentation.
     idx = src.index(needle)
     line_start = src.rfind("\n", 0, idx) + 1
     ind = src[line_start:idx]
-
-    if src.count("try:") > 0 and src.rindex("try:", 0, idx) > src.rfind("\n", 0, line_start):
-        # A try: exists somewhere above; assume already guarded.
-        print(f"NO-OP (already guarded?): {path}")
-        continue
 
     old = f"{ind}{needle}\n"
     new = (
