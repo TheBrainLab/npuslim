@@ -92,7 +92,7 @@ def main():
                                    "chat_template_kwargs": {"enable_thinking": False},
                                    "messages": [{"role": "user", "content": rec["prompt"]}]})
             ans = resp["choices"][0]["message"]["content"] or ""
-            out.update({"correct": int(num_in(ans, rec["gold"])), "answer": ans.strip()[:800]})
+            out.update({"correct": int(num_in(ans, rec["gold"])), "answer": (lambda a: a if len(a) <= 2000 else a[:600] + " … " + a[-1400:])(ans.strip())})
         except Exception as e:
             out.update({"correct": 0, "error": repr(e)[:200]})
         return out

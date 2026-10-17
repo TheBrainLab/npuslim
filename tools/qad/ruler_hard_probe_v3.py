@@ -117,7 +117,7 @@ def main():
                         "in_full": int(num_in(content + (reasoning or ""), case["gold"])),
                         "finish": ch.get("finish_reason"),
                         "n_out_tok": ch.get("usage", {}).get("completion_tokens"),
-                        "answer": fin.strip()[-800:]})
+                        "answer": (lambda a: a if len(a) <= 2000 else a[:600] + " … " + a[-1400:])(fin.strip())})
         except Exception as e:
             out.update({"correct": 0, "error": repr(e)[:200]})
         return out
