@@ -43,6 +43,29 @@ run_probe ruler2   ruler_hard_probe_v2.py "--length 65536"
 run_probe longform longform_panel_probe.py
 run_probe safety   safety_probe.py
 
+# ---- LCB generation (v6, 1055) — needs the full dataset; wait up to 40 min ----
+LCBD=$HOSTDIR/ylt/glm52-qad/p2bcd_data/lcb
+lcb_ok=0
+for i in $(seq 1 8); do
+  lcb_ok=1
+  for f in test test2 test3 test4 test5 test6; do [ -s "$LCBD/${f}.jsonl" ] || lcb_ok=0; done
+  [ "$lcb_ok" = 1 ] && break
+  log "  waiting for LCB dataset ($i/8)..."
+  sleep 300
+done
+if [ "$lcb_ok" = 1 ]; then
+  log "=== BF16: LCB generation (1055 problems) ==="
+  python3 "$P2/lcb_probe.py" --api "$API" --model "$MODEL" --out "$OUT/lcb_bf16_gen.jsonl" --workers 8 >>"$LOG" 2>&1
+  log "lcb gen rc=$?"
+  log "=== BF16: LCB scoring ==="
+  python3 "$P2/lcb_score.py" --gen "$OUT/lcb_bf16_gen.jsonl" --out "$OUT/lcb_bf16_summary.json" --workers 24 >>"$LOG" 2>&1
+  log "lcb score rc=$?"
+  touch "$OUT/lcb_bf16_DONE"
+else
+  log "LCB dataset incomplete after 40 min - bf16 LCB SKIPPED"
+  touch "$OUT/lcb_bf16_SKIPPED"
+fi
+
 log "=== BF16 stop ==="
 bash "$DEPLOY" --stop >>"$LOG" 2>&1
 touch "$OUT/T1BF16_DONE"
