@@ -15,16 +15,16 @@ LOG="$OUT/t1bf16.log"
 log(){ echo "[t1bf16 $(date '+%F %T')] $*" | tee -a "$LOG"; }
 ssh_q(){ timeout 120 ssh -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=no "$@" 2>/dev/null; }
 
-log "=== stop zzw service on .106/.135 (session priority, user-authorized) ==="
-for ip in 10.1.0.106 10.1.0.135; do
-  ssh_q yult@$ip "docker exec vllm-ascend-zzw-v0.23.0 bash -lc 'ray stop --force' >/dev/null 2>&1; docker stop vllm-ascend-zzw-v0.23.0" >>"$LOG" 2>&1
+log "=== stop zzw service on all 4 nodes (session priority, user-authorized) ==="
+for ip in 10.1.0.106 10.1.0.135 10.1.0.57 10.1.0.47; do
+  ssh_q yult@$ip "for c in \$(docker ps --format '{{.Names}}' | grep zzw); do docker exec \$c bash -lc 'ray stop --force' >/dev/null 2>&1; docker stop \$c; done" >>"$LOG" 2>&1
   log "  $ip: zzw stop issued"
 done
 sleep 30
 log "  .106 free: $(ssh_q yult@10.1.0.106 'npu-smi info 2>/dev/null | grep -c "No running processes"')"
 
-log "=== BF16 deploy (4 nodes TP=32, maxlen 69632, eager, mem 0.93) ==="
-MAX_MODEL_LEN=69632 MEM_UTIL=0.93 ENFORCE_EAGER=1 MAX_NUM_SEQS=8 MAX_NUM_BATCHED_TOKENS=2048 \
+log "=== BF16 deploy (4 nodes TP=32, maxlen 36864, eager, mem 0.95) ==="
+MAX_MODEL_LEN=36864 MEM_UTIL=0.95 ENFORCE_EAGER=1 MAX_NUM_SEQS=8 MAX_NUM_BATCHED_TOKENS=2048 \
   bash "$DEPLOY" >>"$LOG" 2>&1
 rc=$?
 if [ $rc -ne 0 ]; then log "BF16 DEPLOY FAILED rc=$rc"; exit 1; fi
@@ -39,7 +39,7 @@ run_probe(){ # tag probe extra
 run_probe gmmlu    gmmlu_probe.py
 run_probe simpleqa simpleqa_probe.py
 run_probe ifbench  ifbench_probe.py
-run_probe ruler2   ruler_hard_probe_v2.py "--length 65536"
+run_probe ruler2   ruler_hard_probe_v2.py "--length 34000"  # 34K floor indicator (64K infeasible at TP=32)
 run_probe longform longform_panel_probe.py
 run_probe safety   safety_probe.py
 
