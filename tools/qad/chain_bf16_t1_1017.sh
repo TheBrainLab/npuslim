@@ -24,7 +24,7 @@ sleep 30
 log "  .106 free: $(ssh_q yult@10.1.0.106 'npu-smi info 2>/dev/null | grep -c "No running processes"')"
 
 log "=== BF16 deploy (4 nodes TP=32, maxlen 36864, eager, mem 0.95) ==="
-MAX_MODEL_LEN=36864 MEM_UTIL=0.95 ENFORCE_EAGER=1 MAX_NUM_SEQS=8 MAX_NUM_BATCHED_TOKENS=2048 \
+MAX_MODEL_LEN=36864 MEM_UTIL=0.95 ENFORCE_EAGER=1 MAX_NUM_SEQS=32 MAX_NUM_BATCHED_TOKENS=2048 \
   bash "$DEPLOY" >>"$LOG" 2>&1
 rc=$?
 if [ $rc -ne 0 ]; then log "BF16 DEPLOY FAILED rc=$rc"; exit 1; fi
