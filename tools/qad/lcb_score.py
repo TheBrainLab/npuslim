@@ -15,6 +15,7 @@ import base64
 import json
 import os
 import pickle
+import subprocess
 import sys
 import zlib
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -68,12 +69,22 @@ def extract_code(out: str):
 
 
 def grade(task):
+    # [1017] isolate each problem in a subprocess: a candidate segfault (deep
+    # recursion -> C-stack overflow) must not poison the pool (BrokenProcessPool).
     qid, sample, code = task
     try:
-        res, metadata = run_test(sample, test=code, debug=False, timeout=6)
-        return qid, list(res), metadata
+        p = subprocess.run(
+            [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lcb_grade_one.py")],
+            input=json.dumps({"sample": sample, "code": code}),
+            capture_output=True, text=True, timeout=300)
+        if p.returncode != 0:
+            return qid, [-6], {"error": f"isolated child rc={p.returncode}"}
+        out = json.loads(p.stdout.strip().splitlines()[-1])
+        return qid, out["res"], out.get("meta", {})
+    except subprocess.TimeoutExpired:
+        return qid, [-6], {"error": "isolated child timeout"}
     except Exception as e:
-        return qid, [-5], {"error": repr(e)[:200]}
+        return qid, [-6], {"error": repr(e)[:200]}
 
 
 def main():
@@ -122,7 +133,7 @@ def main():
         # official markers: True = case passed; -2 WA / -3 TLE / -4 RE / -5 runner error
         ok = bool(res) and all(x == True for x in res)  # noqa: E712
         agg["passed"] += int(ok)
-        agg["errors"] += int(any(x in (-3, -4, -5) for x in res if isinstance(x, int)))
+        agg["errors"] += int(any(x in (-3, -4, -5, -6) for x in res if isinstance(x, int)))
         p = probs[qid]
         for key, bucket in (("difficulty", "by_difficulty"), ("platform", "by_platform"),
                             ("source_file", "by_source_file")):
