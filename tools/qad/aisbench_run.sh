@@ -4,22 +4,22 @@
 # (official recipe ~6h/arm due to temp 0.6 long generations) -> skipped/registered.
 # Usage: aisbench_run.sh <tag> <port> [<config_suffix>]
 set -uo pipefail
-TAG="$1"; PORT="${2:-8000}"; CFGSUF="${3:-$TAG}"
+TAG="$1"; PORT="${2:-8000}"; CFGSUF="${3:-$TAG}"; DATASETS="${4:-aime2026_gen_0_shot_chat_prompt}"
 AB=/llm_infer_workspace/ylt/glm52-qad/aisbench
 CFGDIR=/llm_infer_workspace/ylt/glm52-qad/aisbench_cfgs
 OUT=/llm_infer_workspace/ylt/glm52-qad/audit1009
 cd "$AB"
 sed -e "s/HOST_IP_PLACEHOLDER/127.0.0.1/" -e "s/host_port=8000/host_port=${PORT}/" \
     "$CFGDIR/vllm_api_general_chat_${CFGSUF}.py" > "ais_bench/benchmark/configs/models/vllm_api/vllm_api_general_chat_${TAG}.py"
-echo "[aisbench_run] tag=$TAG port=$PORT cfg=$CFGSUF (AIME2026 only)"
+echo "[aisbench_run] tag=$TAG port=$PORT cfg=$CFGSUF datasets=$DATASETS"
 python3 -m ais_bench.benchmark.cli.main \
   --models "vllm_api_general_chat_${TAG}" \
-  --datasets aime2026_gen_0_shot_chat_prompt
+  --datasets ${DATASETS}
 echo "[aisbench_run] rc=$?"
 EXP=$(ls -td outputs/default/*/ 2>/dev/null | head -1)
 echo "[aisbench_run] exp=$EXP"
 mkdir -p "$OUT/frontier_${TAG}_aisbench"
 cp -r "$EXP"results/*/ "$OUT/frontier_${TAG}_aisbench/" 2>/dev/null || true
 cp "$EXP"summary/*.csv "$EXP"summary/*.md "$OUT/frontier_${TAG}_aisbench/" 2>/dev/null || true
-cp "$EXP"predictions/vllm-api-general-chat/aime2026.jsonl "$OUT/frontier_${TAG}_aisbench/" 2>/dev/null || true
+cp "$EXP"predictions/vllm-api-general-chat/*.jsonl "$OUT/frontier_${TAG}_aisbench/" 2>/dev/null || true
 echo "[aisbench_run] archived to frontier_${TAG}_aisbench"
