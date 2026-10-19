@@ -3,6 +3,7 @@
 # Uses cudagraph if the test passed (bf16_cudagraph_OK), else eager.
 set -uo pipefail
 HOSTDIR=/home/yult/llm_infer_workspace
+AB="$HOSTDIR/ylt/glm52-qad/aisbench"
 OUT=$HOSTDIR/ylt/glm52-qad/audit1009
 P2=$HOSTDIR/ylt/glm52-qad/p2bcd
 DEPLOY=$HOSTDIR/ylt/npuslim_repo/tools/deploy/deploy_glm52_bf16_4node_eval.sh
@@ -29,9 +30,10 @@ ssh -o BatchMode=yes -o StrictHostKeyChecking=no yult@10.1.0.106 \
   "docker exec e6_noawq_env bash /llm_infer_workspace/ylt/glm52-qad/aisbench_run.sh bf16 9081 bf16" >>"$LOG" 2>&1
 log "aisbench rc=$?"
 mkdir -p "$OUT/frontier_bf16_aisbench"
-cp -r "$AB"/outputs/default/*/results/*/ "$OUT/frontier_bf16_aisbench/" 2>/dev/null || true
-cp "$AB"/outputs/default/*/summary/*.csv "$OUT/frontier_bf16_aisbench/" 2>/dev/null || true
-cp "$AB"/outputs/default/*/summary/*.md "$OUT/frontier_bf16_aisbench/" 2>/dev/null || true
+exp=$(ls -td "$AB"/outputs_bf16/*/ 2>/dev/null | head -1)
+cp -r "$exp"results/*/ "$OUT/frontier_bf16_aisbench/" 2>/dev/null || true
+cp "$exp"summary/*.csv "$exp"summary/*.md "$OUT/frontier_bf16_aisbench/" 2>/dev/null || true
+cp "$exp"predictions/vllm-api-general-chat/*.jsonl "$OUT/frontier_bf16_aisbench/" 2>/dev/null || true
 bash "$DEPLOY" --stop >>"$LOG" 2>&1
 touch "$OUT/frontier_bf16_DONE"
 log "BF16 FRONTIER DONE"

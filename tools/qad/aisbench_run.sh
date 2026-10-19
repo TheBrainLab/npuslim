@@ -19,8 +19,6 @@ python3 -m ais_bench.benchmark.cli.main \
 echo "[aisbench_run] rc=$?"
 EXP=$(ls -td "outputs_${TAG}"/*/ 2>/dev/null | head -1)
 echo "[aisbench_run] exp=$EXP"
-mkdir -p "$OUT/frontier_${TAG}_aisbench"
-cp -r "$EXP"results/*/ "$OUT/frontier_${TAG}_aisbench/" 2>/dev/null || true
-cp "$EXP"summary/*.csv "$EXP"summary/*.md "$OUT/frontier_${TAG}_aisbench/" 2>/dev/null || true
-cp "$EXP"predictions/vllm-api-general-chat/*.jsonl "$OUT/frontier_${TAG}_aisbench/" 2>/dev/null || true
-echo "[aisbench_run] archived to frontier_${TAG}_aisbench"
+# NOTE: no archiving here. This script runs as root inside the container; dirs
+# it creates under $OUT would be root-owned on the host and unwritable by yult.
+# Archiving is done host-side by the chains (after this returns).

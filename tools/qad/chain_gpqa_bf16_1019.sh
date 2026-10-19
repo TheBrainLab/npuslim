@@ -7,6 +7,7 @@
 # =============================================================================
 set -uo pipefail
 HOSTDIR=/home/yult/llm_infer_workspace
+AB="$HOSTDIR/ylt/glm52-qad/aisbench"
 OUT=$HOSTDIR/ylt/glm52-qad/audit1009
 DEPLOY=$HOSTDIR/ylt/npuslim_repo/tools/deploy/deploy_glm52_bf16_4node_eval.sh
 LOG="$OUT/gpqa_bf16.log"
@@ -31,6 +32,13 @@ log "=== BF16 GPQA (official recipe, full 198) ==="
 ssh -o BatchMode=yes -o StrictHostKeyChecking=no yult@10.1.0.106 \
   "docker exec e6_noawq_env bash /llm_infer_workspace/ylt/glm52-qad/aisbench_run.sh bf16 9081 bf16 gpqa_gen_0_shot_cot_chat_prompt" >>"$LOG" 2>&1
 log "gpqa rc=$?"
+
+# host-side archive (yult-owned; runner is root)
+exp=$(ls -td "$AB"/outputs_bf16/*/ 2>/dev/null | head -1)
+mkdir -p "$OUT/frontier_bf16_aisbench"
+cp -r "$exp"results/*/ "$OUT/frontier_bf16_aisbench/" 2>/dev/null || true
+cp "$exp"summary/*.csv "$exp"summary/*.md "$OUT/frontier_bf16_aisbench/" 2>/dev/null || true
+cp "$exp"predictions/vllm-api-general-chat/*.jsonl "$OUT/frontier_bf16_aisbench/" 2>/dev/null || true
 
 bash "$DEPLOY" --stop >>"$LOG" 2>&1
 touch "$OUT/gpqa_bf16_DONE"

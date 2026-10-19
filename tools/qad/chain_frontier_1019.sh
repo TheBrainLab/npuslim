@@ -34,10 +34,12 @@ run_product(){
   ssh -o BatchMode=yes -o StrictHostKeyChecking=no "$HEAD_HOST" \
     "docker exec e6_noawq_env bash /llm_infer_workspace/ylt/glm52-qad/aisbench_run.sh ${tag} 8000 ${tag}" >>"$LOG" 2>&1
   log "aisbench rc=$?"
+  local exp
+  exp=$(ls -td "$AB"/outputs_${tag}/*/ 2>/dev/null | head -1)
   mkdir -p "$OUT/frontier_${tag}_aisbench"
-  cp -r "$AB"/outputs/default/*/results/*/ "$OUT/frontier_${tag}_aisbench/" 2>/dev/null || true
-  cp "$AB"/outputs/default/*/summary/*.csv "$OUT/frontier_${tag}_aisbench/" 2>/dev/null || true
-  cp "$AB"/outputs/default/*/summary/*.md "$OUT/frontier_${tag}_aisbench/" 2>/dev/null || true
+  cp -r "$exp"results/*/ "$OUT/frontier_${tag}_aisbench/" 2>/dev/null || true
+  cp "$exp"summary/*.csv "$exp"summary/*.md "$OUT/frontier_${tag}_aisbench/" 2>/dev/null || true
+  cp "$exp"predictions/vllm-api-general-chat/*.jsonl "$OUT/frontier_${tag}_aisbench/" 2>/dev/null || true
   HEAD_IP=$HEAD_IP WORKER_IP=$WORKER_IP HEAD_HOST=$HEAD_HOST WORKER_HOST=$WORKER_HOST bash "$DEPLOY" --stop >>"$LOG" 2>&1
   touch "$OUT/frontier_${tag}_DONE"
   log "=== $tag DONE ==="
