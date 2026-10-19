@@ -1,6 +1,7 @@
 #!/bin/bash
 # 1019 frontier benchmarks (P1/P2/P3): OneRuler (multilingual NIAH) + AIME 2026 + GPQA-Diamond.
-# Per product: deploy (maxlen 69632) -> oneruler -> aime -> gpqa -> stop.
+# Per product: deploy (maxlen 69632) -> oneruler -> aime (official recipe) -> stop.
+# (GPQA moved to the dedicated round: chain_gpqa_1019.sh, batch tuned by KV pool.)
 set -uo pipefail
 LANE="${1:-${LANE:-FR}}"
 HOSTDIR=/home/yult/llm_infer_workspace
@@ -29,7 +30,7 @@ run_product(){
   log "=== $tag: OneRuler (multilingual, sampled) ==="
   python3 "$P2/oneruler_probe.py" --api "$api" --model "front_${tag}" --out "$OUT/frontier_${tag}_oneruler.jsonl" --workers 4 >>"$LOG" 2>&1
   log "oneruler rc=$?"
-  log "=== $tag: AISBench AIME2026 + GPQA (official recipe, container-side) ==="
+  log "=== $tag: AISBench AIME2026 (official recipe, container-side; GPQA in dedicated round) ==="
   ssh -o BatchMode=yes -o StrictHostKeyChecking=no "$HEAD_HOST" \
     "docker exec e6_noawq_env bash /llm_infer_workspace/ylt/glm52-qad/aisbench_run.sh ${tag} 8000 ${tag}" >>"$LOG" 2>&1
   log "aisbench rc=$?"

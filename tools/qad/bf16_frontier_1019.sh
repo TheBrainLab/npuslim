@@ -1,5 +1,5 @@
 #!/bin/bash
-# BF16 arm for the 1019 frontier benchmarks (OneRuler + AIME + GPQA), 4-node TP=32.
+# BF16 arm for the 1019 frontier benchmarks (OneRuler + AIME), 4-node TP=32.
 # Uses cudagraph if the test passed (bf16_cudagraph_OK), else eager.
 set -uo pipefail
 HOSTDIR=/home/yult/llm_infer_workspace
@@ -24,7 +24,7 @@ if [ $rc -ne 0 ]; then log "DEPLOY FAILED rc=$rc"; exit 1; fi
 log "=== BF16: OneRuler ==="
 python3 "$P2/oneruler_probe.py" --api "$API" --model "$MODEL" --out "$OUT/frontier_bf16_oneruler.jsonl" --workers 4 >>"$LOG" 2>&1
 log "oneruler rc=$?"
-log "=== BF16: AISBench AIME2026 + GPQA (container-side, port 9081) ==="
+log "=== BF16: AISBench AIME2026 (container-side, port 9081) ==="
 ssh -o BatchMode=yes -o StrictHostKeyChecking=no yult@10.1.0.106 \
   "docker exec e6_noawq_env bash /llm_infer_workspace/ylt/glm52-qad/aisbench_run.sh bf16 9081 bf16" >>"$LOG" 2>&1
 log "aisbench rc=$?"
