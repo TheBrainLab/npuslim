@@ -29,3 +29,21 @@ wait
 if [ -f "$OUT/GPQA_F_DONE" ] && [ -f "$OUT/GPQA_G_DONE" ]; then
   touch "$OUT/GPQA_ROUND_DONE"
 fi
+
+# --- appended: BF16 GPQA on 4 nodes (TP=32) after the products' round ---
+if [ -f "$OUT/GPQA_ROUND_DONE" ] && [ ! -f "$OUT/gpqa_bf16_DONE" ]; then
+  setsid nohup bash "$REPO/chain_gpqa_bf16_1019.sh" >> "$OUT/gpqa_bf16.log" 2>&1 < /dev/null &
+  tries=0
+  for i in $(seq 1 144); do
+    [ -f "$OUT/gpqa_bf16_DONE" ] && break
+    if ! pgrep -f 'chain_gpqa_bf16_1019.sh$' >/dev/null 2>&1; then
+      tries=$((tries+1))
+      if [ "$tries" -gt 3 ]; then echo "[gpqa-launch $(date '+%F %T')] bf16 gpqa failed 3x - giving up" >> "$OUT/gpqa_launch.log"; break; fi
+      echo "[gpqa-launch $(date '+%F %T')] bf16 gpqa chain gone -> relaunch ($tries)" >> "$OUT/gpqa_launch.log"
+      setsid nohup bash "$REPO/chain_gpqa_bf16_1019.sh" >> "$OUT/gpqa_bf16.log" 2>&1 < /dev/null &
+      sleep 1800
+    fi
+    sleep 300
+  done
+fi
+[ -f "$OUT/gpqa_bf16_DONE" ] && touch "$OUT/GPQA_ALL_DONE"

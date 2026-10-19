@@ -46,14 +46,15 @@ for it in $(seq 1 288); do
     if ! pgrep -f 'bf16_frontier_1019.sh$' >/dev/null 2>&1; then log "BF16 driver gone -> relaunch"; launch_bf16; fi
     s=$(stale_h "$OUT/frontier_bf16.log"); [ "$s" -gt 5 ] && log "WARN BF16 log stale ${s}h"
   fi
-  if [ -f "$OUT/frontier_bf16_DONE" ] && [ ! -f "$OUT/GPQA_ROUND_DONE" ]; then
-    if ! pgrep -f 'gpqa_launch_1019.sh$' >/dev/null 2>&1 && ! pgrep -f 'chain_gpqa_1019.sh [FG]$' >/dev/null 2>&1; then
+  if [ -f "$OUT/frontier_bf16_DONE" ] && [ ! -f "$OUT/GPQA_ALL_DONE" ]; then
+    if ! pgrep -f 'gpqa_launch_1019.sh$' >/dev/null 2>&1 && ! pgrep -f 'chain_gpqa_1019.sh [FG]$' >/dev/null 2>&1 && ! pgrep -f 'chain_gpqa_bf16_1019.sh$' >/dev/null 2>&1; then
       log "GPQA drivers gone -> relaunch launcher"; launch_gpqa
     fi
     s=$(stale_h "$OUT/gpqa_F.log"); [ "$s" -gt 5 ] && log "WARN GQ-F log stale ${s}h"
     s=$(stale_h "$OUT/gpqa_G.log"); [ "$s" -gt 5 ] && log "WARN GQ-G log stale ${s}h"
+    s=$(stale_h "$OUT/gpqa_bf16.log"); [ "$s" -gt 5 ] && log "WARN GQ-BF16 log stale ${s}h"
   fi
-  if [ -f "$OUT/GPQA_ROUND_DONE" ]; then log "ALL DONE - watchdog exits"; exit 0; fi
+  if [ -f "$OUT/GPQA_ALL_DONE" ]; then log "ALL DONE - watchdog exits"; exit 0; fi
   sleep 600
 done
 log "watchdog max iterations (48h) reached"
