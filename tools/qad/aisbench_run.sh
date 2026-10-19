@@ -14,9 +14,10 @@ sed -e "s/HOST_IP_PLACEHOLDER/127.0.0.1/" -e "s/host_port=8000/host_port=${PORT}
 echo "[aisbench_run] tag=$TAG port=$PORT cfg=$CFGSUF datasets=$DATASETS"
 python3 -m ais_bench.benchmark.cli.main \
   --models "vllm_api_general_chat_${TAG}" \
-  --datasets ${DATASETS}
+  --datasets ${DATASETS} \
+  -w "outputs_${TAG}"
 echo "[aisbench_run] rc=$?"
-EXP=$(ls -td outputs/default/*/ 2>/dev/null | head -1)
+EXP=$(ls -td "outputs_${TAG}"/*/ 2>/dev/null | head -1)
 echo "[aisbench_run] exp=$EXP"
 mkdir -p "$OUT/frontier_${TAG}_aisbench"
 cp -r "$EXP"results/*/ "$OUT/frontier_${TAG}_aisbench/" 2>/dev/null || true
