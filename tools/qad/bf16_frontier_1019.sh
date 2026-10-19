@@ -24,12 +24,14 @@ if [ $rc -ne 0 ]; then log "DEPLOY FAILED rc=$rc"; exit 1; fi
 log "=== BF16: OneRuler ==="
 python3 "$P2/oneruler_probe.py" --api "$API" --model "$MODEL" --out "$OUT/frontier_bf16_oneruler.jsonl" --workers 4 >>"$LOG" 2>&1
 log "oneruler rc=$?"
-log "=== BF16: AIME 2026 ==="
-python3 "$P2/aime_probe.py" --api "$API" --model "$MODEL" --out "$OUT/frontier_bf16_aime.jsonl" --workers 2 >>"$LOG" 2>&1
-log "aime rc=$?"
-log "=== BF16: GPQA-Diamond ==="
-python3 "$P2/gpqa_probe.py" --api "$API" --model "$MODEL" --out "$OUT/frontier_bf16_gpqa.jsonl" --workers 2 >>"$LOG" 2>&1
-log "gpqa rc=$?"
+log "=== BF16: AISBench AIME2026 + GPQA (container-side, port 9081) ==="
+ssh -o BatchMode=yes -o StrictHostKeyChecking=no yult@10.1.0.106 \
+  "docker exec e6_noawq_env bash /llm_infer_workspace/ylt/glm52-qad/aisbench_run.sh bf16 9081 bf16" >>"$LOG" 2>&1
+log "aisbench rc=$?"
+mkdir -p "$OUT/frontier_bf16_aisbench"
+cp -r "$AB"/outputs/default/*/results/*/ "$OUT/frontier_bf16_aisbench/" 2>/dev/null || true
+cp "$AB"/outputs/default/*/summary/*.csv "$OUT/frontier_bf16_aisbench/" 2>/dev/null || true
+cp "$AB"/outputs/default/*/summary/*.md "$OUT/frontier_bf16_aisbench/" 2>/dev/null || true
 bash "$DEPLOY" --stop >>"$LOG" 2>&1
 touch "$OUT/frontier_bf16_DONE"
 log "BF16 FRONTIER DONE"
