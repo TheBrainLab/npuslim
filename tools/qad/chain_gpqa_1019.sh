@@ -9,11 +9,13 @@ OUT="$HOSTDIR/ylt/glm52-qad/audit1009"
 HEAD_IP="${HEAD_IP:?}"; WORKER_IP="${WORKER_IP:?}"
 HEAD_HOST="${HEAD_HOST:-yult@${HEAD_IP}}"; WORKER_HOST="${WORKER_HOST:-yult@${WORKER_IP}}"
 PRODUCTS="${PRODUCTS:?need PRODUCTS}"
+CFGSUF="${CFGSUF:-}"   # e.g. _re for the high-effort reruns
 LOG="$OUT/gpqa_${LANE}.log"
 log(){ echo "[gpqa$LANE $(date '+%F %T')] $*" | tee -a "$LOG"; }
 run_product(){
   local tag="$1" model="$2" mem="${3:-0.85}" maxlen="${4:-131072}"
-  if [ -f "$OUT/gpqa_${tag}_DONE" ]; then log "$tag: already done - skip"; return 0; fi
+  local ftag="${tag}${CFGSUF}"
+  if [ -f "$OUT/gpqa_${ftag}_DONE" ]; then log "$tag: already done - skip"; return 0; fi
   log "=== $tag: deploy (maxlen $maxlen, mem $mem) ==="
   HEAD_IP=$HEAD_IP WORKER_IP=$WORKER_IP HEAD_HOST=$HEAD_HOST WORKER_HOST=$WORKER_HOST bash "$DEPLOY" --stop >>"$LOG" 2>&1; sleep 8
   MODEL="$model" SERVED="front_${tag}" ROUTER_DUMP="" ENFORCE_EAGER=0 \
@@ -23,17 +25,17 @@ run_product(){
   if [ $? -ne 0 ]; then log "$tag DEPLOY FAILED"; HEAD_IP=$HEAD_IP WORKER_IP=$WORKER_IP HEAD_HOST=$HEAD_HOST WORKER_HOST=$WORKER_HOST bash "$DEPLOY" --stop >>"$LOG" 2>&1; return 1; fi
   log "=== $tag: GPQA (official recipe, full 198) ==="
   ssh -o BatchMode=yes -o StrictHostKeyChecking=no "$HEAD_HOST" \
-    "docker exec e6_noawq_env bash /llm_infer_workspace/ylt/glm52-qad/aisbench_run.sh ${tag} 8000 ${tag} gpqa_gen_0_shot_cot_chat_prompt" >>"$LOG" 2>&1
+    "docker exec e6_noawq_env bash /llm_infer_workspace/ylt/glm52-qad/aisbench_run.sh ${ftag} 8000 ${ftag} gpqa_gen_0_shot_cot_chat_prompt" >>"$LOG" 2>&1
   log "gpqa rc=$?"
   # host-side archive (yult-owned; the runner runs as root and must not create dirs here)
   local exp
   exp=$(ls -td "$AB"/outputs_${tag}/*/ 2>/dev/null | head -1)
-  mkdir -p "$OUT/frontier_${tag}_aisbench"
-  cp -r "$exp"results/*/ "$OUT/frontier_${tag}_aisbench/" 2>/dev/null || true
-  cp "$exp"summary/*.csv "$exp"summary/*.md "$OUT/frontier_${tag}_aisbench/" 2>/dev/null || true
-  cp "$exp"predictions/vllm-api-general-chat/*.jsonl "$OUT/frontier_${tag}_aisbench/" 2>/dev/null || true
+  mkdir -p "$OUT/frontier_${ftag}_aisbench"
+  cp -r "$exp"results/*/ "$OUT/frontier_${ftag}_aisbench/" 2>/dev/null || true
+  cp "$exp"summary/*.csv "$exp"summary/*.md "$OUT/frontier_${ftag}_aisbench/" 2>/dev/null || true
+  cp "$exp"predictions/vllm-api-general-chat/*.jsonl "$OUT/frontier_${ftag}_aisbench/" 2>/dev/null || true
   HEAD_IP=$HEAD_IP WORKER_IP=$WORKER_IP HEAD_HOST=$HEAD_HOST WORKER_HOST=$WORKER_HOST bash "$DEPLOY" --stop >>"$LOG" 2>&1
-  touch "$OUT/gpqa_${tag}_DONE"
+  touch "$OUT/gpqa_${ftag}_DONE"
   log "=== $tag DONE ==="
 }
 for item in $PRODUCTS; do

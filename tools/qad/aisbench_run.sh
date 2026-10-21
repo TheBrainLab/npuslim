@@ -19,6 +19,10 @@ python3 -m ais_bench.benchmark.cli.main \
 echo "[aisbench_run] rc=$?"
 EXP=$(ls -td "outputs_${TAG}"/*/ 2>/dev/null | head -1)
 echo "[aisbench_run] exp=$EXP"
+if ! ls "$EXP"summary/*.csv >/dev/null 2>&1; then
+  echo "[aisbench_run] RUN FAILED: no summary in $EXP"
+  exit 1
+fi
 # NOTE: no archiving here. This script runs as root inside the container; dirs
 # it creates under $OUT would be root-owned on the host and unwritable by yult.
 # Archiving is done host-side by the chains (after this returns).

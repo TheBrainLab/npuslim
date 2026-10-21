@@ -19,14 +19,14 @@ log(){ echo "[watch $(date '+%F %T')] $*" | tee -a "$WLOG"; }
 launch_F(){
   env LANE=F HEAD_IP=10.1.0.57 WORKER_IP=10.1.0.47 HEAD_HOST=yult@10.1.0.57 WORKER_HOST=yult@10.1.0.47 \
     PRODUCTS="l0|$W4A8/glm5-w4a8_replica_l0_clip_lo05_omni|0.85 w4a8c8|/llm_infer_workspace/models/GLM-5.2-w4a8c8|0.85" \
-    setsid nohup bash "$REPO/chain_frontier_1019.sh" F >>"$OUT/frontier_F.log" 2>&1 < /dev/null &
+    setsid nohup bash "$REPO/chain_frontier_1019.sh" F >>"$OUT/frontier_F_launch.out" 2>&1 < /dev/null &
 }
 launch_G(){
   env LANE=G HEAD_IP=10.1.0.106 WORKER_IP=10.1.0.135 HEAD_HOST=yult@10.1.0.106 WORKER_HOST=yult@10.1.0.135 \
     PRODUCTS="p2clip|$W4A8/glm5-w4a8_modelslim_replica_layer1_5_path2_clip_seed1234|0.85 w8a8|$W8/glm5-w8a8_replica_p2clipfold_w8expert|0.95" \
-    setsid nohup bash "$REPO/chain_frontier_1019.sh" G >>"$OUT/frontier_G.log" 2>&1 < /dev/null &
+    setsid nohup bash "$REPO/chain_frontier_1019.sh" G >>"$OUT/frontier_G_launch.out" 2>&1 < /dev/null &
 }
-launch_bf16(){ setsid nohup bash "$REPO/bf16_frontier_1019.sh" >>"$OUT/frontier_bf16.log" 2>&1 < /dev/null & }
+launch_bf16(){ setsid nohup bash "$REPO/bf16_frontier_1019.sh" >>"$OUT/frontier_bf16_launch.out" 2>&1 < /dev/null & }
 launch_gpqa(){ setsid nohup bash "$REPO/gpqa_launch_1019.sh" >>"$OUT/gpqa_launch.log" 2>&1 < /dev/null & }
 
 stale_h(){ local f="$1"; [ -f "$f" ] || { echo 0; return; }
