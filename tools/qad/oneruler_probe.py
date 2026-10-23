@@ -8,7 +8,8 @@ Sampling: LANGS x LENGTHS x tasks x PER_CELL cases (fixed seed).
 Protocol (fixed, all arms): chat endpoint, enable_thinking=FALSE, temperature=0, max_tokens=64.
 Scoring:
   * niah_single/multikey/multiquery/multivalue : ALL answer strings must appear (substring, case-insensitive)
-  * niah_none                                  : response must contain "none" (no hallucinated numbers)
+  * niah_none                                  : response must contain one of the localized gold answers
+                                                 (none / 无 / कोई नहीं / hakuna / ha ho letho / ஏதுமில்லை)
   * cwe / cwe_easy                             : recall = matched / len(answer); correct = all matched
 """
 from __future__ import annotations
@@ -76,14 +77,18 @@ def main():
                                    "messages": [{"role": "user", "content": c["prompt"]}]})
             ans = (resp["choices"][0]["message"].get("content") or "").lower()
             rec["ans"] = ans.strip()[:150]
+            rec["answers"] = c["answers"]
             if c["task"] == "niah_none":
-                rec["hits"], rec["total"], rec["correct"] = (1 if "none" in ans else 0), 1, int("none" in ans)
+                hit = int(any(a.lower() in ans for a in c["answers"]))
+                rec["hits"], rec["total"], rec["correct"] = hit, 1, hit
             else:
                 hits = sum(1 for a in c["answers"] if a.lower() in ans)
                 rec["hits"], rec["total"] = hits, len(c["answers"])
                 rec["correct"] = int(hits == len(c["answers"]))
+            rec["recall"] = rec["hits"] / rec["total"] if rec["total"] else 0.0
         except Exception as e:
-            rec.update({"correct": 0, "hits": 0, "total": len(c["answers"]), "error": repr(e)[:150]})
+            rec.update({"correct": 0, "hits": 0, "total": len(c["answers"]), "answers": c["answers"],
+                        "recall": 0.0, "error": repr(e)[:150]})
         return rec
 
     res = []
@@ -96,21 +101,32 @@ def main():
             if len(res) % 50 == 0:
                 print(f"  [{len(res)}/{len(cases)}]", flush=True)
 
-    summary = {"n": len(res), "by_task": {}, "by_lang": {}, "by_length": {}, "by_task_lang": {}}
+    summary = {"n": len(res), "by_task": {}, "by_lang": {}, "by_length": {},
+               "by_task_lang": {}, "by_task_recall": {}}
     for r in res:
         for key, bucket in (("task", "by_task"), ("lang", "by_lang"), ("length", "by_length")):
             b = summary[bucket].setdefault(r[key], [0, 0])
             b[0] += r["correct"]; b[1] += 1
         b = summary["by_task_lang"].setdefault(f"{r['task']}|{r['lang']}", [0, 0])
         b[0] += r["correct"]; b[1] += 1
+        summary["by_task_recall"].setdefault(r["task"], []).append(
+            r.get("recall", float(r["correct"])))
     n = max(len(res), 1)
     overall = sum(r["correct"] for r in res) / n
+    overall_recall = sum(r.get("recall", float(r["correct"])) for r in res) / n
     print(f"=== OneRuler summary: {sum(r['correct'] for r in res)}/{n} = {overall:.3f}")
     for bucket in ("by_task", "by_lang", "by_length"):
         print(f"  {bucket}:")
         for k, (ok, tot) in sorted(summary[bucket].items()):
             print(f"    {k}: {ok}/{tot} = {ok/tot:.3f}")
+    summary["by_task_recall"] = {
+        k: sum(v) / len(v) for k, v in summary["by_task_recall"].items()
+    }
+    print("  by_task_recall:")
+    for k, v in sorted(summary["by_task_recall"].items()):
+        print(f"    {k}: {v:.3f}")
     summary["overall"] = overall
+    summary["overall_recall"] = overall_recall
     with open(args.out.replace(".jsonl", "_summary.json"), "w") as f:
         json.dump(summary, f, indent=1)
 
